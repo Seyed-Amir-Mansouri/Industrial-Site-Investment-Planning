@@ -631,7 +631,7 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
 def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_month: int,
                 pool_mw: float, return_duals: bool = True,
                 grid_cap_mw: float | None = None, h2_cap_mw: float | None = None,
-                demand_flex_pct: float = 0.20,
+                demand_flex_pct: float = 0.20, ens_penalty_eur_per_mwh: float | None = None,
                 edf: pd.DataFrame | None = None, hdf: pd.DataFrame | None = None,
                 quiet: bool = False) -> dict:
     """Joint multi-country H2 Producer LP: every zone in ``zones`` solved TOGETHER in
@@ -702,7 +702,32 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
     hyperplane in that zone's own capacity (standard Benders assumption) even though
     the pool constraint means one zone's true cost also depends on every other zone's
     capacity -- this is weaker than a fully separable subproblem, so this joint mode
-    may need more iterations to converge than the independent-per-zone mode."""
+    may need more iterations to converge than the independent-per-zone mode.
+
+    ``ens_penalty_eur_per_mwh`` (optional, default ``None`` -- every existing caller's
+    behavior is byte-for-byte unchanged): when set, adds two non-negative slack
+    variables -- ``ens_elec`` (Energy Not Served, folded into ``elec_balance``) and
+    ``ens_h2`` (Hydrogen Not Served, folded into ``demand_ub``: ``demand - ens_h2 <=
+    demand_upper`` instead of ``demand <= demand_upper``) -- each penalized at this
+    EUR/MWh rate in the objective. This exists so a trial capacity vector too small to
+    physically cover ``pool_mw`` (e.g. the master's all-skip iteration-1 guess once the
+    ``min_total_electrolyser_mw`` floor is ALSO removed, see
+    ``h2_planning.master.build_master``'s docstring) makes the LP expensive rather than
+    INFEASIBLE -- turning what would otherwise be a hard ``RuntimeError`` (the "no
+    feasibility cuts implemented" limitation) into an ordinary, Benders-cuttable
+    objective value. ``ens_h2`` is added to the capacity-ceiling constraint rather than
+    to ``h2_balance`` itself, because ``h2_balance`` is already unconstrained-feasible
+    whenever ``h2_cap_mw`` is unlimited (``x_h2`` can absorb any supply/demand mismatch
+    on its own) -- the actual infeasibility this is designed to avoid comes from
+    ``demand_ub`` capping realized demand at installed electrolyser capacity regardless
+    of pipeline import ability. ``ens_elec`` is added symmetrically to ``elec_balance``
+    for the same reason on the electricity side, even though it won't bind while
+    ``grid_cap_mw`` stays unlimited too. When ``quota > 0``, ``red3_quota``'s RHS also
+    switches from ``demand`` to ``demand - ens_h2`` (the actually-served portion) --
+    otherwise a zero-electrolyser trial still has to satisfy 42% renewable coverage of
+    its full, un-servable demand target with zero real production, which is infeasible
+    on its own regardless of ``ens_h2`` fixing ``demand_ub`` (found by direct testing:
+    ``demand_ub`` alone was NOT sufficient to restore feasibility)."""
     t0 = time.time()
     days, day_weights = day_sampling.representative_days(rep_days_per_month)
     n_days = len(days)
@@ -776,12 +801,18 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
     x_grid = m.add_variables(lower=-grid_cap, upper=grid_cap, coords=coords, name="x_grid")
     x_h2 = m.add_variables(lower=-h2_cap, upper=h2_cap, coords=coords, name="x_h2")
 
+    ens_on = ens_penalty_eur_per_mwh is not None
+    if ens_on:
+        ens_elec = m.add_variables(lower=0.0, coords=coords, name="ens_elec")
+        ens_h2 = m.add_variables(lower=0.0, coords=coords, name="ens_h2")
+
     demand_upper = ely_mw_da * ely_eff_da
     demand_base = m.add_variables(lower=0.0, coords=[zone_idx], name="demand_base")
     shift = m.add_variables(coords=coords, name="shift")
     demand = m.add_variables(coords=coords, name="demand")
     m.add_constraints(demand == demand_base + shift, name="demand_def")
-    m.add_constraints(demand <= demand_upper, name="demand_ub")
+    demand_ub_lhs = demand if not ens_on else demand - ens_h2
+    m.add_constraints(demand_ub_lhs <= demand_upper, name="demand_ub")
     m.add_constraints(shift - demand_flex_pct * demand_base <= 0.0, name="shift_ub")
     m.add_constraints(shift + demand_flex_pct * demand_base >= 0.0, name="shift_lb")
     m.add_constraints(shift.sum("hid") == 0.0, name="shift_net_zero")
@@ -789,7 +820,10 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
     gc_buy = m.add_variables(lower=0.0, coords=[zone_idx], name="gc_buy")
     gc_sell = m.add_variables(lower=0.0, coords=[zone_idx], name="gc_sell")
 
-    m.add_constraints(wind_p + pv_p + batt_dis - batt_ch - ely_p - x_grid == 0, name="elec_balance")
+    elec_balance_lhs = wind_p + pv_p + batt_dis - batt_ch - ely_p - x_grid
+    if ens_on:
+        elec_balance_lhs = elec_balance_lhs + ens_elec
+    m.add_constraints(elec_balance_lhs == 0, name="elec_balance")
     m.add_constraints(ely_eff_da * ely_p + tank_dis - tank_ch - demand - x_h2 == 0, name="h2_balance")
     m.add_constraints(ely_ren <= wind_p + pv_p, name="ely_ren_cap_avail")
     m.add_constraints(ely_ren <= ely_p, name="ely_ren_cap_ely")
@@ -812,8 +846,9 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
         m.add_constraints(tank_soc.isel(hid=-1) >= tank_soc0_da, name="tank_cyclic")
 
     if quota > 0.0:
+        quota_demand = demand if not ens_on else demand - ens_h2
         m.add_constraints(ely_eff_da * ((w * ely_ren).sum(["day", "hid"]) + gc_buy)
-                          >= quota * (w * demand).sum(["day", "hid"]), name="red3_quota")
+                          >= quota * (w * quota_demand).sum(["day", "hid"]), name="red3_quota")
 
     m.add_constraints(demand_base.sum("zone") == pool_mw, name="demand_pool")
 
@@ -822,6 +857,8 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
                         + (w * tank_ch).sum() + (w * tank_dis).sum())
            + gc_price * gc_buy.sum() - gc_price * gc_sell.sum()
            - REN_SELF_USE_PRIORITY_EUR_PER_MWH * (w * ely_ren).sum())
+    if ens_on:
+        cost = cost + ens_penalty_eur_per_mwh * ((w * ens_elec).sum() + (w * ens_h2).sum())
     m.add_objective(cost)
 
     build_s = time.time() - t0
@@ -868,6 +905,7 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
                      for z in zones}
 
     schedules, gc_buy_mwh, gc_sell_mwh, objective_by_zone = {}, {}, {}, {}
+    ens_elec_mwh, ens_h2_mwh = {}, {}
     day_weight_flat = np.repeat(np.asarray(day_weights, dtype=float), HOURS_PER_DAY)
     for zi, z in enumerate(zones):
         wp = np.asarray(sol["wind_p"].sel(zone=z).values).reshape(-1)
@@ -898,6 +936,9 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
         })
         out["day_of_year"] = np.repeat(days, HOURS_PER_DAY)
         out["day_weight"] = day_weight_flat
+        if ens_on:
+            out["H2 Producer energy not served (MW)"] = np.asarray(sol["ens_elec"].sel(zone=z).values).reshape(-1)
+            out["H2 Producer hydrogen not served (MW)"] = np.asarray(sol["ens_h2"].sel(zone=z).values).reshape(-1)
 
         p_elec_z = np.asarray(p_elecs[zi]).reshape(-1)
         p_h2_z = np.asarray(p_h2s[zi]).reshape(-1)
@@ -906,6 +947,12 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
                  + sto_cost * (day_weight_flat * (bc + bd + tc + td)).sum()
                  + gc_price * gcb - gc_price * gcs
                  - REN_SELF_USE_PRIORITY_EUR_PER_MWH * (day_weight_flat * er).sum())
+        if ens_on:
+            ee = np.asarray(sol["ens_elec"].sel(zone=z).values).reshape(-1)
+            eh = np.asarray(sol["ens_h2"].sel(zone=z).values).reshape(-1)
+            z_cost = z_cost + ens_penalty_eur_per_mwh * (day_weight_flat * (ee + eh)).sum()
+            ens_elec_mwh[z] = float((day_weight_flat * ee).sum())
+            ens_h2_mwh[z] = float((day_weight_flat * eh).sum())
         objective_by_zone[z] = float(z_cost)
 
         out.attrs["objective"] = float(z_cost)
@@ -929,6 +976,8 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
         "cut_coeffs": cut_coeffs,
         "gc_buy_mwh": gc_buy_mwh,
         "gc_sell_mwh": gc_sell_mwh,
+        "ens_elec_mwh": ens_elec_mwh if ens_on else None,
+        "ens_h2_mwh": ens_h2_mwh if ens_on else None,
         "build_seconds": build_s,
         "solve_seconds": solve_s,
     }
