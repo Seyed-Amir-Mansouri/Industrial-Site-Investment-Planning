@@ -1,68 +1,113 @@
-"""Placeholder CAPEX / discretization / annualization assumptions for H2 Producer
+"""Candidate-catalog CAPEX / lifetime / annualization assumptions for H2 Producer
 capacity PLANNING (as opposed to price_model's demand -> price fitting, or
 optimize_h2_producer's fixed-capacity operational LP).
 
-No investment-cost data exists anywhere in this project or in the vendored Project 3
-dispatch engine (``economic_dispatch/``) -- both are dispatch-only. Every EUR figure
-below is a placeholder, order-of-magnitude, circa-2030 ballpark (IRENA/IEA/BNEF-style),
-NOT a real quote -- same "ASSUMPTION" convention ``economic_dispatch/config.py`` already
-uses for its own assumptions. Replace with real figures before using this for anything
-beyond a methodology demonstration. See ``Formulation.md`` SS4.3.
+``CANDIDATE_CATALOG`` below is sourced from ``Help/Candidates (Edited).docx``'s
+candidate-product table (2030 CAPEX/lifetime columns -- the docx also has a
+"current"-year column, not used here per user instruction) -- four discrete,
+named real-world product sizes per asset, each with its own absolute CAPEX (already
+bundling power + energy cost for battery/tank, no separate EUR/MW vs. EUR/MWh split
+needed) and design lifetime. This replaced an earlier placeholder/synthetic
+CAPEX model (single blended EUR/MW figure per asset, candidate grid centered on
+today's rank-derived default +/- an offset array) -- see git history around
+2026-08-06 to restore that approach. See ``Formulation.md`` SS4.2/SS4.3.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-
-from economic_dispatch.config import RunConfig
-
-_DEFAULTS = RunConfig()
+from typing import NamedTuple
 
 ASSETS = ["electrolyser_mw", "wind_mw", "pv_mw", "battery_mw", "tank_mw"]
 
 
+class AssetCandidate(NamedTuple):
+    """One discrete candidate product for an asset -- MW (and, for battery/tank,
+    MWh), absolute CAPEX (EUR), and design lifetime (years). Straight from one row
+    of ``Help/Candidates (Edited).docx``'s table."""
+    mw: float
+    capex_eur: float
+    lifetime_years: float
+    mwh: float | None = None
+
+
+# 2030 CAPEX/lifetime columns from Help/Candidates (Edited).docx. Every asset has
+# exactly 4 candidates, sorted by MW ascending -- h2_planning/master.py::build_master
+# sizes the one-hot selection variable's candidate dimension k off
+# len(cand_mw[countries[0]][ASSETS[0]]), a single shared k axis across every asset,
+# so all five lists must stay equal length. Battery/tank MWh here (each asset's own
+# power:energy ratio varies candidate-to-candidate -- e.g. battery is 2h at the two
+# smaller sizes but 4h at the two larger ones) is NOT separately enforced by the
+# subproblem LP, which still sizes MWh off optimize_h2_producer.py's fixed
+# h2_producer_{battery,tank}_duration_hours (2h/24h) regardless of which candidate
+# was nominally selected -- a known simplification, see Formulation.md SS4.3.1.
+CANDIDATE_CATALOG: dict[str, list[AssetCandidate]] = {
+    "electrolyser_mw": [
+        AssetCandidate(mw=5.0, capex_eur=5_210_000.0, lifetime_years=25.0),
+        AssetCandidate(mw=20.0, capex_eur=18_500_000.0, lifetime_years=25.0),
+        AssetCandidate(mw=50.0, capex_eur=38_600_000.0, lifetime_years=25.0),
+        AssetCandidate(mw=100.0, capex_eur=65_500_000.0, lifetime_years=25.0),
+    ],
+    "wind_mw": [
+        AssetCandidate(mw=5.0, capex_eur=6_640_000.0, lifetime_years=30.0),
+        AssetCandidate(mw=10.0, capex_eur=13_300_000.0, lifetime_years=30.0),
+        AssetCandidate(mw=50.0, capex_eur=66_400_000.0, lifetime_years=30.0),
+        AssetCandidate(mw=100.0, capex_eur=133_000_000.0, lifetime_years=30.0),
+    ],
+    "pv_mw": [
+        AssetCandidate(mw=5.0, capex_eur=2_500_000.0, lifetime_years=40.0),
+        AssetCandidate(mw=25.0, capex_eur=12_500_000.0, lifetime_years=40.0),
+        AssetCandidate(mw=50.0, capex_eur=25_000_000.0, lifetime_years=40.0),
+        AssetCandidate(mw=100.0, capex_eur=50_000_000.0, lifetime_years=40.0),
+    ],
+    "battery_mw": [
+        AssetCandidate(mw=2.0, mwh=4.0, capex_eur=1_130_000.0, lifetime_years=20.0),
+        AssetCandidate(mw=10.0, mwh=20.0, capex_eur=5_640_000.0, lifetime_years=20.0),
+        AssetCandidate(mw=20.0, mwh=80.0, capex_eur=20_600_000.0, lifetime_years=20.0),
+        AssetCandidate(mw=50.0, mwh=200.0, capex_eur=51_400_000.0, lifetime_years=20.0),
+    ],
+    "tank_mw": [
+        AssetCandidate(mw=1.0, mwh=16.7, capex_eur=950_000.0, lifetime_years=30.0),
+        AssetCandidate(mw=5.0, mwh=166.7, capex_eur=3_750_000.0, lifetime_years=30.0),
+        AssetCandidate(mw=20.0, mwh=666.7, capex_eur=14_000_000.0, lifetime_years=30.0),
+        AssetCandidate(mw=50.0, mwh=3_333.0, capex_eur=65_000_000.0, lifetime_years=30.0),
+    ],
+}
+
+
 @dataclass
 class CapexAssumptions:
-    """EUR/MW (and EUR/MWh where relevant) unit costs for the 5 Hydrogen Producer
-    assets, plus the discrete-candidate-grid and CAPEX-annualization parameters used by
-    the Benders capacity-planning master problem (``h2_planning/master.py``). Every
-    ``*_eur_*`` field is an ASSUMPTION -- a placeholder, not a real quote (see module
-    docstring)."""
+    """Candidate catalog (CAPEX + lifetime, per asset) plus the annualization/budget
+    parameters used by the Benders capacity-planning master problem
+    (``h2_planning/master.py``). ``catalog`` defaults to ``CANDIDATE_CATALOG`` above
+    (Help/Candidates (Edited).docx's 2030 column) -- override it to substitute a
+    different candidate set (e.g. the docx's "current"-year column, or real vendor
+    quotes) without touching any other code."""
 
-    electrolyser_eur_per_mw: float = 600_000.0
-    wind_eur_per_mw: float = 1_300_000.0
-    pv_eur_per_mw: float = 600_000.0
-    battery_power_eur_per_mw: float = 150_000.0
-    battery_energy_eur_per_mwh: float = 150_000.0
-    tank_power_eur_per_mw: float = 50_000.0
-    tank_energy_eur_per_mwh: float = 25_000.0
-
-    candidate_offsets_mw: dict[str, list[float]] = field(default_factory=lambda: {
-        "electrolyser_mw": [-8.0, -4.0, 0.0, 4.0, 8.0],
-        "wind_mw": [-4.0, -2.0, 0.0, 2.0, 4.0],
-        "pv_mw": [-1.0, -0.5, 0.0, 0.5, 1.0],
-        "battery_mw": [-2.0, -1.0, 0.0, 1.0, 2.0],
-        "tank_mw": [-2.0, -1.0, 0.0, 1.0, 2.0],
-    })
-    min_candidate_mw: float = 0.5
-
-    candidate_grid_mw: list[float] | None = None
-
-    candidate_span_above_default_mw: float | None = None
-    candidate_step_mw: float | None = None
-
-    default_mw_override: dict[str, float] | None = None
+    catalog: dict[str, list[AssetCandidate]] = field(default_factory=lambda: CANDIDATE_CATALOG)
 
     discount_rate: float = 0.05
-    lifetime_years: dict[str, float] = field(default_factory=lambda: {
-        "electrolyser_mw": 20,
-        "wind_mw": 25,
-        "pv_mw": 30,
-        "battery_mw": 15,
-        "tank_mw": 30,
-    })
-
     default_budget_eur: float = 500_000_000.0
     theta_lower_bound_eur: float = -1e8
+
+    lifetime_years: dict[str, float] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.lifetime_years = self._lifetime_years_from_catalog()
+
+    def _lifetime_years_from_catalog(self) -> dict[str, float]:
+        """Each asset's lifetime -- constant across its candidates in ``catalog``
+        (true for the 2030 docx data). Raises if a substituted catalog varies
+        lifetime WITHIN an asset, since the master's per-asset CRF (below) can't
+        represent that."""
+        out = {}
+        for a in ASSETS:
+            years = {c.lifetime_years for c in self.catalog[a]}
+            if len(years) != 1:
+                raise ValueError(f"{a}: candidates have mixed lifetimes {sorted(years)} -- "
+                                 f"the master's per-asset CRF can't represent that; set "
+                                 f"capex_cfg.lifetime_years[{a!r}] explicitly instead")
+            out[a] = years.pop()
+        return out
 
     @staticmethod
     def _crf(r: float, n: float) -> float:
@@ -72,21 +117,7 @@ class CapexAssumptions:
 
     def capital_recovery_factors(self) -> dict[str, float]:
         """Per-asset CRF, using the shared ``discount_rate`` and each asset's own
-        ``lifetime_years`` entry."""
+        ``lifetime_years`` entry (defaults from the catalog; override ``lifetime_years``
+        directly, e.g. via ``plan_h2_capacity.py --lifetime-years``, for a different
+        service-life assumption without touching the CAPEX catalog itself)."""
         return {a: self._crf(self.discount_rate, n) for a, n in self.lifetime_years.items()}
-
-    def effective_unit_cost_eur_per_mw(self) -> dict[str, float]:
-        """Collapse each asset to ONE EUR/MW figure for the master's linear cost --
-        battery/tank fold in their energy-cost portion via the SAME fixed MW -> MWh
-        duration ratio ``optimize_h2_producer.py`` itself uses
-        (``h2_producer_{battery,tank}_duration_hours``), since only MW is discretized
-        here (Formulation.md SS4.2)."""
-        return {
-            "electrolyser_mw": self.electrolyser_eur_per_mw,
-            "wind_mw": self.wind_eur_per_mw,
-            "pv_mw": self.pv_eur_per_mw,
-            "battery_mw": (self.battery_power_eur_per_mw
-                          + _DEFAULTS.h2_producer_battery_duration_hours * self.battery_energy_eur_per_mwh),
-            "tank_mw": (self.tank_power_eur_per_mw
-                       + _DEFAULTS.h2_producer_tank_duration_hours * self.tank_energy_eur_per_mwh),
-        }

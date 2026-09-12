@@ -8,26 +8,41 @@ under one system-wide CAPEX budget, by iterating between:
   asset per country, minimizing annualized CAPEX + a per-country recourse variable
   (``theta``), subject to one-hot candidate selection and the raw (unannualized)
   budget constraint;
-* per-country LP SUBPROBLEMS -- ``optimize_h2_producer.solve(capacities=...,
-  return_duals=True)`` -- that price each trial capacity vector using that country's
-  OWN trained proxy (Formulation.md SS1), by default over the FULL calendar year (SS2.5's
-  documented single-day-scope pitfall), or on ``--rep-days-per-month`` representative
-  days/month instead (weighted to approximate the full year, SS2.6) for a much faster
-  but approximate subproblem, and hand back duals used to tighten theta's cut for the
-  next master iteration.
+* ONE JOINT SUBPROBLEM per iteration (``optimize_h2_producer.solve_joint``) -- every
+  included country solved TOGETHER in a single linopy model, sharing one downstream-
+  demand POOL: each country's flat BASELINE share (``demand_base``, no hour index) is a
+  free variable the subproblem decides (bounded by that country's own electrolyser
+  capacity), with the baselines across all countries summing to a fixed total
+  (``--joint-pool-mw``) -- redistributed toward whichever built electrolyser sees the
+  most favorable price signal. On top of that baseline, each country's REALIZED hourly
+  demand may additionally shift +/-20% (``solve_joint``'s ``demand_flex_pct``, default
+  0.20), net-zero within each representative day -- so the realized cross-country total
+  at any single hour is no longer pinned exactly to ``--joint-pool-mw``, only each
+  country's own baseline and its own per-day net shift are. Duals from this joint solve
+  become Benders optimality-cut coefficients, one cut per country per iteration.
 
-Subproblems are solved SEQUENTIALLY, one LP per included country per iteration (~45-50s
-each for a full-year DE00 solve, well under 1s for a few representative days/month) -- a
-full 13-country run with the exact full-year subproblem can take 15-30+ minutes
-depending on how many iterations it takes to close the gap;
-``--rep-days-per-month`` cuts that roughly in proportion to how many fewer hours each
-subproblem solves. See ``Formulation.md`` SS4 for the full derivation and known
-limitations (placeholder CAPEX figures, LP-degeneracy-driven weak-but-valid cuts).
+wind/PV/battery/tank can only be selected for a country that ALSO selected a positive
+electrolyser candidate that iteration (``h2_planning.build_master``'s
+``require_electrolyser_for_others``, unconditionally on here) -- a country skipping the
+electrolyser gets every other asset forced to 0 MW too, since this facility is a
+Hydrogen Producer, not a standalone merchant power plant.
+
+The electricity grid and H2 pipeline exchange connections (every country's ``x_grid``/
+``x_h2``) are UNLIMITED here -- this planning pipeline always passes
+``grid_cap_mw=h2_cap_mw=float("inf")`` into ``solve_joint``, rather than leaving it at
+``None`` (which would fall back to RunConfig's real 40/20 MW physical caps).
+``optimize_h2_producer.solve``/``solve_joint`` called directly (e.g. Formulation.md
+SS2/SS3's backtest) are unaffected -- their own default is still the real 40/20 MW cap.
+
+``--rep-days-per-month`` is required (``solve_joint`` has no full-year contiguous
+mode) -- subproblems are solved on N representative days/month (weighted to
+approximate the full year, Formulation.md SS2.6) rather than every one of the 8,760
+hours. See ``Formulation.md`` SS4 for the full derivation and known limitations
+(candidate-catalog CAPEX sourcing, LP-degeneracy-driven weak-but-valid cuts).
 
 Usage:
-    python plan_h2_capacity.py --countries DE,FR,PL --budget 500000000
-    python plan_h2_capacity.py --all --budget 1000000000 --max-iters 40
-    python plan_h2_capacity.py --countries DE,FR --rep-days-per-month 3
+    python plan_h2_capacity.py --countries DE,FR,PL --rep-days-per-month 1 --joint-pool-mw 100
+    python plan_h2_capacity.py --all --no-budget --rep-days-per-month 1 --joint-pool-mw 300
 """
 from __future__ import annotations
 
@@ -35,15 +50,17 @@ import argparse
 import time
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 import optimize_h2_producer as ohp
 import h2_planning as hp
+from economic_dispatch.config import RunConfig
 from h2_planning.candidates import default_sizing_and_zones
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "outputs"
+
+UNLIMITED_EXCHANGE_MW = float("inf")
 
 
 def eligible_countries() -> list[str]:
@@ -52,16 +69,24 @@ def eligible_countries() -> list[str]:
 
 
 def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_tol: float,
-                capex_cfg: hp.CapexAssumptions, quiet_solver: bool = True,
-                rep_days_per_month: int | None = None, downstream_load_mw: float | None = None,
-                downstream_load_flex_pct: float | None = None,
-                require_electrolyser_for_others: bool = False):
-    default_mw, cand_mw, host_zone = hp.build_candidates(countries, capex_cfg)
-    unit_cost = capex_cfg.effective_unit_cost_eur_per_mw()
+                capex_cfg: hp.CapexAssumptions, joint_pool_mw: float, rep_days_per_month: int,
+                quiet_solver: bool = True):
+    """Every iteration solves ALL of ``countries`` TOGETHER in one joint linopy model
+    (``optimize_h2_producer.solve_joint``), sharing a fixed ``joint_pool_mw`` MW/hr
+    downstream-demand pool -- see module docstring. Automatically floors the master's
+    aggregate electrolyser capacity at ``joint_pool_mw /
+    RunConfig().h2_producer_electrolyser_efficiency`` (``h2_planning.build_master``'s
+    ``min_total_electrolyser_mw``): without it, iteration 1's all-skip master proposal
+    would make the joint subproblem infeasible (a 0-capacity fleet can't supply any
+    pool demand at all). Also unconditionally passes
+    ``require_electrolyser_for_others=True`` -- wind/PV/battery/tank can only be
+    selected for a country that also selected a positive electrolyser candidate that
+    iteration."""
+    default_mw, cand_mw, cand_capex, host_zone = hp.build_candidates(countries, capex_cfg)
     crf = capex_cfg.capital_recovery_factors()
 
     if budget is not None:
-        cheapest_total = sum(min(cand_mw[c][a]) * unit_cost[a] for c in countries for a in hp.ASSETS)
+        cheapest_total = sum(min(cand_capex[c][a]) for c in countries for a in hp.ASSETS)
         if cheapest_total > budget:
             print(f"NOTE: budget {budget:,.0f} EUR is below the cheapest all-assets-built "
                  f"combination ({cheapest_total:,.0f} EUR) for {countries} -- expect some "
@@ -71,12 +96,24 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     edf = ohp.enriched_elec_df()
     hdf = ohp.enriched_h2_df()
 
-    m = hp.build_master(countries, cand_mw, unit_cost, budget, crf, capex_cfg.theta_lower_bound_eur,
-                        downstream_load_mw=downstream_load_mw,
-                        require_electrolyser_for_others=require_electrolyser_for_others)
+    eta_ely = RunConfig().h2_producer_electrolyser_efficiency
+    min_total_electrolyser_mw = joint_pool_mw / eta_ely
+    max_grid_total = sum(max(cand_mw[c]["electrolyser_mw"]) for c in countries)
+    if min_total_electrolyser_mw > max_grid_total:
+        raise ValueError(f"joint_pool_mw={joint_pool_mw:g} needs >= {min_total_electrolyser_mw:.1f} MW "
+                         f"of aggregate electrolyser capacity (at {eta_ely:.0%} efficiency), but the "
+                         f"candidate grids across {countries} only go up to {max_grid_total:.1f} MW total "
+                         f"-- widen the electrolyser candidate grid or lower --joint-pool-mw")
+    print(f"Joint shared-pool mode: {joint_pool_mw:g} MW/hr across {countries}, "
+         f"min_total_electrolyser_mw floor = {min_total_electrolyser_mw:.1f} MW")
 
-    best_ub, best_capacities, best_capex = float("inf"), None, None
+    m = hp.build_master(countries, cand_mw, cand_capex, budget, crf, capex_cfg.theta_lower_bound_eur,
+                        min_total_electrolyser_mw=min_total_electrolyser_mw,
+                        require_electrolyser_for_others=True)
+
+    best_ub, best_capacities, best_capex, best_capex_by_asset = float("inf"), None, None, None
     log = []
+    per_country_log = {c: [] for c in countries}
     gap = float("inf")
     for it in range(1, max_iters + 1):
         status, cond = m.solve(solver_name="highs", output_flag=False)
@@ -85,31 +122,27 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
         cap_star = hp.extract_capacities(m, countries, cand_mw)
         lb = float(m.objective.value)
 
-        total_Q = 0.0
         t_sub = time.time()
-        for c in countries:
-            if rep_days_per_month is not None:
-                out = ohp.solve(host_zone[c], rep_days_per_month=rep_days_per_month,
-                                capacities=cap_star[c], return_duals=True,
-                                downstream_load_mw=downstream_load_mw,
-                                downstream_load_flex_pct=downstream_load_flex_pct,
-                                edf=edf, hdf=hdf, quiet=quiet_solver)
-            else:
-                out = ohp.solve(host_zone[c], 1, 364, capacities=cap_star[c], return_duals=True,
-                                downstream_load_mw=downstream_load_mw,
-                                downstream_load_flex_pct=downstream_load_flex_pct,
-                                edf=edf, hdf=hdf, quiet=quiet_solver)
-            total_Q += out.attrs["objective"]
-            hp.add_optimality_cut(m, c, it, out.attrs["objective"], out.attrs["cut_coeffs"],
-                                  cap_star[c], cand_mw)
+        zones = [host_zone[c] for c in countries]
+        caps_by_zone = {host_zone[c]: cap_star[c] for c in countries}
+        result = ohp.solve_joint(zones, caps_by_zone, rep_days_per_month, joint_pool_mw,
+                                 return_duals=True, grid_cap_mw=UNLIMITED_EXCHANGE_MW,
+                                 h2_cap_mw=UNLIMITED_EXCHANGE_MW, edf=edf, hdf=hdf, quiet=quiet_solver)
+        total_Q = float(result["objective"])
+        Q_by_country = {c: result["objective_by_zone"][host_zone[c]] for c in countries}
+        mu_by_country = {c: result["cut_coeffs"][host_zone[c]] for c in countries}
+        hp.add_optimality_cut(m, countries, it, Q_by_country, mu_by_country, cap_star, cand_mw)
         sub_s = time.time() - t_sub
 
-        raw_capex = sum(cap_star[c][a] * unit_cost[a] for c in countries for a in hp.ASSETS)
-        annualized_capex = sum(cap_star[c][a] * unit_cost[a] * crf[a]
-                               for c in countries for a in hp.ASSETS)
+        capex_star = hp.extract_capex(m, countries, cand_capex)
+        for c in countries:
+            per_country_log[c].append({"iter": it, "objective": result["objective_by_zone"][host_zone[c]],
+                                       "capex": sum(capex_star[c].values()), "capacities": dict(cap_star[c])})
+        raw_capex = sum(capex_star[c][a] for c in countries for a in hp.ASSETS)
+        annualized_capex = sum(capex_star[c][a] * crf[a] for c in countries for a in hp.ASSETS)
         ub = annualized_capex + total_Q
         if ub < best_ub:
-            best_ub, best_capacities, best_capex = ub, cap_star, raw_capex
+            best_ub, best_capacities, best_capex, best_capex_by_asset = ub, cap_star, raw_capex, capex_star
         gap = (best_ub - lb) / max(abs(best_ub), 1e-6)
         log.append({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
                     "subproblems_seconds": round(sub_s, 1)})
@@ -122,7 +155,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
         print(f"WARNING: reached --max-iters={max_iters} without closing the gap "
              f"(final gap {gap:.4f}) -- results below are the best FOUND, not proven optimal")
 
-    return best_capacities, best_capex, best_ub, pd.DataFrame(log), host_zone, edf, hdf
+    return (best_capacities, best_capex, best_ub, pd.DataFrame(log), host_zone, edf, hdf,
+           per_country_log, best_capex_by_asset)
 
 
 def main() -> None:
@@ -144,39 +178,26 @@ def main() -> None:
     ap.add_argument("--discount-rate", type=float, default=None, help="for the capital recovery factor")
     ap.add_argument("--lifetime-years", type=float, default=None,
                     help="capital recovery factor project life, applied uniformly to every asset "
-                         "(default: each asset's own CapexAssumptions.lifetime_years entry, 20yr for "
-                         "all today -- edit that dict directly for per-asset lifetimes)")
+                         "(default: each asset's own CapexAssumptions.lifetime_years entry, sourced "
+                         "from CANDIDATE_CATALOG's 2030 column -- 25/30/40/20/30yr for "
+                         "electrolyser/wind/PV/battery/tank today -- edit capex_cfg.lifetime_years "
+                         "directly for a different per-asset lifetime)")
     ap.add_argument("--output", type=str, default=str(OUT / "plan"), help="output file prefix")
     ap.add_argument("--export-schedules", action="store_true",
-                    help="also re-solve each included country at the final chosen "
-                         "capacities and dump its full-year (or, with --rep-days-per-month, "
-                         "representative-day) schedule")
-    ap.add_argument("--rep-days-per-month", type=int, default=None,
-                    help="solve each Benders subproblem on N representative days/month "
-                         "(1-29, weighted to approximate the full year) instead of the full "
-                         "364-day year -- much faster per iteration, at the cost of the "
-                         "subproblem's objective/cut coefficients being an approximation "
-                         "rather than exact (see optimize_h2_producer.solve's docstring and "
-                         "Formulation.md SS2.6/SS4.5). Default: full 364-day year, unchanged.")
-    ap.add_argument("--downstream-load-mw", type=float, default=None,
-                    help="fix every country's H2 Producer downstream demand baseline to this "
-                         "exact MW figure, decoupled from electrolyser capacity (default: "
-                         "baseline scales with electrolyser capacity, the original behavior). "
-                         "Also adds a master constraint forcing electrolyser capacity >= this "
-                         "value for every country (h2_planning/master.py's "
-                         "downstream_load_mw) -- see optimize_h2_producer.solve's docstring.")
-    ap.add_argument("--downstream-load-flex-pct", type=float, default=None,
-                    help="demand flexibility as a fraction of --downstream-load-mw (e.g. 0.2 "
-                         "= +/-20%%); only used together with --downstream-load-mw (default: "
-                         "reuses RunConfig's own h2_producer_demand_flex_pct)")
-    ap.add_argument("--require-electrolyser-for-others", action="store_true",
-                    help="wind/PV/battery/tank can only be selected for a country that also "
-                         "selected a positive electrolyser candidate -- skipping the electrolyser "
-                         "forces every other asset to be skipped too (h2_planning/master.py's "
-                         "require_electrolyser_for_others). Vacuous/redundant whenever "
-                         "--downstream-load-mw is also given, since that already forces the "
-                         "electrolyser on everywhere -- only bites when the electrolyser itself "
-                         "is optional.")
+                    help="also re-solve at the final chosen capacities and dump each "
+                         "included country's representative-day schedule")
+    ap.add_argument("--rep-days-per-month", type=int, required=True,
+                    help="REQUIRED -- solve every joint subproblem on N representative "
+                         "days/month (1-29, weighted to approximate the full year) -- "
+                         "optimize_h2_producer.solve_joint has no full-year contiguous mode "
+                         "(see optimize_h2_producer.solve's docstring and Formulation.md "
+                         "SS2.6/SS4.5).")
+    ap.add_argument("--joint-pool-mw", type=float, required=True,
+                    help="REQUIRED -- total downstream H2 demand (MW/hr) shared across every "
+                         "included country every hour -- optimize_h2_producer.solve_joint's "
+                         "pool_mw. Each country's own SHARE of this fixed total is a free "
+                         "variable the subproblem decides (bounded by that country's own "
+                         "electrolyser capacity); the total itself never changes hour to hour.")
     args = ap.parse_args()
 
     capex_cfg = hp.CapexAssumptions()
@@ -201,23 +222,20 @@ def main() -> None:
     print(f"Budget: {budget_str} | CRF @ {capex_cfg.discount_rate:.1%} discount: "
          f"{crf_str} -- see Formulation.md SS4.3 for why CAPEX is annualized in the objective but not "
          f"the budget")
-
-    if args.rep_days_per_month is not None:
-        print(f"Subproblems: {args.rep_days_per_month} representative day(s)/month "
-             f"({args.rep_days_per_month * 12} days solved, weighted to approximate the full year) "
-             f"-- faster but approximate; omit --rep-days-per-month for the exact full-year subproblem")
-    if args.downstream_load_mw is not None:
-        flex_note = f"+/-{args.downstream_load_flex_pct:.0%}" if args.downstream_load_flex_pct is not None else "default flex"
-        print(f"Downstream load: fixed at {args.downstream_load_mw:g} MW ({flex_note}) for every "
-             f"country, decoupled from electrolyser sizing; electrolyser capacity forced >= "
-             f"{args.downstream_load_mw:g} MW per country (master constraint)")
+    print(f"Subproblems: {args.rep_days_per_month} representative day(s)/month "
+         f"({args.rep_days_per_month * 12} days solved, weighted to approximate the full year)")
+    print(f"Joint mode: ALL countries solved together per iteration, sharing a "
+         f"{args.joint_pool_mw:g} MW/hr downstream-demand pool (fixed baseline total, "
+         f"free per-country split, +/-20% hourly flex net-zero per day)")
+    print(f"Exchange caps: grid=unlimited, H2 pipeline=unlimited")
+    print("Require-electrolyser-for-others: ON -- wind/PV/battery/tank only buildable "
+         "alongside a positive electrolyser candidate")
 
     t0 = time.time()
-    best_capacities, best_capex, best_ub, log_df, host_zone, edf, hdf = run_benders(
+    (best_capacities, best_capex, best_ub, log_df, host_zone, edf, hdf,
+    per_country_log, best_capex_by_asset) = run_benders(
         countries, budget, args.max_iters, args.gap_tol, capex_cfg,
-        rep_days_per_month=args.rep_days_per_month, downstream_load_mw=args.downstream_load_mw,
-        downstream_load_flex_pct=args.downstream_load_flex_pct,
-        require_electrolyser_for_others=args.require_electrolyser_for_others)
+        joint_pool_mw=args.joint_pool_mw, rep_days_per_month=args.rep_days_per_month)
     elapsed = time.time() - t0
 
     print(f"\nDone in {elapsed:.1f}s. Final capacities:")
@@ -242,19 +260,13 @@ def main() -> None:
     print(f"\nwrote {out_prefix}_capacities.csv, {out_prefix}_convergence.csv")
 
     if args.export_schedules:
+        zones = [host_zone[c] for c in countries]
+        caps_by_zone = {host_zone[c]: best_capacities[c] for c in countries}
+        final = ohp.solve_joint(zones, caps_by_zone, args.rep_days_per_month, args.joint_pool_mw,
+                                return_duals=False, grid_cap_mw=UNLIMITED_EXCHANGE_MW,
+                                h2_cap_mw=UNLIMITED_EXCHANGE_MW, edf=edf, hdf=hdf, quiet=True)
         for c in countries:
-            if args.rep_days_per_month is not None:
-                out = ohp.solve(host_zone[c], rep_days_per_month=args.rep_days_per_month,
-                                capacities=best_capacities[c], quiet=True,
-                                downstream_load_mw=args.downstream_load_mw,
-                                downstream_load_flex_pct=args.downstream_load_flex_pct,
-                                edf=edf, hdf=hdf)
-            else:
-                out = ohp.solve(host_zone[c], 1, 364, capacities=best_capacities[c], quiet=True,
-                                downstream_load_mw=args.downstream_load_mw,
-                                downstream_load_flex_pct=args.downstream_load_flex_pct,
-                                edf=edf, hdf=hdf)
-            out.to_csv(f"{out_prefix}_schedule_{c}.csv", index=False)
+            final["schedules"][host_zone[c]].to_csv(f"{out_prefix}_schedule_{c}.csv", index=False)
         print(f"wrote {out_prefix}_schedule_<country>.csv for {len(countries)} countries")
 
 

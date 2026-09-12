@@ -1,6 +1,8 @@
-"""Discrete candidate capacity grids for H2 Producer capacity planning, centered on
-today's Project-3-rank-derived sizing (``economic_dispatch/model.py::_h2_producer_sizing``).
-See ``Formulation.md`` SS4.2.
+"""Discrete candidate capacity grids for H2 Producer capacity planning -- one fixed
+real-world product catalog per asset (``config.CANDIDATE_CATALOG``, same MW/CAPEX for
+every country), plus today's Project-3-rank-derived sizing
+(``economic_dispatch/model.py::_h2_producer_sizing``) kept only as a reference value
+for display (no longer used to place the candidate grid). See ``Formulation.md`` SS4.2.
 """
 from __future__ import annotations
 
@@ -32,54 +34,27 @@ def default_sizing_and_zones(zones_db=DEFAULT_ZONES_DB, networks_db=DEFAULT_NETW
     return sizing, main_zones
 
 
-def build_candidate_grid(default_mw: float, asset: str, cfg: CapexAssumptions) -> np.ndarray:
-    """Candidate MW values for ``asset``, in priority order:
-
-    1. ``cfg.candidate_grid_mw`` set -> that ABSOLUTE MW list, as-is -- same grid for
-       every asset and every country, ignoring ``default_mw`` entirely (the country's
-       default is still recorded separately and shown as a reference tick, just no
-       longer used to place the grid).
-    2. ``cfg.candidate_span_above_default_mw``/``candidate_step_mw`` both set -> a
-       ONE-SIDED grid starting AT ``default_mw`` and stepping up by ``candidate_step_mw``
-       until the span is covered, e.g. default=5, span=2, step=0.5 ->
-       ``[5, 5.5, 6, 6.5, 7]``. Never goes below ``default_mw`` (unlike offsets below,
-       which are symmetric) -- for a "must build at least the default" style run this
-       guarantees every candidate already satisfies that floor, not just the default
-       itself.
-    3. Otherwise (original default): ``default_mw`` + ``cfg.candidate_offsets_mw[asset]``
-       (a fixed, per-asset array of MW offsets, symmetric around default), floored at
-       ``min_candidate_mw`` so no candidate is <= 0.
-
-    Note: for a small-default asset (e.g. some country's ``pv_mw`` near the low end),
-    the offset-based floor (mode 3) can make two of the lowest candidates collapse to
-    the same clipped value -- harmless, since one-hot selection still picks exactly one
-    candidate, just with a wasted duplicate in the grid."""
-    if cfg.candidate_grid_mw is not None:
-        return np.asarray(cfg.candidate_grid_mw, dtype=float)
-    if cfg.candidate_span_above_default_mw is not None and cfg.candidate_step_mw is not None:
-        n = int(round(cfg.candidate_span_above_default_mw / cfg.candidate_step_mw)) + 1
-        return default_mw + np.arange(n) * cfg.candidate_step_mw
-    offsets = np.asarray(cfg.candidate_offsets_mw[asset], dtype=float)
-    return np.maximum(cfg.min_candidate_mw, default_mw + offsets)
-
-
 def build_candidates(countries: list[str], capex_cfg: CapexAssumptions | None = None,
                      zones_db=DEFAULT_ZONES_DB, networks_db=DEFAULT_NETWORKS_DB):
-    """For the given 2-letter ``countries``, return ``(default_mw, cand_mw, host_zone)``:
+    """For the given 2-letter ``countries``, return ``(default_mw, cand_mw, cand_capex,
+    host_zone)``:
 
     * ``default_mw[c][a]`` -- today's rank-derived MW for asset ``a`` (see
-      ``config.ASSETS``), country ``c`` -- or, if ``capex_cfg.default_mw_override`` is
-      set, that FIXED value for every country alike (still per-asset, no longer
-      per-country).
-    * ``cand_mw[c][a]`` -- that asset's candidate ``np.ndarray`` (see
-      ``build_candidate_grid``).
+      ``config.ASSETS``), country ``c`` -- reference value only (shown as a tick in the
+      artifact UI), no longer used to place the candidate grid.
+    * ``cand_mw[c][a]`` -- that asset's candidate MW ``np.ndarray``, straight off
+      ``capex_cfg.catalog[a]`` (SAME for every country -- this catalog has no
+      per-country cost/size variation).
+    * ``cand_capex[c][a]`` -- that asset's candidate absolute CAPEX (EUR) ``np.ndarray``,
+      same shape/order as ``cand_mw[c][a]`` -- ``h2_planning.master.build_master`` prices
+      candidate ``k`` at ``cand_capex[c][a][k]`` directly (no EUR/MW multiplication;
+      the catalog's economies-of-scale are real and non-linear in MW, see
+      ``Formulation.md`` SS4.3).
     * ``host_zone[c]`` -- ``c``'s main H2 zone (what ``optimize_h2_producer.solve()``
       needs as its ``zone`` argument).
 
     Raises ``ValueError`` naming the eligible-country list if any requested country has
-    no Hydrogen Producer sizing (no H2 demand, or simply not a CORE-region country) --
-    still checked even under ``default_mw_override``, since ``host_zone`` always comes
-    from the rank engine's ``main_zones``."""
+    no Hydrogen Producer sizing (no H2 demand, or simply not a CORE-region country)."""
     capex_cfg = capex_cfg or CapexAssumptions()
     sizing, main_zones = default_sizing_and_zones(zones_db, networks_db)
     missing = [c for c in countries if c not in sizing]
@@ -87,11 +62,12 @@ def build_candidates(countries: list[str], capex_cfg: CapexAssumptions | None = 
         raise ValueError(f"no Hydrogen Producer sizing for {missing} -- eligible "
                          f"countries: {sorted(sizing)}")
 
-    if capex_cfg.default_mw_override is not None:
-        default_mw = {c: dict(capex_cfg.default_mw_override) for c in countries}
-    else:
-        default_mw = {c: {a: float(sizing[c][a]) for a in ASSETS} for c in countries}
-    cand_mw = {c: {a: build_candidate_grid(default_mw[c][a], a, capex_cfg) for a in ASSETS}
-              for c in countries}
+    default_mw = {c: {a: float(sizing[c][a]) for a in ASSETS} for c in countries}
+    cand_mw_shared = {a: np.asarray([cand.mw for cand in capex_cfg.catalog[a]], dtype=float)
+                      for a in ASSETS}
+    cand_capex_shared = {a: np.asarray([cand.capex_eur for cand in capex_cfg.catalog[a]], dtype=float)
+                         for a in ASSETS}
+    cand_mw = {c: dict(cand_mw_shared) for c in countries}
+    cand_capex = {c: dict(cand_capex_shared) for c in countries}
     host_zone = {c: main_zones[c] for c in countries}
-    return default_mw, cand_mw, host_zone
+    return default_mw, cand_mw, cand_capex, host_zone

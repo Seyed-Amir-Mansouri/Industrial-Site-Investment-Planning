@@ -32,44 +32,97 @@ network coupling the upstream dispatch engine solves.
 
 ```bash
 python optimize_h2_producer.py --zone DE00 --day 5
-python plan_h2_capacity.py --countries DE,FR,PL --budget 500000000
+python plan_h2_capacity.py --countries DE,FR,PL --rep-days-per-month 1 --joint-pool-mw 100
 ```
 
-Both support `--rep-days-per-month N` to solve on N representative days/month
-(weighted to approximate the full year) instead of the full 364-day year.
+`optimize_h2_producer.py`'s standalone `--day`/`--start-day`/`--end-day` CLI supports
+`--rep-days-per-month N` too, to solve on N representative days/month (weighted to
+approximate the full year) instead of a contiguous day range. `plan_h2_capacity.py`
+always solves every included country TOGETHER (`solve_joint`) on representative days —
+`--rep-days-per-month` is REQUIRED there, not optional (`solve_joint` has no full-year
+contiguous mode).
 
-CAPEX figures in `h2_planning/config.py` are placeholders, not real quotes.
+CAPEX/lifetime figures in `h2_planning/config.py::CANDIDATE_CATALOG` come from
+`Help/Candidates (Edited).docx`'s 2030 candidate-product table (four real-world MW
+sizes per asset, each own its own absolute CAPEX and lifetime) — a real cited source,
+not a vendor quote.
+
+### `plan_h2_capacity.py` flags
+
+Full, current list also always available via `python plan_h2_capacity.py --help`.
+
+**Scope**
+| Flag | Default | What it does |
+|---|---|---|
+| `--countries CC,CC,...` | — | Comma-separated 2-letter country codes, e.g. `DE,FR,PL` (mutually exclusive with `--all`) |
+| `--all` | — | Plan every eligible country |
+
+**Budget / CAPEX**
+| Flag | Default | What it does |
+|---|---|---|
+| `--budget EUR` | 500,000,000 | System-wide raw/unannualized CAPEX budget, shared across every included country |
+| `--no-budget` | off | Deactivate the budget constraint entirely — every country sizes purely off subproblem economics and annualized CAPEX |
+| `--discount-rate R` | 0.05 | Discount rate for the capital recovery factor |
+| `--lifetime-years N` | catalog's own (25/30/40/20/30yr for electrolyser/wind/PV/battery/tank) | Overrides EVERY asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
+
+**Subproblem / demand (both REQUIRED)**
+| Flag | What it does |
+|---|---|
+| `--rep-days-per-month N` | Solve the joint subproblem on N representative days/month (1–29, weighted to approximate the full year) — `solve_joint` has no full-year contiguous mode |
+| `--joint-pool-mw MW` | Total downstream H2 demand baseline (MW/hr), summed across every included country's own flat baseline (`demand_base`). Each country's SHARE of that fixed total is a free variable the joint subproblem decides (bounded by its own electrolyser capacity). Each country's ACTUAL hourly demand can then deviate ±20% from its own baseline every representative hour (`optimize_h2_producer.solve_joint`'s `demand_flex_pct`, default 0.20), with total upward and downward shifts netting to exactly zero PER COUNTRY PER REPRESENTATIVE DAY (a 24h cycle, same horizon as the battery/tank storage cyclic constraints — not an annual aggregate) — so the system-wide hourly total is no longer pinned to exactly `--joint-pool-mw` at every single hour, only each country's own baseline and its own per-day net shift are |
+
+Every country's subproblem is always solved TOGETHER, in one joint linopy model
+(`optimize_h2_producer.solve_joint`) — there's no independent-per-country mode anymore.
+wind/PV/battery/tank can only be built for a country that ALSO builds a positive
+electrolyser candidate that iteration (`h2_planning.build_master`'s
+`require_electrolyser_for_others`, unconditionally on) — skipping the electrolyser
+forces every other asset to 0 MW too, since this facility is a Hydrogen Producer, not a
+standalone merchant power plant. The electricity grid and H2 pipeline exchange
+connections are always UNLIMITED in this pipeline (`solve_joint`'s `grid_cap_mw`/
+`h2_cap_mw` are hardcoded to `float("inf")` here) — `optimize_h2_producer.solve`/
+`solve_joint` called directly (outside this pipeline) are unaffected and still default
+to `RunConfig`'s real 40/20 MW caps.
+
+**Solve control / output**
+| Flag | Default | What it does |
+|---|---|---|
+| `--max-iters N` | 30 | Benders iteration cap |
+| `--gap-tol G` | 0.01 (1%) | Relative Benders convergence gap |
+| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv`/`_convergence.csv`/(with `--export-schedules`) `_schedule_<country>.csv` |
+| `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each included country's representative-day schedule |
 
 ### How the Benders solve works
 
-Sizing all five assets (electrolyser, wind, PV, battery, H2 tank) for every country
-jointly, as one MILP with a full year of hourly LP dispatch variables per country,
-doesn't scale — so `plan_h2_capacity.py` splits it into a master problem and one
-subproblem per country, iterating between them:
+Sizing all five assets (electrolyser, wind, PV, battery, H2 tank) for every country at
+once, as one MILP with a full year of hourly LP dispatch variables per country, doesn't
+scale — so `plan_h2_capacity.py` splits it into a master problem and one JOINT
+subproblem (covering every included country together), iterating between them:
 
 1. **Master (MILP, `h2_planning/master.py`)** — picks one candidate MW value per
-   asset per country (binary one-hot over a 5-point grid), subject to the annualized,
-   system-wide CAPEX budget. Its objective is annualized CAPEX plus a per-country
-   profit stand-in (`theta`) that starts unconstrained and gets tightened every round
-   by the cuts below.
-2. **Subproblems (LP, one per country, reusing `optimize_h2_producer.solve`)** — for
-   the master's chosen capacities, solve the full-year hourly dispatch and return the
-   realized operating profit plus the dual values (shadow prices) on the capacity
-   constraints.
-3. **Cut generation** — each subproblem's profit and duals are turned into a Benders
-   optimality cut: a linear upper bound on that country's `theta`, expressed in the
-   master's binary capacity-choice variables (duals become the cut's coefficients,
+   asset per country (binary one-hot over `CANDIDATE_CATALOG`'s 4-product-per-asset
+   catalog — real MW sizes, each with its own absolute CAPEX and lifetime, see below),
+   subject to the annualized, system-wide CAPEX budget. Its objective is annualized
+   CAPEX plus a per-country profit stand-in (`theta`) that starts unconstrained and
+   gets tightened every round by the cuts below.
+2. **Joint subproblem (LP, every country in ONE linopy model, `optimize_h2_producer.
+   solve_joint`)** — for the master's chosen capacities, solves the shared-pool
+   representative-day dispatch (`--rep-days-per-month`/`--joint-pool-mw`, both
+   required) and returns each country's own realized operating profit plus the dual
+   values (shadow prices) on its own capacity constraints.
+3. **Cut generation** — each country's profit and duals are turned into its own
+   Benders optimality cut: a linear upper bound on that country's `theta`, expressed in
+   the master's binary capacity-choice variables (duals become the cut's coefficients,
    including a cross term for how electrolyser sizing affects the others). The cut is
    added back into the master.
-4. **Loop** — resolve the master with the new cut, resolve subproblems at the updated
-   capacities, and repeat until the master's `theta` upper bounds and the subproblems'
-   actual profits converge (or an iteration cap is hit).
+4. **Loop** — resolve the master with the new cuts, resolve the joint subproblem at the
+   updated capacities, and repeat until the master's `theta` upper bounds and the
+   subproblems' actual profits converge (or an iteration cap is hit).
 
-This avoids ever building one giant LP over all countries and all 8,760 hours at once
-— each iteration is a small MILP plus independent per-country LPs, which is what makes
-the discrete/binary capacity search tractable. See `Formulation.md` §4 for the full
-derivation of the cut coefficients (including the electrolyser cross-coupling term)
-and known limitations of the current implementation.
+This avoids ever building one giant MILP over all countries' asset choices AND all
+8,760 hours at once — each iteration is a small MILP plus one joint, representative-day
+LP, which is what makes the discrete/binary capacity search tractable. See
+`Formulation.md` §4 for the full derivation of the cut coefficients (including the
+electrolyser cross-coupling term) and known limitations of the current implementation.
 
 ## Structure
 

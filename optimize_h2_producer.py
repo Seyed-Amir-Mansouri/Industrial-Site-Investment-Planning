@@ -567,10 +567,25 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
         pv_cf_shaped = pv_cf_norm.reshape(n_days, HOURS_PER_DAY) if representative else pv_cf_norm
         mu_wind = float((m.dual["wind_cap"] * wind_cf_shaped).sum())
         mu_pv = float((m.dual["pv_cap"] * pv_cf_shaped).sum())
+        # Battery/tank MW also sets the INITIAL state of charge (batt_soc0/tank_soc0 =
+        # initial_soc_fraction * duration_hours * mw) -- the RHS of batt_balance_0/
+        # tank_balance_0 (and, when cyclic_storage is on, batt_cyclic/tank_cyclic too)
+        # depends on capacity too, a real second channel for d(objective)/d(mw) missing
+        # from this formula until 2026-09-11 -- see solve_joint's identical fix and
+        # h2_planning/master.py::add_optimality_cut's docstring for the verified repro
+        # (return_duals=True + fix_storage=True is rejected above, so cyclic_storage
+        # alone correctly matches whether batt_cyclic/tank_cyclic were even added).
+        batt_soc0_terms = float(m.dual["batt_balance_0"].sum())
+        tank_soc0_terms = float(m.dual["tank_balance_0"].sum())
+        if cfg.cyclic_storage:
+            batt_soc0_terms += float(m.dual["batt_cyclic"].sum())
+            tank_soc0_terms += float(m.dual["tank_cyclic"].sum())
         mu_battery = (float(m.dual["batt_dis_cap"].sum()) + float(m.dual["batt_ch_cap"].sum())
-                     + float(m.dual["batt_soc_cap"].sum()) * cfg.h2_producer_battery_duration_hours)
+                     + float(m.dual["batt_soc_cap"].sum()) * cfg.h2_producer_battery_duration_hours
+                     + batt_soc0_terms * cfg.initial_soc_fraction * cfg.h2_producer_battery_duration_hours)
         mu_tank = (float(m.dual["tank_dis_cap"].sum()) + float(m.dual["tank_ch_cap"].sum())
-                  + float(m.dual["tank_soc_cap"].sum()) * cfg.h2_producer_tank_duration_hours)
+                  + float(m.dual["tank_soc_cap"].sum()) * cfg.h2_producer_tank_duration_hours
+                  + tank_soc0_terms * cfg.initial_soc_fraction * cfg.h2_producer_tank_duration_hours)
         cut_coeffs = {"electrolyser_mw": mu_electrolyser, "wind_mw": mu_wind, "pv_mw": mu_pv,
                      "battery_mw": mu_battery, "tank_mw": mu_tank}
 
@@ -616,14 +631,16 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
 def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_month: int,
                 pool_mw: float, return_duals: bool = True,
                 grid_cap_mw: float | None = None, h2_cap_mw: float | None = None,
+                demand_flex_pct: float = 0.20,
                 edf: pd.DataFrame | None = None, hdf: pd.DataFrame | None = None,
                 quiet: bool = False) -> dict:
     """Joint multi-country H2 Producer LP: every zone in ``zones`` solved TOGETHER in
-    ONE linopy model, sharing a single hourly downstream-demand POOL
-    (``sum_zone demand_{zone,h} == pool_mw`` every hour) instead of each zone having
-    its own independent demand target. Everything else -- storage, RED III quota,
-    grid/pipeline exchange, GC buy/sell -- stays PER-ZONE/separable, exactly as
-    ``solve()``'s representative-day path; only ``demand`` is shared. Representative-day
+    ONE linopy model, sharing a single downstream-demand POOL (``sum_zone
+    demand_base_{zone} == pool_mw``, ONE constraint -- NOT per-hour, since
+    ``demand_base`` has no hour index, see below) instead of each zone having its own
+    independent demand target. Everything else -- storage, RED III quota, grid/pipeline
+    exchange, GC buy/sell -- stays PER-ZONE/separable, exactly as ``solve()``'s
+    representative-day path; only the demand baseline is shared. Representative-day
     horizon only (no contiguous mode -- this project's planning workflow never needs one
     for a multi-zone joint solve).
 
@@ -632,15 +649,42 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
     MW}}`` -- the trial capacity vector the Benders master proposed for every zone
     this iteration.
 
-    Each zone's downstream demand is bounded ``0 <= demand_{zone,h} <=
-    electrolyser_mw_zone * eta_ely`` every hour -- "the electrolyser must be big
-    enough for whatever downstream load it's asked to serve" holds BY CONSTRUCTION at
-    every hour (not just on average), and a zone with electrolyser_mw=0 (skipped by
-    the master) is automatically excluded from the pool (its demand pinned to 0) --
-    the pool constraint then redistributes ``pool_mw`` only across zones that actually
-    installed an electrolyser. This REPLACES the old fixed/coupled-to-capacity
-    ``downstream_load_mw`` demand mechanism entirely for this joint mode -- there is no
-    ``downstream_load_mw``/``downstream_load_flex_pct`` parameter here.
+    Demand is two decision layers, not one:
+
+    * ``demand_base_{zone}`` -- ONE value per zone (no hour index), $\\ge 0$. This is
+      what the pool constraint sums to ``pool_mw`` -- a zone with electrolyser_mw=0
+      (skipped by the master) still CAN take a positive share here in principle, but
+      the capacity ceiling below pins its realized demand to 0 every hour regardless,
+      so in practice the pool redistributes only across zones that actually installed
+      an electrolyser, same as before.
+    * ``shift_{zone,day,h}`` -- free (+/-) per zone AND representative hour, bounded
+      ``-demand_flex_pct * demand_base_zone <= shift_{zone,day,h} <= +demand_flex_pct *
+      demand_base_zone`` (default ``demand_flex_pct=0.20``, i.e. +/-20% of that zone's
+      OWN baseline, every representative hour independently) -- how much that zone's
+      REALIZED hour can deviate from its flat baseline. Net-zero PER ZONE PER
+      REPRESENTATIVE DAY (a 24h cycle, matching the battery/tank storage cyclic
+      constraints' own horizon, NOT an annual aggregate): ``sum_h shift_{zone,day,h}
+      == 0`` for every ``(zone, day)`` independently -- every MWh shifted up within one
+      representative day must be offset by shifting an equal MWh down within THAT SAME
+      day, for THAT SAME zone (no borrowing across days, no borrowing from other
+      zones' pool share, no net demand creation/destruction). Realized demand
+      ``demand_{zone,day,h} = demand_base_zone + shift_{zone,day,h}`` is what actually
+      appears in the H2 balance/RED III quota below, and is what's exported in the
+      schedule's "H2 Producer downstream demand (-) (MW)" column -- ``demand_base``/
+      ``shift`` themselves aren't separately exported today.
+
+    Realized demand is still bounded ``0 <= demand_{zone,day,h} <= electrolyser_mw_zone
+    * eta_ely`` every hour (redundant on the lower side given the two bullets above,
+    kept implicit rather than as an extra constraint) -- "the electrolyser must be big
+    enough for whatever it's asked to produce" still holds BY CONSTRUCTION every hour.
+    Because the ±20% band is per-zone and the net-zero constraint is per-zone-per-day
+    too (not system-wide), the REALIZED cross-zone total at any single hour is no
+    longer pinned to exactly ``pool_mw`` the way it was before this shift mechanism
+    existed -- only each zone's own baseline, and each zone's own per-day net shift,
+    are pinned. This REPLACES the old fixed/coupled-to-capacity ``downstream_load_mw``
+    demand mechanism entirely for this joint mode -- there is no ``downstream_load_mw``/
+    ``downstream_load_flex_pct`` parameter here (unrelated to ``demand_flex_pct``
+    above, which is this joint mode's own, differently-shaped flexibility knob).
 
     Returns ``{"objective": float, "objective_by_zone": {zone: float}, "schedules":
     {zone: DataFrame}, "cut_coeffs": {zone: {asset: mu}} or None, "gc_buy_mwh"/
@@ -733,12 +777,14 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
     x_h2 = m.add_variables(lower=-h2_cap, upper=h2_cap, coords=coords, name="x_h2")
 
     demand_upper = ely_mw_da * ely_eff_da
-    if return_duals:
-        demand = m.add_variables(coords=coords, name="demand")
-        m.add_constraints(demand >= 0.0, name="demand_lb")
-        m.add_constraints(demand <= demand_upper, name="demand_ub")
-    else:
-        demand = m.add_variables(lower=0.0, upper=demand_upper, coords=coords, name="demand")
+    demand_base = m.add_variables(lower=0.0, coords=[zone_idx], name="demand_base")
+    shift = m.add_variables(coords=coords, name="shift")
+    demand = m.add_variables(coords=coords, name="demand")
+    m.add_constraints(demand == demand_base + shift, name="demand_def")
+    m.add_constraints(demand <= demand_upper, name="demand_ub")
+    m.add_constraints(shift - demand_flex_pct * demand_base <= 0.0, name="shift_ub")
+    m.add_constraints(shift + demand_flex_pct * demand_base >= 0.0, name="shift_lb")
+    m.add_constraints(shift.sum("hid") == 0.0, name="shift_net_zero")
     ely_ren = m.add_variables(lower=0.0, coords=coords, name="ely_ren")
     gc_buy = m.add_variables(lower=0.0, coords=[zone_idx], name="gc_buy")
     gc_sell = m.add_variables(lower=0.0, coords=[zone_idx], name="gc_sell")
@@ -769,7 +815,7 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
         m.add_constraints(ely_eff_da * ((w * ely_ren).sum(["day", "hid"]) + gc_buy)
                           >= quota * (w * demand).sum(["day", "hid"]), name="red3_quota")
 
-    m.add_constraints(demand.sum("zone") == pool_mw, name="demand_pool")
+    m.add_constraints(demand_base.sum("zone") == pool_mw, name="demand_pool")
 
     cost = (-(w * p_elec_da * x_grid).sum() - (w * p_h2_da * x_h2).sum()
            + sto_cost * ((w * batt_ch).sum() + (w * batt_dis).sum()
@@ -793,10 +839,27 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
                              + (m.dual["demand_ub"] * ely_eff_da).sum(["day", "hid"]))
         mu_wind_da = (m.dual["wind_cap"] * wind_cf_norm_da).sum(["day", "hid"])
         mu_pv_da = (m.dual["pv_cap"] * pv_cf_norm_da).sum(["day", "hid"])
+        # Battery/tank MW also sets each representative day's INITIAL state of charge
+        # (batt_soc0_da/tank_soc0_da = initial_soc_fraction * duration_hours * mw), which
+        # is the RHS of batt_balance_0/tank_balance_0 (and, when cyclic_storage is on,
+        # batt_cyclic/tank_cyclic too) -- a real, second channel for d(objective)/d(mw)
+        # beyond the plain capacity bounds below. Omitting it (as this formula did until
+        # 2026-09-11) makes mu an incomplete/wrong subgradient, which can make the
+        # resulting Benders cut genuinely INVALID (violated by a later, true resolve) --
+        # reproduced directly with a 2-country run whose battery/tank swung from the
+        # catalog max to near-zero between iterations; see
+        # h2_planning/master.py::add_optimality_cut's docstring for the full repro.
+        batt_soc0_terms = m.dual["batt_balance_0"].sum("day")
+        tank_soc0_terms = m.dual["tank_balance_0"].sum("day")
+        if cfg0.cyclic_storage:
+            batt_soc0_terms = batt_soc0_terms + m.dual["batt_cyclic"].sum("day")
+            tank_soc0_terms = tank_soc0_terms + m.dual["tank_cyclic"].sum("day")
         mu_battery_da = (m.dual["batt_dis_cap"].sum(["day", "hid"]) + m.dual["batt_ch_cap"].sum(["day", "hid"])
-                        + m.dual["batt_soc_cap"].sum(["day", "hid"]) * cfg0.h2_producer_battery_duration_hours)
+                        + m.dual["batt_soc_cap"].sum(["day", "hid"]) * cfg0.h2_producer_battery_duration_hours
+                        + batt_soc0_terms * cfg0.initial_soc_fraction * cfg0.h2_producer_battery_duration_hours)
         mu_tank_da = (m.dual["tank_dis_cap"].sum(["day", "hid"]) + m.dual["tank_ch_cap"].sum(["day", "hid"])
-                    + m.dual["tank_soc_cap"].sum(["day", "hid"]) * cfg0.h2_producer_tank_duration_hours)
+                    + m.dual["tank_soc_cap"].sum(["day", "hid"]) * cfg0.h2_producer_tank_duration_hours
+                    + tank_soc0_terms * cfg0.initial_soc_fraction * cfg0.h2_producer_tank_duration_hours)
         cut_coeffs = {z: {"electrolyser_mw": float(mu_electrolyser_da.sel(zone=z)),
                           "wind_mw": float(mu_wind_da.sel(zone=z)),
                           "pv_mw": float(mu_pv_da.sel(zone=z)),

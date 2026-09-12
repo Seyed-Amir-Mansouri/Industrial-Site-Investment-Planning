@@ -15,17 +15,22 @@ from .config import ASSETS
 
 
 def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]],
-                 unit_cost: dict[str, float], budget: float | None, crf: dict[str, float],
-                 theta_lower: float, downstream_load_mw: float | None = None,
+                 cand_capex: dict[str, dict[str, np.ndarray]], budget: float | None,
+                 crf: dict[str, float], theta_lower: float,
+                 downstream_load_mw: float | None = None,
                  require_electrolyser_for_others: bool = False,
                  min_total_electrolyser_mw: float | None = None,
                  disabled_assets: list[str] | None = None) -> linopy.Model:
     """Fresh master problem, no cuts yet (iteration 1 will pick candidates purely by
     annualized CAPEX, with every ``theta`` pinned at its lower bound -- expected, see
-    Formulation.md SS4.6). ``crf`` is per-asset (``CapexAssumptions.
-    capital_recovery_factors()``) since each asset can carry its own ``lifetime_years``
-    -- it only ever scales the objective's CAPEX term, never the raw ``budget``
-    constraint (Formulation.md SS4.3/4.4).
+    Formulation.md SS4.6). ``cand_capex[c][a][k]`` is candidate ``k``'s ABSOLUTE CAPEX
+    (EUR, same shape/order as ``cand_mw[c][a]`` -- see ``h2_planning.candidates.
+    build_candidates``) -- priced directly, not derived from ``cand_mw`` via any EUR/MW
+    multiplication, since the underlying candidate catalog's economies of scale are
+    genuinely non-linear in MW (Formulation.md SS4.3). ``crf`` is per-asset
+    (``CapexAssumptions.capital_recovery_factors()``) since each asset can carry its own
+    ``lifetime_years`` -- it only ever scales the objective's CAPEX term, never the raw
+    ``budget`` constraint (Formulation.md SS4.3/4.4).
 
     ``budget`` may be ``None`` to DEACTIVATE the budget constraint entirely -- every
     country then sizes purely off subproblem economics (via ``theta``) and annualized
@@ -80,18 +85,21 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
     k_idx = pd.Index(range(n_k), name="k")
 
     y = m.add_variables(binary=True, coords=[country_idx, asset_idx, k_idx], name="y")
-    theta = m.add_variables(lower=theta_lower, coords=[country_idx], name="theta")
+    # ONE scalar theta, not one per country (see add_optimality_cut's docstring for why
+    # per-country theta/cuts are invalid here) -- theta_lower scaled by len(countries)
+    # to preserve the original per-country floor's total slack at iteration 1.
+    theta = m.add_variables(lower=theta_lower * len(countries), name="theta")
 
     cand_da = xr.DataArray(
         np.array([[cand_mw[c][a] for a in ASSETS] for c in countries]),
         coords=[country_idx, asset_idx, k_idx],
     )
     value_cost = xr.DataArray(
-        np.array([[cand_mw[c][a] * unit_cost[a] for a in ASSETS] for c in countries]),
+        np.array([[cand_capex[c][a] for a in ASSETS] for c in countries]),
         coords=[country_idx, asset_idx, k_idx],
     )
     annualized_value_cost = xr.DataArray(
-        np.array([[cand_mw[c][a] * unit_cost[a] * crf[a] for a in ASSETS] for c in countries]),
+        np.array([[cand_capex[c][a] * crf[a] for a in ASSETS] for c in countries]),
         coords=[country_idx, asset_idx, k_idx],
     )
 
@@ -115,31 +123,55 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
     if disabled_assets:
         for a in disabled_assets:
             m.add_constraints(y.sum("k").sel(asset=a) == 0, name=f"disable_{a}")
-    m.add_objective(annualized_capex_expr + theta.sum())
+    m.add_objective(annualized_capex_expr + theta)
     return m
 
 
-def add_optimality_cut(m: linopy.Model, country: str, iteration: int, Q: float,
-                       mu: dict[str, float], cap_star: dict[str, float],
+def add_optimality_cut(m: linopy.Model, countries: list[str], iteration: int,
+                       Q: dict[str, float], mu: dict[str, dict[str, float]],
+                       cap_star: dict[str, dict[str, float]],
                        cand_mw: dict[str, dict[str, np.ndarray]]) -> None:
-    """Add country ``country``'s Benders optimality cut for this iteration:
+    """Add ONE combined Benders optimality cut for this iteration, covering every
+    country in ``countries`` together:
 
-        theta_c >= Q(cap*) + sum_a mu_a * (cap_a(y) - cap*_a)
+        theta >= sum_c [ Q[c] + sum_a mu[c][a] * (cap_{c,a}(y) - cap_star[c][a]) ]
 
-    ``mu``/``cap_star`` come straight from ``optimize_h2_producer.solve(...,
-    return_duals=True)``'s ``out.attrs["cut_coeffs"]``/``out.attrs["capacities"]`` at
-    the trial capacities the master just proposed. Cut names include the iteration
-    index -- must stay unique for the whole run (the caller is responsible for passing
-    a fresh ``iteration`` each call)."""
+    ``Q``/``mu``/``cap_star`` are keyed by country, straight from
+    ``optimize_h2_producer.solve_joint(..., return_duals=True)``'s
+    ``result["objective_by_zone"]``/``result["cut_coeffs"]`` (remapped from zone to
+    country by the caller) and the master's own ``extract_capacities`` output for this
+    iteration. Cut names include the iteration index -- must stay unique for the whole
+    run (the caller is responsible for passing a fresh ``iteration`` each call).
+
+    ONE cut across every country, not one per country, is a deliberate fix (2026-09-11)
+    for a real observed bug: ``solve_joint`` solves every country TOGETHER in one LP
+    coupled by the shared ``demand_pool`` constraint, so ``mu[c][a]`` is the true
+    marginal value of country c's OWN capacity on the JOINT objective -- valid ONLY as
+    one term of a single joint tangent-plane cut at THIS iteration's trial point,
+    exactly as LP convexity guarantees (``theta >= Q_total(cap*) + grad(cap* ).(cap-cap*)
+    for any cap``). The previous code added ``theta_c >= Q[c] + mu[c].(cap_c(y)-cap*_c)``
+    as a SEPARATE per-country constraint on a SEPARATE per-country ``theta_c`` -- valid
+    multi-cut Benders only when subproblems are separable, which this joint/coupled one
+    is not. Because each ``theta_c``'s own bound is then the max over cuts from
+    POSSIBLY DIFFERENT iterations (whichever is tightest for that country alone), the
+    master could mix tangent planes from different trial points across countries, and
+    ``sum_c theta_c`` (the master's lb) could exceed the true achievable objective --
+    reproduced directly: a 2-country DE/FR run's lb overtook its own best_ub by 4.6% at
+    iteration 3 and stuck there (every later iteration re-proposed the exact same,
+    provably-suboptimal capacities, since the master's own now-invalid bound made it
+    believe nothing better existed). Summing every country's Q/mu into ONE cut on ONE
+    shared ``theta`` restores the standard convexity argument: verified with the same
+    reproduction, lb no longer exceeds best_ub and the master keeps exploring past the
+    old stuck point. See ``Formulation.md`` SS4.5/4.6 -- needs updating to match."""
     y = m.variables["y"]
     theta = m.variables["theta"]
     k_idx = y.coords["k"]
     cap_expr = sum(
-        mu[a] * (xr.DataArray(cand_mw[country][a], coords=[k_idx]) * y.sel(country=country, asset=a)).sum("k")
-        for a in ASSETS
+        mu[c][a] * (xr.DataArray(cand_mw[c][a], coords=[k_idx]) * y.sel(country=c, asset=a)).sum("k")
+        for c in countries for a in ASSETS
     )
-    rhs = Q - sum(mu[a] * cap_star[a] for a in ASSETS)
-    m.add_constraints(theta.sel(country=country) - cap_expr >= rhs, name=f"cut_{country}_{iteration}")
+    rhs = sum(Q[c] - sum(mu[c][a] * cap_star[c][a] for a in ASSETS) for c in countries)
+    m.add_constraints(theta - cap_expr >= rhs, name=f"cut_{iteration}")
 
 
 def extract_capacities(m: linopy.Model, countries: list[str],
@@ -157,4 +189,21 @@ def extract_capacities(m: linopy.Model, countries: list[str],
         for a in ASSETS:
             chosen = np.flatnonzero(y_sol.sel(country=c, asset=a).to_numpy() > 0.5)
             out[c][a] = float(cand_mw[c][a][int(chosen[0])]) if len(chosen) else 0.0
+    return out
+
+
+def extract_capex(m: linopy.Model, countries: list[str],
+                  cand_capex: dict[str, dict[str, np.ndarray]]) -> dict[str, dict[str, float]]:
+    """Same ``y``-solution reading as ``extract_capacities``, but looks up each chosen
+    candidate's absolute CAPEX (EUR) instead of its MW -- needed because CAPEX isn't
+    linear in MW here (``build_master``'s ``cand_capex``), so it can't be recovered by
+    multiplying a chosen MW by a flat unit cost. A skipped asset (no candidate chosen)
+    reports 0.0 EUR, matching ``extract_capacities``'s 0.0 MW."""
+    y_sol = m.variables["y"].solution
+    out: dict[str, dict[str, float]] = {}
+    for c in countries:
+        out[c] = {}
+        for a in ASSETS:
+            chosen = np.flatnonzero(y_sol.sel(country=c, asset=a).to_numpy() > 0.5)
+            out[c][a] = float(cand_capex[c][a][int(chosen[0])]) if len(chosen) else 0.0
     return out
