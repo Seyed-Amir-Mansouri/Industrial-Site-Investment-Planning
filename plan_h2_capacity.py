@@ -27,6 +27,18 @@ electrolyser candidate that iteration (``h2_planning.build_master``'s
 electrolyser gets every other asset forced to 0 MW too, since this facility is a
 Hydrogen Producer, not a standalone merchant power plant.
 
+Capacity is chosen under wind/PV/electrolyser UNCERTAINTY (added 2026-09-14, at user
+request): every iteration's trial capacity is priced once per capacity-uncertainty
+scenario (``run_capacity_scenarios.py``'s ``p100``/``wind70``/``pv70``/``ely70`` --
+each using that scenario's own trained-surrogate price context, not just its own
+capacity multiplier), and the resulting 4 objectives/duals are combined into ONE
+equal-weighted EXPECTED-VALUE optimality cut per iteration (``SCENARIO_PROBS`` below).
+The master therefore never sees a scenario index at all -- it picks exactly ONE
+capacity plan, sized for its average performance across all 4 scenarios. Expected value
+was chosen over a worst-case/robust or CVaR-style risk measure for simplicity, at user
+request; ``SCENARIO_PROBS``' equal weights are also an assumption, editable directly if
+some scenarios should be judged more/less likely than 25% each.
+
 The electricity grid and H2 pipeline exchange connections (every country's ``x_grid``/
 ``x_h2``) are UNLIMITED here -- this planning pipeline always passes
 ``grid_cap_mw=h2_cap_mw=float("inf")`` into ``solve_joint``, rather than leaving it at
@@ -56,11 +68,23 @@ import optimize_h2_producer as ohp
 import h2_planning as hp
 from economic_dispatch.config import RunConfig
 from h2_planning.candidates import default_sizing_and_zones
+from run_capacity_scenarios import SCENARIOS
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "outputs"
 
 UNLIMITED_EXCHANGE_MW = float("inf")
+
+# Equal probability weight per capacity-uncertainty scenario (p100/wind70/pv70/ely70 --
+# see run_capacity_scenarios.py for what each represents). Every Benders iteration below
+# solves the joint subproblem ONCE PER SCENARIO at the SAME trial capacity, then combines
+# the 4 outcomes into ONE expected-value optimality cut -- so the master's capacity
+# decision carries NO scenario index: one plan, sized for its average performance across
+# all 4 scenarios (risk measure = expected value, chosen over worst-case/CVaR at user
+# request 2026-09-14 for simplicity -- see conversation/commit history if a more
+# risk-averse measure is wanted later). Edit this dict directly for unequal weights
+# (e.g. if a shortfall scenario is judged more/less likely than 25%).
+SCENARIO_PROBS = {name: 1.0 / len(SCENARIOS) for name in SCENARIOS}
 
 
 def eligible_countries() -> list[str]:
@@ -92,9 +116,10 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                  f"combination ({cheapest_total:,.0f} EUR) for {countries} -- expect some "
                  f"assets to come back skipped (0 MW) in the result.")
 
-    print("Building enriched price frames (one-time cost, reused by every subproblem solve)...")
-    edf = ohp.enriched_elec_df()
-    hdf = ohp.enriched_h2_df()
+    print(f"Building enriched price frames for {len(SCENARIO_PROBS)} capacity scenarios "
+         f"(one-time cost, reused by every subproblem solve): {list(SCENARIO_PROBS)}")
+    price_frames = {s: (ohp.enriched_elec_df(scenario=s), ohp.enriched_h2_df(scenario=s))
+                    for s in SCENARIO_PROBS}
 
     eta_ely = RunConfig().h2_producer_electrolyser_efficiency
     min_total_electrolyser_mw = joint_pool_mw / eta_ely
@@ -125,18 +150,35 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
         t_sub = time.time()
         zones = [host_zone[c] for c in countries]
         caps_by_zone = {host_zone[c]: cap_star[c] for c in countries}
-        result = ohp.solve_joint(zones, caps_by_zone, rep_days_per_month, joint_pool_mw,
-                                 return_duals=True, grid_cap_mw=UNLIMITED_EXCHANGE_MW,
-                                 h2_cap_mw=UNLIMITED_EXCHANGE_MW, edf=edf, hdf=hdf, quiet=quiet_solver)
-        total_Q = float(result["objective"])
-        Q_by_country = {c: result["objective_by_zone"][host_zone[c]] for c in countries}
-        mu_by_country = {c: result["cut_coeffs"][host_zone[c]] for c in countries}
+
+        # Solve the SAME trial capacity once per scenario, then combine into ONE
+        # expected-value cut (see SCENARIO_PROBS above) -- this is the only place
+        # scenario-awareness enters the Benders loop; the master itself never sees a
+        # scenario index.
+        total_Q = 0.0
+        Q_by_country = {c: 0.0 for c in countries}
+        mu_by_country = {c: {a: 0.0 for a in hp.ASSETS} for c in countries}
+        Q_by_country_by_scenario: dict[str, dict[str, float]] = {}
+        for s, prob in SCENARIO_PROBS.items():
+            edf_s, hdf_s = price_frames[s]
+            result = ohp.solve_joint(zones, caps_by_zone, rep_days_per_month, joint_pool_mw,
+                                     return_duals=True, grid_cap_mw=UNLIMITED_EXCHANGE_MW,
+                                     h2_cap_mw=UNLIMITED_EXCHANGE_MW, edf=edf_s, hdf=hdf_s,
+                                     quiet=quiet_solver)
+            total_Q += prob * float(result["objective"])
+            Q_by_country_by_scenario[s] = {c: result["objective_by_zone"][host_zone[c]] for c in countries}
+            for c in countries:
+                Q_by_country[c] += prob * result["objective_by_zone"][host_zone[c]]
+                for a in hp.ASSETS:
+                    mu_by_country[c][a] += prob * result["cut_coeffs"][host_zone[c]][a]
         hp.add_optimality_cut(m, countries, it, Q_by_country, mu_by_country, cap_star, cand_mw)
         sub_s = time.time() - t_sub
 
         capex_star = hp.extract_capex(m, countries, cand_capex)
         for c in countries:
-            per_country_log[c].append({"iter": it, "objective": result["objective_by_zone"][host_zone[c]],
+            per_country_log[c].append({"iter": it, "objective": Q_by_country[c],
+                                       "objective_by_scenario": {s: Q_by_country_by_scenario[s][c]
+                                                                 for s in SCENARIO_PROBS},
                                        "capex": sum(capex_star[c].values()), "capacities": dict(cap_star[c])})
         raw_capex = sum(capex_star[c][a] for c in countries for a in hp.ASSETS)
         annualized_capex = sum(capex_star[c][a] * crf[a] for c in countries for a in hp.ASSETS)
@@ -155,7 +197,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
         print(f"WARNING: reached --max-iters={max_iters} without closing the gap "
              f"(final gap {gap:.4f}) -- results below are the best FOUND, not proven optimal")
 
-    return (best_capacities, best_capex, best_ub, pd.DataFrame(log), host_zone, edf, hdf,
+    return (best_capacities, best_capex, best_ub, pd.DataFrame(log), host_zone, price_frames,
            per_country_log, best_capex_by_asset)
 
 
@@ -230,9 +272,11 @@ def main() -> None:
     print(f"Exchange caps: grid=unlimited, H2 pipeline=unlimited")
     print("Require-electrolyser-for-others: ON -- wind/PV/battery/tank only buildable "
          "alongside a positive electrolyser candidate")
+    print(f"Capacity-uncertainty scenarios (expected-value risk measure, equal-weighted): "
+         f"{SCENARIO_PROBS}")
 
     t0 = time.time()
-    (best_capacities, best_capex, best_ub, log_df, host_zone, edf, hdf,
+    (best_capacities, best_capex, best_ub, log_df, host_zone, price_frames,
     per_country_log, best_capex_by_asset) = run_benders(
         countries, budget, args.max_iters, args.gap_tol, capex_cfg,
         joint_pool_mw=args.joint_pool_mw, rep_days_per_month=args.rep_days_per_month)
@@ -251,7 +295,8 @@ def main() -> None:
     else:
         print(f"\nTotal raw CAPEX: {best_capex:,.0f} EUR (budget {budget:,.0f} EUR, "
              f"{best_capex / budget:.1%} used)")
-    print(f"Best objective (annualized CAPEX + 1yr operating cost, EUR, lower=better): {best_ub:,.0f}")
+    print(f"Best objective (annualized CAPEX + EXPECTED 1yr operating cost across "
+         f"{len(SCENARIO_PROBS)} scenarios, EUR, lower=better): {best_ub:,.0f}")
 
     out_prefix = Path(args.output)
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -260,14 +305,19 @@ def main() -> None:
     print(f"\nwrote {out_prefix}_capacities.csv, {out_prefix}_convergence.csv")
 
     if args.export_schedules:
+        # The chosen capacity is ONE non-scenario-indexed plan -- but how it OPERATES
+        # (and what it earns) still depends on which scenario actually happens, so we
+        # export one schedule per scenario to show that operational spread.
         zones = [host_zone[c] for c in countries]
         caps_by_zone = {host_zone[c]: best_capacities[c] for c in countries}
-        final = ohp.solve_joint(zones, caps_by_zone, args.rep_days_per_month, args.joint_pool_mw,
-                                return_duals=False, grid_cap_mw=UNLIMITED_EXCHANGE_MW,
-                                h2_cap_mw=UNLIMITED_EXCHANGE_MW, edf=edf, hdf=hdf, quiet=True)
-        for c in countries:
-            final["schedules"][host_zone[c]].to_csv(f"{out_prefix}_schedule_{c}.csv", index=False)
-        print(f"wrote {out_prefix}_schedule_<country>.csv for {len(countries)} countries")
+        for s, (edf_s, hdf_s) in price_frames.items():
+            final = ohp.solve_joint(zones, caps_by_zone, args.rep_days_per_month, args.joint_pool_mw,
+                                    return_duals=False, grid_cap_mw=UNLIMITED_EXCHANGE_MW,
+                                    h2_cap_mw=UNLIMITED_EXCHANGE_MW, edf=edf_s, hdf=hdf_s, quiet=True)
+            for c in countries:
+                final["schedules"][host_zone[c]].to_csv(f"{out_prefix}_schedule_{c}_{s}.csv", index=False)
+        print(f"wrote {out_prefix}_schedule_<country>_<scenario>.csv for {len(countries)} countries "
+             f"x {len(price_frames)} scenarios")
 
 
 if __name__ == "__main__":

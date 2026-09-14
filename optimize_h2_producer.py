@@ -191,23 +191,40 @@ def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict | None = 
     return cfg, sizing, host_zone, wind_donor, pv_donor, wind_upper, pv_upper, wind_cf_norm, pv_cf_norm
 
 
-def enriched_elec_df() -> pd.DataFrame:
+_BACKTEST_SCENARIO = "p100"  # the "as-planned NT2030" capacity scenario -- see
+# run_capacity_scenarios.py. elec_samples.parquet/h2_samples.parquet are now pooled
+# across all capacity-uncertainty scenarios (one row per zone/hour/scenario, added
+# 2026-09-14) for training, so a real single-history backtest here must filter down to
+# one scenario's rows first -- otherwise every (zone, hour) lookup below would silently
+# return every scenario's row stacked together instead of the single real value a
+# backtest needs. p100 is the right choice: it's the un-shortfalled baseline, the
+# closest of the 4 to "history as it actually happened".
+
+
+def enriched_elec_df(scenario: str = _BACKTEST_SCENARIO) -> pd.DataFrame:
     """Full elec_samples.parquet enriched with neighbour/candidate-price columns --
     the expensive step in proxy_price_series, cached here so a multi-zone caller
-    (e.g. exporting every country) only pays it once instead of once per zone."""
+    (e.g. exporting every country) only pays it once instead of once per zone.
+    ``scenario`` selects which capacity-uncertainty scenario's rows to use (default
+    the "as-planned" baseline); ignored if the samples parquet predates capacity
+    scenarios (no ``scenario`` column at all)."""
     ROOT_IN = ROOT / "inputs"
     edf = pd.read_parquet(ROOT_IN / "elec_samples.parquet")
+    if "scenario" in edf.columns:
+        edf = edf[edf["scenario"] == scenario].drop(columns="scenario")
     eadj = load_adjacency(ROOT_IN / "elec_adjacency.json")
     edf, _ = add_neighbor_features(edf, "demand", eadj, "residual_load")
     edf, _ = add_candidate_neighbor_prices(edf, "price_eur_mwh", eadj)
     return edf
 
 
-def enriched_h2_df() -> pd.DataFrame:
+def enriched_h2_df(scenario: str = _BACKTEST_SCENARIO) -> pd.DataFrame:
     """Full h2_samples.parquet enriched with neighbour/candidate-price columns --
-    see enriched_elec_df."""
+    see enriched_elec_df. ``scenario`` as there."""
     ROOT_IN = ROOT / "inputs"
     hdf = pd.read_parquet(ROOT_IN / "h2_samples.parquet")
+    if "scenario" in hdf.columns:
+        hdf = hdf[hdf["scenario"] == scenario].drop(columns="scenario")
     hadj = load_adjacency(ROOT_IN / "h2_adjacency.json")
     hdf, _ = add_neighbor_features(hdf, "h2_demand", hadj, None)
     hdf, _ = add_candidate_neighbor_prices(hdf, "h2_price", hadj)
