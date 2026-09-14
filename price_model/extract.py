@@ -208,6 +208,23 @@ def extract_hydrogen(csv_path: str | Path = DEFAULT_H2_CSV, year: int = 2030,
     return feat
 
 
+def attach_capacity_features(df: pd.DataFrame, capacities_csv: str | Path) -> pd.DataFrame:
+    """Left-merge a capacity-uncertainty scenario's per-zone capacity manifest (``zone,
+    wind_capacity_mw, pv_capacity_mw, electrolyser_capacity_mw`` -- see
+    ``run_capacity_scenarios.py::_capacities_manifest``) onto every row of ``df``.
+    Capacity is constant across all hours of one scenario, so this just broadcasts each
+    zone's 3 values onto every one of its rows. A zone missing from the manifest (should
+    not happen -- the manifest covers every zone the scenario's dispatch ran for) gets 0
+    for all three via fillna, matching "no such asset" elsewhere in this codebase.
+    """
+    caps = pd.read_csv(capacities_csv)
+    df = df.merge(caps, on="zone", how="left")
+    for col in ("wind_capacity_mw", "pv_capacity_mw", "electrolyser_capacity_mw"):
+        if col in df.columns:
+            df[col] = df[col].fillna(0.0)
+    return df
+
+
 def extract_adjacency(parquet_path: str | Path, carrier: str,
                        zones: set[str] | None = None) -> dict[str, list[str]]:
     """Undirected zone adjacency for ``carrier`` ("electricity"/"hydrogen") from Project

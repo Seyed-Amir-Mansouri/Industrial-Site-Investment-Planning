@@ -18,6 +18,13 @@ electricity's existing ``residual_load``):
 If ``net_demand_col`` is omitted or equal to ``demand_col`` (hydrogen has no renewables
 column tied to H2 zones, so there's no distinct net-demand quantity to compute), only the
 raw-demand set is produced.
+
+If ``df`` has a ``scenario`` column (capacity-uncertainty scenarios pooled together, see
+``run_capacity_scenarios.py``/``build_dataset.py``), both functions pivot/join on
+``(scenario, hour)`` instead of ``hour`` alone -- every scenario reuses the same 0..8735
+``hour`` range, so joining on ``hour`` alone would silently mix one scenario's neighbour
+values into another's rows (``pivot_table``'s ``aggfunc="first"`` picking whichever
+scenario happened to sort first). Absent a ``scenario`` column, behaviour is unchanged.
 """
 from __future__ import annotations
 
@@ -33,6 +40,14 @@ def load_adjacency(path: str | Path) -> dict[str, list[str]]:
     return json.loads(p.read_text()) if p.exists() else {}
 
 
+def _join_keys(df: pd.DataFrame) -> list[str]:
+    return ["scenario", "hour"] if "scenario" in df.columns else ["hour"]
+
+
+def _key_index(g: pd.DataFrame, keys: list[str]) -> pd.Index:
+    return pd.MultiIndex.from_frame(g[keys]) if len(keys) > 1 else pd.Index(g[keys[0]].to_numpy())
+
+
 def add_neighbor_features(
     df: pd.DataFrame,
     demand_col: str,
@@ -41,11 +56,12 @@ def add_neighbor_features(
 ) -> tuple[pd.DataFrame, dict[str, list[str]]]:
     """Return (df with system-total + per-zone neighbour columns merged in,
     {zone: [extra feature column names]})."""
+    keys = _join_keys(df)
     value_cols = [("demand", demand_col)]
     if net_demand_col and net_demand_col != demand_col:
         value_cols.append(("net_demand", net_demand_col))
 
-    wides = {label: df.pivot_table(index="hour", columns="zone", values=col, aggfunc="first")
+    wides = {label: df.pivot_table(index=keys, columns="zone", values=col, aggfunc="first")
              for label, col in value_cols}
     system_totals = {label: w.sum(axis=1) for label, w in wides.items()}
 
@@ -61,8 +77,9 @@ def add_neighbor_features(
     extra_frames = []
     zone_extra: dict[str, list[str]] = {}
     for zone, g in df.groupby("zone", sort=True):
-        hours = g["hour"].to_numpy()
-        cols = {"hour": hours, "zone": zone}
+        idx = _key_index(g, keys)
+        cols = {k: g[k].to_numpy() for k in keys}
+        cols["zone"] = zone
         extra_cols = []
         for label, wide in wides.items():
             neighbor_cols = []
@@ -70,18 +87,18 @@ def add_neighbor_features(
                 if n not in wide.columns:
                     continue
                 colname = f"{prefix(label)}{n}"
-                cols[colname] = wide[n].reindex(hours).to_numpy()
+                cols[colname] = wide[n].reindex(idx).to_numpy()
                 neighbor_cols.append(colname)
-            total = (np.zeros(len(hours)) if not neighbor_cols
+            total = (np.zeros(len(idx)) if not neighbor_cols
                      else np.nansum([cols[c] for c in neighbor_cols], axis=0))
             cols[total_name(label)] = total
-            cols[system_name(label)] = system_totals[label].reindex(hours).to_numpy()
+            cols[system_name(label)] = system_totals[label].reindex(idx).to_numpy()
             extra_cols += neighbor_cols + [total_name(label), system_name(label)]
         zone_extra[zone] = extra_cols
         extra_frames.append(pd.DataFrame(cols))
 
     extra_df = pd.concat(extra_frames, ignore_index=True)
-    enriched = df.merge(extra_df, on=["zone", "hour"], how="left")
+    enriched = df.merge(extra_df, on=["zone"] + keys, how="left")
     return enriched, zone_extra
 
 
@@ -105,21 +122,23 @@ def add_candidate_neighbor_prices(
     Returns (df with every needed ``price_<zone>`` column merged in,
     {zone: {"declared": [...col names...], "top_n": [...col names...]}}).
     """
-    wide = df.pivot_table(index="hour", columns="zone", values=target_col, aggfunc="first")
+    keys = _join_keys(df)
+    wide = df.pivot_table(index=keys, columns="zone", values=target_col, aggfunc="first")
 
     extra_frames = []
     zone_candidates: dict[str, dict[str, list[str]]] = {}
     for zone, g in df.groupby("zone", sort=True):
-        hours = g["hour"].to_numpy()
+        idx = _key_index(g, keys)
         declared = [n for n in adjacency.get(zone, []) if n in wide.columns]
         top_n_list: list[str] = []
         if zone in wide.columns:
             corrs = wide.corrwith(wide[zone]).drop(zone).dropna().sort_values(ascending=False)
             top_n_list = corrs.head(top_n).index.tolist()
         needed = sorted(set(declared) | set(top_n_list))
-        cols = {"hour": hours, "zone": zone}
+        cols = {k: g[k].to_numpy() for k in keys}
+        cols["zone"] = zone
         for n in needed:
-            cols[f"price_{n}"] = wide[n].reindex(hours).to_numpy()
+            cols[f"price_{n}"] = wide[n].reindex(idx).to_numpy()
         zone_candidates[zone] = {
             "declared": [f"price_{n}" for n in declared],
             "top_n": [f"price_{n}" for n in top_n_list],
@@ -127,5 +146,5 @@ def add_candidate_neighbor_prices(
         extra_frames.append(pd.DataFrame(cols))
 
     extra_df = pd.concat(extra_frames, ignore_index=True)
-    enriched = df.merge(extra_df, on=["zone", "hour"], how="left")
+    enriched = df.merge(extra_df, on=["zone"] + keys, how="left")
     return enriched, zone_candidates

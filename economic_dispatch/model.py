@@ -702,7 +702,8 @@ def build_model(zdata: dict[str, ZoneData], net: NetworkData, cfg: RunConfig,
     zidx = pd.Index(zones, name=ZONE)
 
     gens, gupper = _build_generators(zdata, net, cfg)
-    gens, gupper = _override_renewable_upper_with_plexos(zdata, gens, gupper, zones, cfg)
+    if cfg.use_plexos_renewable_override:
+        gens, gupper = _override_renewable_upper_with_plexos(zdata, gens, gupper, zones, cfg)
     storage, sinflow = _build_storage(zdata, cfg)
 
     uc_gens = uc_candidates(gens) if cfg.enable_uc else []
@@ -725,7 +726,8 @@ def build_model(zdata: dict[str, ZoneData], net: NetworkData, cfg: RunConfig,
             gen_lower.loc[{GEN: gid}] = msl_frac * prof
     gen_p = m.add_variables(lower=gen_lower, upper=gen_upper, name="gen_p")
 
-    _joint_renewable_constraints(m, gens, gen_p, zones, hours, cfg)
+    if cfg.use_plexos_renewable_override:
+        _joint_renewable_constraints(m, gens, gen_p, zones, hours, cfg)
 
     A_gen = _incidence(gens["zone"], zones, GEN)
     gen_by_zone = (A_gen * gen_p).sum(GEN)

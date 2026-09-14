@@ -8,7 +8,7 @@ Characteristics" are tables. This module only *reads* — all modelling logic
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pandas as pd
@@ -179,6 +179,39 @@ def load_zones_from_db(codes: list[str], db_path: Path,
         raise KeyError(f"zones not in {db_path.name}: {missing}")
     by_zone = {z: g for z, g in db.groupby("zone", sort=False)}
     return {z: _zone_from_db(by_zone[z], z, hour_start, hour_end) for z in codes}
+
+
+# Capacity-uncertainty scenario groups (run_capacity_scenarios.py) -- "Technology
+# Capacities" keys each group's scale factor is applied to. Wind onshore+offshore move
+# together as one "wind" factor; every solar variant (PV, rooftop, thermal, thermal
+# w/ storage) moves together as one "solar" factor; electrolyser is its own factor.
+CAPACITY_SCALE_KEYS: dict[str, list[str]] = {
+    "wind": ["Wind (onshore) (MW)", "Wind (offshore) (MW)"],
+    "solar": ["Solar (MW)", "Solar (rooftop) (MW)",
+             "Solar (thermal) (MW)", "Solar (thermal_with_storage) (MW)"],
+    "electrolyser": ["Electrolyser (MW)"],
+}
+
+
+def apply_capacity_scale(zdata: dict[str, ZoneData], scale: dict[str, float]) -> dict[str, ZoneData]:
+    """Return a copy of ``zdata`` with each zone's installed capacity for the technology
+    groups named in ``scale`` (keys "wind"/"solar"/"electrolyser", see
+    ``CAPACITY_SCALE_KEYS``) multiplied by that group's factor. Groups not present in
+    ``scale`` are left unchanged; a capacity key missing from a given zone is simply
+    skipped (a zone with no installed capacity of a technology stays at zero regardless
+    of the scale factor). Empty ``scale`` returns ``zdata`` unchanged (same object, no
+    copy) -- the no-op default for every caller that doesn't opt into scenarios."""
+    if not scale:
+        return zdata
+    out = {}
+    for z, zd in zdata.items():
+        caps = dict(zd.capacities)
+        for group, factor in scale.items():
+            for key in CAPACITY_SCALE_KEYS.get(group, []):
+                if key in caps:
+                    caps[key] = caps[key] * factor
+        out[z] = replace(zd, capacities=caps)
+    return out
 
 
 def classify(tech: str) -> tuple[str, bool]:

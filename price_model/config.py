@@ -53,7 +53,15 @@ COMMODITIES = {
         # neighbour-price-dominated zone was unaffected). Neighbour/system-total
         # demand features (both raw and net) are added per zone on top of this (see
         # `adjacency`/`net_demand_col`).
-        "features": ["demand", "residual_load", "wind", "solar", "month", "season", "hour"],
+        # wind_capacity_mw/pv_capacity_mw/electrolyser_capacity_mw (added 2026-09-14):
+        # each zone's installed capacity for these 3 technologies, constant across all
+        # hours of one capacity-uncertainty scenario (see run_capacity_scenarios.py) --
+        # distinct from `wind`/`solar` above (actual hourly dispatched generation, an
+        # existing feature). Only present/varying when inputs/scenarios/ has been
+        # generated and pooled by build_dataset.py; a single-scenario dataset still
+        # trains fine with these 3 held constant (they just contribute nothing).
+        "features": ["demand", "residual_load", "wind", "solar", "month", "season", "hour",
+                    "wind_capacity_mw", "pv_capacity_mw", "electrolyser_capacity_mw"],
         "samples": "elec_samples.parquet",
         "adjacency": "elec_adjacency.json",
         "net_demand_col": "residual_load",  # demand - wind - solar, already in the parquet
@@ -85,7 +93,14 @@ COMMODITIES = {
         # same "is this really exogenous" caveat as elec_price still applies to it
         # though. Neighbour/system-total demand features are added per zone on top
         # of this (see `adjacency` above).
-        "features": ["h2_demand", "smr", "month", "season", "hour"],
+        # wind_capacity_mw/pv_capacity_mw/electrolyser_capacity_mw: see electricity's
+        # own comment above -- same 3 capacity-scenario features, added here too since
+        # they're all plausible H2-price drivers (electrolyser capacity directly bounds
+        # H2 production; wind/solar capacity affects the elec price the electrolyser
+        # pays, even though elec_price itself was dropped as a feature -- see "Key
+        # findings" in CLAUDE.md).
+        "features": ["h2_demand", "smr", "month", "season", "hour",
+                    "wind_capacity_mw", "pv_capacity_mw", "electrolyser_capacity_mw"],
         "samples": "h2_samples.parquet",
         "adjacency": "h2_adjacency.json",
         "net_demand_col": None,  # no renewables column for H2 zones -- falls back to h2_demand

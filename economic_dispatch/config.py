@@ -135,6 +135,19 @@ class RunConfig:
     solver_name: str = "highs"
     mip_rel_gap: float = 1e-4
 
+    # Capacity-uncertainty scenarios (see run_capacity_scenarios.py): scale factors
+    # keyed "wind"/"solar"/"electrolyser" (see data_loader.apply_capacity_scale for the
+    # exact "Technology Capacities" keys each group covers), applied uniformly to every
+    # zone's installed capacity before the dispatch LP is built. Empty dict (default) =
+    # no change, byte-for-byte identical to every existing caller.
+    capacity_scale: dict[str, float] = field(default_factory=dict)
+    # _override_renewable_upper_with_plexos (model.py) replaces wind/solar/ROR/other-RES
+    # generation with Project 3's own fixed historical PLEXOS-realized curves, which are
+    # NOT sensitive to installed capacity -- so it must be disabled for `capacity_scale`
+    # to have any effect on those technologies (electrolyser has no such override and is
+    # unaffected by this flag). Default True preserves every existing caller's behavior.
+    use_plexos_renewable_override: bool = True
+
     def __post_init__(self) -> None:
         self.zones = _expand_to_countries(self.zones, self.zones_db)
 
