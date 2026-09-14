@@ -1,17 +1,24 @@
-"""Regenerate ``hourly_balance_{elec,h2}.csv`` under 4 capacity-uncertainty scenarios --
-a 100% ("as-planned NT2030") baseline plus 3 one-factor-at-a-time (OFAT) shortfall
-scenarios, each reducing exactly ONE of {wind, solar (PV+rooftop+thermal), electrolyser}
-installed capacity to 70% while holding the other two at 100%, uniformly across every
-zone. Superseded the original single combined "all 3 move together" axis (100/70/50%
-tried first) at user request: that design makes wind/pv/electrolyser capacity perfectly
-collinear in the training data (they only ever changed together), so a query like
-"PV at -10%, wind/electrolyser at plan" is asking the model to extrapolate off a
-combination it never saw -- OFAT gives each technology genuinely independent variation
-so single-factor queries interpolate within seen data instead. A full factorial (all
-combinations of levels across all 3 factors, to also capture interaction effects) would
-be more statistically complete but costs far more compute; OFAT was chosen as the
-practical middle ground given each scenario is an expensive full-year re-solve (see
-below).
+"""Regenerate ``hourly_balance_{elec,h2}.csv`` under 3 capacity-uncertainty scenarios --
+a 100% ("as-planned NT2030") baseline plus 2 one-factor-at-a-time (OFAT) shortfall
+scenarios, each reducing exactly ONE of {wind, solar (PV+rooftop+thermal)} installed
+capacity to 70% while holding the other at 100%, uniformly across every zone. Superseded
+the original single combined "all factors move together" axis (100/70/50% tried first)
+at user request: that design makes wind/pv capacity perfectly collinear in the training
+data (they only ever changed together), so a query like "PV at -10%, wind at plan" is
+asking the model to extrapolate off a combination it never saw -- OFAT gives each
+technology genuinely independent variation so single-factor queries interpolate within
+seen data instead. A full factorial (every combination of levels across all factors, to
+also capture interaction effects) would be more statistically complete but costs far more
+compute; OFAT was chosen as the practical middle ground given each scenario is an
+expensive full-year re-solve (see below).
+
+Electrolyser capacity was ALSO a scenario factor (``ely70``) until 2026-09-14, when it
+was dropped from the scenario set and from both price models' feature lists entirely, at
+user request ("just wind and pv") -- see ``price_model/config.py``. The underlying
+``economic_dispatch`` capacity-scaling machinery (``RunConfig.capacity_scale``,
+``CAPACITY_SCALE_KEYS["electrolyser"]``) still supports scaling electrolyser capacity
+directly if a future scenario needs it again; only this project's own scenario set and
+the two trained models' feature lists dropped it.
 
 Each scenario reruns the full 20-zone/8736-hour joint dispatch LP
 (``economic_dispatch.pipeline.solve_scenario``) with ``capacity_scale`` applied and
@@ -22,15 +29,16 @@ the capacity scaling to have any effect on those technologies. This means even t
 baseline (100%, "as NT2030") scenario here is NOT byte-identical to the originally-
 committed ``inputs/hourly_balance_elec.csv`` (which used the PLEXOS-curve path) -- every
 scenario is regenerated fresh on the same capacity-driven path for a fair, internally-
-consistent comparison. Electrolyser capacity was never PLEXOS-overridden, so it's
-unaffected by this switch either way.
+consistent comparison.
 
 Writes, per scenario, under ``inputs/scenarios/<name>/``:
     hourly_balance_elec.csv, hourly_balance_h2.csv  -- same format build_dataset.py reads
     capacities.csv                                   -- per-zone actual scaled capacity
-        (columns: zone, wind_capacity_mw, pv_capacity_mw, electrolyser_capacity_mw),
-        read back by price_model/extract.py::attach_capacity_features to tag every row
-        of that scenario's samples with these as new model features.
+        (columns: zone, wind_capacity_mw, pv_capacity_mw, electrolyser_capacity_mw --
+        the last one still recorded for reference even though no longer a scenario
+        factor or a trained feature, since it costs nothing to keep), read back by
+        price_model/extract.py::attach_capacity_features to tag every row of that
+        scenario's samples with these as new model features (wind/pv only, see above).
 
 Usage:
     python run_capacity_scenarios.py --scenarios p100   # one at a time, isolated process
@@ -58,12 +66,13 @@ from economic_dispatch.report import write_hourly_balance
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "inputs" / "scenarios"
 
-# scenario name -> per-group capacity multiplier (wind/solar/electrolyser independently)
+# scenario name -> per-group capacity multiplier (wind/solar independently; electrolyser
+# dropped 2026-09-14, see module docstring -- kept at 1.0/no-op here for any zone whose
+# capacities.csv manifest still records it for reference)
 SCENARIOS = {
     "p100": {"wind": 1.0, "solar": 1.0, "electrolyser": 1.0},
     "wind70": {"wind": 0.7, "solar": 1.0, "electrolyser": 1.0},
     "pv70": {"wind": 1.0, "solar": 0.7, "electrolyser": 1.0},
-    "ely70": {"wind": 1.0, "solar": 1.0, "electrolyser": 0.7},
 }
 
 
