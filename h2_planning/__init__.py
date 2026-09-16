@@ -5,8 +5,8 @@ capacity operational LP. See ``Formulation.md`` SS4 and ``plan_h2_capacity.py``.
 """
 from .config import ASSETS, AssetCandidate, CANDIDATE_CATALOG, CapexAssumptions
 from .candidates import build_candidates, default_sizing_and_zones
-from .master import add_optimality_cut, build_master, extract_capacities, extract_capex
+from .master import add_optimality_cut, build_master, cvar_value, extract_capacities, extract_capex
 
 __all__ = ["ASSETS", "AssetCandidate", "CANDIDATE_CATALOG", "CapexAssumptions",
           "build_candidates", "default_sizing_and_zones", "add_optimality_cut",
-          "build_master", "extract_capacities", "extract_capex"]
+          "build_master", "cvar_value", "extract_capacities", "extract_capex"]

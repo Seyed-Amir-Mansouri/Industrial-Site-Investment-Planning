@@ -20,7 +20,10 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
                  downstream_load_mw: float | None = None,
                  require_electrolyser_for_others: bool = False,
                  min_total_electrolyser_mw: float | None = None,
-                 disabled_assets: list[str] | None = None) -> linopy.Model:
+                 disabled_assets: list[str] | None = None,
+                 scenario_probs: dict[str, float] | None = None,
+                 cvar_alpha: float | None = None,
+                 max_total_assets: int | None = None) -> linopy.Model:
     """Fresh master problem, no cuts yet (iteration 1 will pick candidates purely by
     annualized CAPEX, with every ``theta`` pinned at its lower bound -- expected, see
     Formulation.md SS4.6). ``cand_capex[c][a][k]`` is candidate ``k``'s ABSOLUTE CAPEX
@@ -77,7 +80,69 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
     ``sum_k y_{c,a,k} == 0`` for each named asset, i.e. fixes that asset's binary
     selection off entirely rather than leaving it to the optimizer. Diagnostic: e.g.
     disabling wind/PV isolates whether they're what's driving other assets'
-    (especially electrolyser's) sizing via ``require_electrolyser_for_others``."""
+    (especially electrolyser's) sizing via ``require_electrolyser_for_others``.
+
+    ``scenario_probs`` (optional, added 2026-09-16 for the stochastic/expected-value
+    link, Formulation.md SS4.9): a ``{scenario: probability}`` dict switches ``theta``
+    from ONE scalar to ONE PER SCENARIO (``theta.sel(scenario=s)``), with the objective
+    using ``sum_s prob_s * theta_s`` in place of the plain scalar. This is a genuine
+    multi-cut upgrade, not a relaxation of SS4.6's single-cut-across-COUNTRIES fix:
+    scenarios are independent of each other given a fixed trial capacity (only
+    countries are coupled, via the shared demand pool WITHIN one scenario's
+    ``solve_joint`` call), so a separate cut per scenario is valid where a separate cut
+    per country was not. The caller (``add_optimality_cut``'s own ``scenario`` param)
+    then adds one cut per scenario per iteration instead of one aggregated cut,
+    tripling the information the master gets per iteration for a 3-scenario run.
+    Default ``None`` preserves the original single-scalar-theta behavior exactly for
+    every non-stochastic caller.
+
+    ``cvar_alpha`` (optional, added 2026-09-16 at user request, requires
+    ``scenario_probs``): switches the objective's scenario term from the plain
+    expected value ``sum_s prob_s * theta_s`` to the Rockafellar-Uryasev linearization
+    of CVaR_alpha, REPLACING (not blending with) the expected value:
+
+        min  zeta + 1/(1-alpha) * sum_s prob_s * u_s
+        s.t. u_s >= theta_s - zeta,  u_s >= 0
+
+    ``zeta`` (free) is the optimal VaR_alpha estimate, ``u_s`` the per-scenario
+    shortfall above it. This stays a valid Benders relaxation for the SAME reason the
+    plain expected-value case is: CVaR is monotone non-decreasing in each ``theta_s``,
+    so any valid per-scenario lower-bounding cut on ``theta_s`` (``add_optimality_cut``,
+    unchanged) still under-approximates CVaR_alpha(theta) as a function of ``theta``,
+    which is itself an outer-approximation of the true CVaR_alpha(Q(cap)) as a function
+    of the (convex-in-cap) subproblem value functions ``Q_s(cap)``. NOTE: with a small
+    number of EQUALLY-LIKELY scenarios (e.g. 3 at 1/3 each), CVaR_alpha collapses
+    EXACTLY to the worst-scenario value whenever ``(1 - alpha) <= min_s prob_s`` -- e.g.
+    alpha=0.95 with 3 scenarios at 1/3 each gives 1-alpha=0.05 < 1/3, so this reduces
+    to pure worst-case optimization over the 3 scenarios, not a smoothed tail average.
+    This is mathematically correct, just worth knowing before reading results as "a
+    softer version of worst-case" -- with only 3 discrete scenarios it isn't, at this
+    alpha.
+
+    A trust-region/proximal-bundle stabilization (penalizing the master for straying
+    from the best-found-so-far capacity) was tried and REMOVED 2026-09-16: it produced
+    a real correctness bug (reading LB off the penalized solve gave a false
+    "gap=0.000000, converged" at an objective WORSE than the true optimum -- a lower
+    bound can never exceed an achievable objective, so that was provably wrong, not
+    just loose) and, even after fixing that by solving the master twice per iteration
+    (once plain for a valid LB, once penalized to pick the trial point), the
+    stabilization itself got PERMANENTLY STUCK at a mediocre point on a 2-country test
+    (10+ iterations with zero progress, worse than no stabilization at all) with the
+    tested fixed penalty weight. Removed rather than pursued further (would need an
+    adaptive/decaying weight schedule to be safe) -- see git history / conversation
+    around 2026-09-16 if revisiting this.
+
+    ``max_total_assets`` (optional, added 2026-09-16 at user request): adds
+    ``sum_c sum_a y.sum("k") <= max_total_assets`` -- a SYSTEM-WIDE cap on the total
+    number of (country, asset) build decisions across every country and every asset
+    combined (any mix of technologies, no per-asset or per-country sub-limit), on top
+    of whatever the ``budget``/``min_total_electrolyser_mw``/
+    ``require_electrolyser_for_others`` constraints already allow. E.g.
+    ``max_total_assets=20`` across 13 countries x 5 assets (65 possible (country,asset)
+    slots) lets the optimizer pick freely WHICH 20 to fund and at WHICH candidate size,
+    still subject to every other constraint (so, in particular, still needs enough
+    electrolyser installations among those 20 to satisfy ``min_total_electrolyser_mw``
+    if that's also set). Default ``None`` adds no such cap."""
     m = linopy.Model()
     country_idx = pd.Index(countries, name="country")
     asset_idx = pd.Index(ASSETS, name="asset")
@@ -85,10 +150,26 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
     k_idx = pd.Index(range(n_k), name="k")
 
     y = m.add_variables(binary=True, coords=[country_idx, asset_idx, k_idx], name="y")
-    # ONE scalar theta, not one per country (see add_optimality_cut's docstring for why
-    # per-country theta/cuts are invalid here) -- theta_lower scaled by len(countries)
-    # to preserve the original per-country floor's total slack at iteration 1.
-    theta = m.add_variables(lower=theta_lower * len(countries), name="theta")
+    # ONE scalar theta (or one PER SCENARIO if scenario_probs is given, see above), not
+    # one per country (see add_optimality_cut's docstring for why per-country theta/cuts
+    # are invalid here) -- theta_lower scaled by len(countries) to preserve the original
+    # per-country floor's total slack at iteration 1.
+    if cvar_alpha is not None and scenario_probs is None:
+        raise ValueError("cvar_alpha requires scenario_probs")
+    if scenario_probs is None:
+        theta = m.add_variables(lower=theta_lower * len(countries), name="theta")
+        theta_term = theta
+    else:
+        scenario_idx = pd.Index(list(scenario_probs), name="scenario")
+        theta = m.add_variables(lower=theta_lower * len(countries), coords=[scenario_idx], name="theta")
+        prob_da = xr.DataArray(list(scenario_probs.values()), coords=[scenario_idx])
+        if cvar_alpha is None:
+            theta_term = (theta * prob_da).sum()
+        else:
+            zeta = m.add_variables(name="zeta")
+            u = m.add_variables(lower=0, coords=[scenario_idx], name="cvar_excess")
+            m.add_constraints(u >= theta - zeta, name="cvar_excess_def")
+            theta_term = zeta + (u * prob_da).sum() / (1 - cvar_alpha)
 
     cand_da = xr.DataArray(
         np.array([[cand_mw[c][a] for a in ASSETS] for c in countries]),
@@ -123,14 +204,17 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
     if disabled_assets:
         for a in disabled_assets:
             m.add_constraints(y.sum("k").sel(asset=a) == 0, name=f"disable_{a}")
-    m.add_objective(annualized_capex_expr + theta)
+    if max_total_assets is not None:
+        m.add_constraints(y.sum(["k", "asset", "country"]) <= max_total_assets, name="max_total_assets")
+    m.add_objective(annualized_capex_expr + theta_term)
     return m
 
 
 def add_optimality_cut(m: linopy.Model, countries: list[str], iteration: int,
                        Q: dict[str, float], mu: dict[str, dict[str, float]],
                        cap_star: dict[str, dict[str, float]],
-                       cand_mw: dict[str, dict[str, np.ndarray]]) -> None:
+                       cand_mw: dict[str, dict[str, np.ndarray]],
+                       scenario: str | None = None) -> None:
     """Add ONE combined Benders optimality cut for this iteration, covering every
     country in ``countries`` together:
 
@@ -162,16 +246,49 @@ def add_optimality_cut(m: linopy.Model, countries: list[str], iteration: int,
     believe nothing better existed). Summing every country's Q/mu into ONE cut on ONE
     shared ``theta`` restores the standard convexity argument: verified with the same
     reproduction, lb no longer exceeds best_ub and the master keeps exploring past the
-    old stuck point. See ``Formulation.md`` SS4.5/4.6 -- needs updating to match."""
+    old stuck point. See ``Formulation.md`` SS4.5/4.6 -- needs updating to match.
+
+    ``scenario`` (optional, added 2026-09-16, Formulation.md SS4.9): when given (must
+    match one of ``build_master``'s own ``scenario_probs`` keys), the cut constrains
+    ``theta.sel(scenario=scenario)`` instead of the plain scalar ``theta``, and
+    ``Q``/``mu``/``cap_star`` must be THAT SCENARIO'S OWN (not expectation-aggregated)
+    subproblem results -- valid because scenarios don't share any subproblem-level
+    coupling (only countries do, within one scenario's joint solve), so each scenario
+    gets its own genuine tangent-plane cut rather than all scenarios being flattened
+    into one. Default ``None`` preserves the original scalar-theta cut exactly."""
     y = m.variables["y"]
     theta = m.variables["theta"]
+    theta_var = theta.sel(scenario=scenario) if scenario is not None else theta
     k_idx = y.coords["k"]
     cap_expr = sum(
         mu[c][a] * (xr.DataArray(cand_mw[c][a], coords=[k_idx]) * y.sel(country=c, asset=a)).sum("k")
         for c in countries for a in ASSETS
     )
     rhs = sum(Q[c] - sum(mu[c][a] * cap_star[c][a] for a in ASSETS) for c in countries)
-    m.add_constraints(theta - cap_expr >= rhs, name=f"cut_{iteration}")
+    cut_name = f"cut_{scenario}_{iteration}" if scenario is not None else f"cut_{iteration}"
+    m.add_constraints(theta_var - cap_expr >= rhs, name=cut_name)
+
+
+def cvar_value(values: dict[str, float], probs: dict[str, float], alpha: float) -> float:
+    """Exact CVaR_alpha of a discrete distribution given by ``{scenario: value}`` /
+    ``{scenario: probability}`` -- the analytic formula (sort ascending, accumulate
+    probability mass from the top until it reaches ``1-alpha``, taking a fractional
+    weight of the boundary scenario if needed), equivalent to solving the same
+    zeta/u_s linear program ``build_master`` uses internally but evaluated directly on
+    REALIZED numbers. Used to report a genuine upper bound at a fixed trial capacity
+    (the actual per-scenario subproblem objectives), since the master's own ``zeta``/
+    ``theta_s`` are relaxed (lower-bounding) surrogates, not the true CVaR of the
+    achieved objective."""
+    tail_mass = 1.0 - alpha
+    remaining = tail_mass
+    total = 0.0
+    for s in sorted(values, key=lambda s: values[s], reverse=True):
+        take = min(probs[s], remaining)
+        total += take * values[s]
+        remaining -= take
+        if remaining <= 1e-12:
+            break
+    return total / tail_mass
 
 
 def extract_capacities(m: linopy.Model, countries: list[str],

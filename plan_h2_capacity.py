@@ -27,17 +27,33 @@ electrolyser candidate that iteration (``h2_planning.build_master``'s
 electrolyser gets every other asset forced to 0 MW too, since this facility is a
 Hydrogen Producer, not a standalone merchant power plant.
 
-Capacity is chosen under wind/PV/electrolyser UNCERTAINTY (added 2026-09-14, at user
-request): every iteration's trial capacity is priced once per capacity-uncertainty
-scenario (``run_capacity_scenarios.py``'s ``p100``/``wind70``/``pv70``/``ely70`` --
-each using that scenario's own trained-surrogate price context, not just its own
-capacity multiplier), and the resulting 4 objectives/duals are combined into ONE
-equal-weighted EXPECTED-VALUE optimality cut per iteration (``SCENARIO_PROBS`` below).
-The master therefore never sees a scenario index at all -- it picks exactly ONE
-capacity plan, sized for its average performance across all 4 scenarios. Expected value
-was chosen over a worst-case/robust or CVaR-style risk measure for simplicity, at user
-request; ``SCENARIO_PROBS``' equal weights are also an assumption, editable directly if
-some scenarios should be judged more/less likely than 25% each.
+Capacity is chosen under wind/PV UNCERTAINTY (added 2026-09-14, at user request):
+every iteration's trial capacity is priced once per capacity-uncertainty scenario
+(``run_capacity_scenarios.py``'s ``p100``/``wind70``/``pv70`` -- each using that
+scenario's own trained-surrogate price context, not just its own capacity multiplier).
+The master's OBJECTIVE defaults to an equal-weighted EXPECTED VALUE across scenarios
+(``SCENARIO_PROBS`` below) -- the master's capacity decision itself carries no scenario
+index, exactly one plan, sized for its average performance. Expected value was chosen
+over a worst-case/robust or CVaR-style risk measure for simplicity, at user request on
+2026-09-14; a CVaR alternative was added 2026-09-16 (``--cvar-alpha``, ``h2_planning.
+build_master``'s ``cvar_alpha``/``h2_planning.cvar_value`` -- REPLACES, doesn't blend
+with, the expected value when given). ``SCENARIO_PROBS``' equal weights are also an
+assumption, editable directly if some scenarios should be judged more/less likely than
+33% each.
+
+The 3 scenarios' subproblem solves each get their OWN Benders cut on their OWN
+per-scenario ``theta_s`` (``h2_planning.master``'s ``scenario_probs``/
+``add_optimality_cut(..., scenario=s)``), added 2026-09-16 at user request for faster
+convergence -- NOT the same as the SS4.6 single-cut-across-countries fix, which stays
+exactly as it was (still one combined cut per scenario, just no longer one combined cut
+across scenarios too). This roughly triples the Benders information gained per
+iteration for a 3-scenario run versus the original one-cut-total design, without
+weakening rigor -- see Formulation.md SS4.9.1 for why splitting cuts by scenario is
+valid where splitting by country was not. The 3 solves themselves still run
+SEQUENTIALLY, not concurrently -- a ThreadPoolExecutor attempt measured SLOWER (Python's
+GIL isn't released enough during linopy's model-construction to benefit from threads);
+see the loop body's own comment for the measured numbers and why a real fix
+(ProcessPoolExecutor) wasn't pursued.
 
 The electricity grid and H2 pipeline exchange connections (every country's ``x_grid``/
 ``x_h2``) are UNLIMITED here -- this planning pipeline always passes
@@ -94,7 +110,8 @@ def eligible_countries() -> list[str]:
 
 def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_tol: float,
                 capex_cfg: hp.CapexAssumptions, joint_pool_mw: float, rep_days_per_month: int,
-                quiet_solver: bool = True):
+                quiet_solver: bool = True, on_iteration=None, cvar_alpha: float | None = None,
+                max_total_assets: int | None = None):
     """Every iteration solves ALL of ``countries`` TOGETHER in one joint linopy model
     (``optimize_h2_producer.solve_joint``), sharing a fixed ``joint_pool_mw`` MW/hr
     downstream-demand pool -- see module docstring. Automatically floors the master's
@@ -105,7 +122,29 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     pool demand at all). Also unconditionally passes
     ``require_electrolyser_for_others=True`` -- wind/PV/battery/tank can only be
     selected for a country that also selected a positive electrolyser candidate that
-    iteration."""
+    iteration.
+
+    ``on_iteration``, if given, is called after every iteration's cut is added (before
+    the convergence check) with one dict: ``{"iter", "lb", "ub", "best_ub", "gap",
+    "best_capacities", "best_capex_by_asset", "host_zone", "log", "per_country_log"}``
+    (``log``/``per_country_log`` are the FULL history so far, not just this iteration) --
+    e.g. to checkpoint progress to disk, since a long run has no other way to survive an
+    interruption (§4.9's OOM-kill finding: a run given enough iterations to fully close
+    the gap on a 13-country/multi-scenario problem can run long enough to be killed for
+    memory before it ever returns, losing everything if nothing was saved along the
+    way). Default ``None`` preserves every existing caller's behavior exactly.
+
+    ``cvar_alpha`` (optional, added 2026-09-16 at user request): switches the master's
+    risk measure from the default equal-weighted EXPECTED VALUE across scenarios to
+    CVaR_alpha (``h2_planning.build_master``'s own ``cvar_alpha`` param -- see its
+    docstring for the exact linearization and the "collapses to worst-case with few
+    equally-likely scenarios" caveat). When given, the reported ``ub`` each iteration
+    is also switched from ``annualized_capex + sum_s prob_s*Q_s(cap*)`` to
+    ``annualized_capex + CVaR_alpha({Q_s(cap*)})`` (``h2_planning.cvar_value``, exact
+    formula on the REAL per-scenario subproblem objectives, not the relaxed ``theta_s``/
+    ``zeta`` surrogates) -- so the printed objective is the actual risk-adjusted number
+    being minimized, not the plain expectation. Default ``None`` preserves the original
+    expected-value behavior exactly."""
     default_mw, cand_mw, cand_capex, host_zone = hp.build_candidates(countries, capex_cfg)
     crf = capex_cfg.capital_recovery_factors()
 
@@ -134,7 +173,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
 
     m = hp.build_master(countries, cand_mw, cand_capex, budget, crf, capex_cfg.theta_lower_bound_eur,
                         min_total_electrolyser_mw=min_total_electrolyser_mw,
-                        require_electrolyser_for_others=True)
+                        require_electrolyser_for_others=True, scenario_probs=SCENARIO_PROBS,
+                        cvar_alpha=cvar_alpha, max_total_assets=max_total_assets)
 
     best_ub, best_capacities, best_capex, best_capex_by_asset = float("inf"), None, None, None
     log = []
@@ -151,27 +191,45 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
         zones = [host_zone[c] for c in countries]
         caps_by_zone = {host_zone[c]: cap_star[c] for c in countries}
 
-        # Solve the SAME trial capacity once per scenario, then combine into ONE
-        # expected-value cut (see SCENARIO_PROBS above) -- this is the only place
-        # scenario-awareness enters the Benders loop; the master itself never sees a
-        # scenario index.
+        # Solve the SAME trial capacity once per scenario, then add ONE Benders cut PER
+        # SCENARIO on that scenario's own theta_s (see build_master's scenario_probs /
+        # add_optimality_cut's scenario param), instead of flattening all scenarios into
+        # one combined cut first. Only the MASTER's OBJECTIVE uses the expected value
+        # (prob-weighted sum of theta_s); the cuts themselves stay scenario-specific for
+        # faster convergence (Formulation.md SS4.9.1).
+        #
+        # NOT run concurrently, despite being independent given a fixed capacity: tried
+        # a ThreadPoolExecutor here (2026-09-16) and measured it SLOWER, not faster --
+        # 29.3s/27.4s per iteration at 13-country scale vs ~18-19s sequential -- Python's
+        # GIL isn't released enough during linopy's numpy/xarray-heavy model construction
+        # for threads to help, and thread-switching overhead makes it net worse. A real
+        # speedup would need separate OS processes (ProcessPoolExecutor), which was not
+        # attempted: it would multiply memory footprint (each worker needs its own copy
+        # of the enriched elec/h2 price frames) at exactly the scale where OOM kills are
+        # already a live risk (Formulation.md SS4.9's checkpoint-and-restart finding) --
+        # judged not worth that tradeoff without first proving it's needed.
+        results = {}
+        for s in SCENARIO_PROBS:
+            edf_s, hdf_s = price_frames[s]
+            results[s] = ohp.solve_joint(zones, caps_by_zone, rep_days_per_month, joint_pool_mw,
+                                         return_duals=True, grid_cap_mw=UNLIMITED_EXCHANGE_MW,
+                                         h2_cap_mw=UNLIMITED_EXCHANGE_MW, edf=edf_s, hdf=hdf_s,
+                                         quiet=quiet_solver)
+
         total_Q = 0.0
+        Q_total_by_scenario: dict[str, float] = {}
         Q_by_country = {c: 0.0 for c in countries}
-        mu_by_country = {c: {a: 0.0 for a in hp.ASSETS} for c in countries}
         Q_by_country_by_scenario: dict[str, dict[str, float]] = {}
         for s, prob in SCENARIO_PROBS.items():
-            edf_s, hdf_s = price_frames[s]
-            result = ohp.solve_joint(zones, caps_by_zone, rep_days_per_month, joint_pool_mw,
-                                     return_duals=True, grid_cap_mw=UNLIMITED_EXCHANGE_MW,
-                                     h2_cap_mw=UNLIMITED_EXCHANGE_MW, edf=edf_s, hdf=hdf_s,
-                                     quiet=quiet_solver)
+            result = results[s]
             total_Q += prob * float(result["objective"])
-            Q_by_country_by_scenario[s] = {c: result["objective_by_zone"][host_zone[c]] for c in countries}
+            Q_total_by_scenario[s] = float(result["objective"])
+            Q_s = {c: result["objective_by_zone"][host_zone[c]] for c in countries}
+            mu_s = {c: result["cut_coeffs"][host_zone[c]] for c in countries}
+            Q_by_country_by_scenario[s] = Q_s
             for c in countries:
-                Q_by_country[c] += prob * result["objective_by_zone"][host_zone[c]]
-                for a in hp.ASSETS:
-                    mu_by_country[c][a] += prob * result["cut_coeffs"][host_zone[c]][a]
-        hp.add_optimality_cut(m, countries, it, Q_by_country, mu_by_country, cap_star, cand_mw)
+                Q_by_country[c] += prob * Q_s[c]
+            hp.add_optimality_cut(m, countries, it, Q_s, mu_s, cap_star, cand_mw, scenario=s)
         sub_s = time.time() - t_sub
 
         capex_star = hp.extract_capex(m, countries, cand_capex)
@@ -182,7 +240,13 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                                        "capex": sum(capex_star[c].values()), "capacities": dict(cap_star[c])})
         raw_capex = sum(capex_star[c][a] for c in countries for a in hp.ASSETS)
         annualized_capex = sum(capex_star[c][a] * crf[a] for c in countries for a in hp.ASSETS)
-        ub = annualized_capex + total_Q
+        # UB is evaluated with the SAME risk measure the master minimizes: exact CVaR of
+        # the real per-scenario objectives (h2_planning.cvar_value), not the relaxed
+        # zeta/theta_s surrogates, when cvar_alpha is set -- otherwise plain expectation.
+        if cvar_alpha is not None:
+            ub = annualized_capex + hp.cvar_value(Q_total_by_scenario, SCENARIO_PROBS, cvar_alpha)
+        else:
+            ub = annualized_capex + total_Q
         if ub < best_ub:
             best_ub, best_capacities, best_capex, best_capex_by_asset = ub, cap_star, raw_capex, capex_star
         gap = (best_ub - lb) / max(abs(best_ub), 1e-6)
@@ -190,6 +254,10 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                     "subproblems_seconds": round(sub_s, 1)})
         print(f"iter {it:>3}: LB={lb:>16,.0f}  UB={ub:>16,.0f}  best={best_ub:>16,.0f}  "
              f"gap={gap:.4f}  (subproblems {sub_s:.1f}s)")
+        if on_iteration is not None:
+            on_iteration({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
+                         "best_capacities": best_capacities, "best_capex_by_asset": best_capex_by_asset,
+                         "host_zone": host_zone, "log": list(log), "per_country_log": per_country_log})
         if gap <= gap_tol:
             print(f"converged (gap {gap:.4f} <= tol {gap_tol}) after {it} iteration(s)")
             break
@@ -240,6 +308,19 @@ def main() -> None:
                          "pool_mw. Each country's own SHARE of this fixed total is a free "
                          "variable the subproblem decides (bounded by that country's own "
                          "electrolyser capacity); the total itself never changes hour to hour.")
+    ap.add_argument("--cvar-alpha", type=float, default=None,
+                    help="switch the risk measure from the default equal-weighted EXPECTED "
+                         "VALUE across capacity-uncertainty scenarios to CVaR at this "
+                         "confidence level (0-1, e.g. 0.95), REPLACING the expected value "
+                         "(h2_planning.build_master's cvar_alpha). NOTE: with only 3 "
+                         "equally-likely scenarios (1/3 each), any alpha with "
+                         "(1-alpha) < 1/3 (e.g. 0.95) collapses CVaR exactly to pure "
+                         "worst-case over the 3 scenarios -- see build_master's docstring.")
+    ap.add_argument("--max-assets", type=int, default=None,
+                    help="cap the TOTAL number of (country, asset) build decisions across "
+                         "every included country and every asset combined -- any mix of "
+                         "technologies, no per-asset/per-country sub-limit "
+                         "(h2_planning.build_master's max_total_assets)")
     args = ap.parse_args()
 
     capex_cfg = hp.CapexAssumptions()
@@ -272,14 +353,19 @@ def main() -> None:
     print(f"Exchange caps: grid=unlimited, H2 pipeline=unlimited")
     print("Require-electrolyser-for-others: ON -- wind/PV/battery/tank only buildable "
          "alongside a positive electrolyser candidate")
-    print(f"Capacity-uncertainty scenarios (expected-value risk measure, equal-weighted): "
-         f"{SCENARIO_PROBS}")
+    if args.cvar_alpha is None:
+        print(f"Capacity-uncertainty scenarios (expected-value risk measure, equal-weighted): "
+             f"{SCENARIO_PROBS}")
+    else:
+        print(f"Capacity-uncertainty scenarios (CVaR_{args.cvar_alpha:.2f} risk measure, "
+             f"equal-weighted scenario probabilities): {SCENARIO_PROBS}")
 
     t0 = time.time()
     (best_capacities, best_capex, best_ub, log_df, host_zone, price_frames,
     per_country_log, best_capex_by_asset) = run_benders(
         countries, budget, args.max_iters, args.gap_tol, capex_cfg,
-        joint_pool_mw=args.joint_pool_mw, rep_days_per_month=args.rep_days_per_month)
+        joint_pool_mw=args.joint_pool_mw, rep_days_per_month=args.rep_days_per_month,
+        cvar_alpha=args.cvar_alpha, max_total_assets=args.max_assets)
     elapsed = time.time() - t0
 
     print(f"\nDone in {elapsed:.1f}s. Final capacities:")
@@ -295,7 +381,8 @@ def main() -> None:
     else:
         print(f"\nTotal raw CAPEX: {best_capex:,.0f} EUR (budget {budget:,.0f} EUR, "
              f"{best_capex / budget:.1%} used)")
-    print(f"Best objective (annualized CAPEX + EXPECTED 1yr operating cost across "
+    risk_label = (f"EXPECTED" if args.cvar_alpha is None else f"CVaR_{args.cvar_alpha:.2f}")
+    print(f"Best objective (annualized CAPEX + {risk_label} 1yr operating cost across "
          f"{len(SCENARIO_PROBS)} scenarios, EUR, lower=better): {best_ub:,.0f}")
 
     out_prefix = Path(args.output)
