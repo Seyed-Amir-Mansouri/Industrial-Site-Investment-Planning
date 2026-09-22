@@ -17,13 +17,10 @@ from .config import ASSETS
 def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]],
                  cand_capex: dict[str, dict[str, np.ndarray]], budget: float | None,
                  crf: dict[str, float], theta_lower: float,
-                 downstream_load_mw: float | None = None,
                  require_electrolyser_for_others: bool = False,
                  min_total_electrolyser_mw: float | None = None,
-                 disabled_assets: list[str] | None = None,
                  scenario_probs: dict[str, float] | None = None,
-                 cvar_alpha: float | None = None,
-                 max_total_assets: int | None = None) -> linopy.Model:
+                 cvar_alpha: float | None = None) -> linopy.Model:
     """Fresh master problem, no cuts yet (iteration 1 will pick candidates purely by
     annualized CAPEX, with every ``theta`` pinned at its lower bound -- expected, see
     Formulation.md SS4.6). ``cand_capex[c][a][k]`` is candidate ``k``'s ABSOLUTE CAPEX
@@ -40,47 +37,25 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
     CAPEX, with no system-wide spend cap at all. Useful to see what capacities the
     proxy economics alone would pick, independent of any budget assumption.
 
-    ``downstream_load_mw`` (optional), if given, adds
-    ``cap_{c,electrolyser}(y) >= downstream_load_mw`` for every country -- "each H2
-    Producer must install AT LEAST its downstream load" worth of electrolyser capacity,
-    rather than relying on pipeline imports to cover demand it can't itself produce.
-    Only meaningful paired with ``optimize_h2_producer.solve(...,
-    downstream_load_mw=...)`` in the subproblem (same fixed MW figure), since otherwise
-    the subproblem's own demand baseline still scales with whatever electrolyser MW
-    happens to be chosen. This constraint overrides ``one_hot``'s ``<=1`` skip option
-    for the electrolyser specifically -- with ``downstream_load_mw > 0`` the
-    electrolyser candidate 0 (skip) can never satisfy it, so every country is forced to
-    build at least enough electrolyser capacity to serve its own load.
-
     ``require_electrolyser_for_others`` (optional), if True, adds
     ``sum_k y_{c,a,k} <= sum_k y_{c,electrolyser,k}`` for every non-electrolyser asset
     -- wind/PV/battery/tank can only be selected (any positive candidate) for a country
     that also selected a positive electrolyser candidate; skipping the electrolyser
     forces every other asset to be skipped too. Physically: this facility is a
     Hydrogen Producer, so its renewables/storage exist to serve the electrolyser, not
-    as a standalone power plant. NOTE: automatically satisfied (vacuously) and changes
-    nothing whenever ``downstream_load_mw`` is also set to a positive value, since that
-    already forces the electrolyser on in every country -- it only bites in a run
-    where the electrolyser itself is genuinely optional (``downstream_load_mw`` unset).
+    as a standalone power plant.
 
     ``min_total_electrolyser_mw`` (optional), if given, adds
     ``sum_c cap_{c,electrolyser}(y) >= min_total_electrolyser_mw`` -- an AGGREGATE
-    floor across every country combined (unlike ``downstream_load_mw``, which is
-    per-country). Needed whenever the subproblem enforces a shared demand POOL across
-    countries (``optimize_h2_producer.solve_joint``'s ``pool_mw``): with no cuts yet,
-    iteration 1's master would otherwise pick the globally cheapest combination --
-    skip every electrolyser everywhere -- which makes the joint subproblem
-    INFEASIBLE (a 0-capacity fleet can't supply any pool demand at all, let alone
-    ``pool_mw``). This constraint only guarantees the fleet COULD satisfy the pool in
-    aggregate (typically ``pool_mw / eta_ely``); the master is still free to decide
-    HOW that capacity is distributed across countries.
-
-    ``disabled_assets`` (optional), a list of ``ASSETS`` entries (e.g.
-    ``["wind_mw", "pv_mw"]``) to force to 0 MW for EVERY country -- adds
-    ``sum_k y_{c,a,k} == 0`` for each named asset, i.e. fixes that asset's binary
-    selection off entirely rather than leaving it to the optimizer. Diagnostic: e.g.
-    disabling wind/PV isolates whether they're what's driving other assets'
-    (especially electrolyser's) sizing via ``require_electrolyser_for_others``.
+    floor across every country combined, needed whenever the subproblem enforces a
+    shared demand POOL across countries (``optimize_h2_producer.solve_joint``'s
+    ``pool_mw``, the only demand mode this codebase's CLI uses -- see
+    ``plan_h2_capacity.py``): with no cuts yet, iteration 1's master would otherwise
+    pick the globally cheapest combination -- skip every electrolyser everywhere --
+    which makes the joint subproblem INFEASIBLE (a 0-capacity fleet can't supply any
+    pool demand at all, let alone ``pool_mw``). This constraint only guarantees the
+    fleet COULD satisfy the pool in aggregate (typically ``pool_mw / eta_ely``); the
+    master is still free to decide HOW that capacity is distributed across countries.
 
     ``scenario_probs`` (optional, added 2026-09-16 for the stochastic/expected-value
     link, Formulation.md SS4.9): a ``{scenario: probability}`` dict switches ``theta``
@@ -132,17 +107,15 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
     adaptive/decaying weight schedule to be safe) -- see git history / conversation
     around 2026-09-16 if revisiting this.
 
-    ``max_total_assets`` (optional, added 2026-09-16 at user request): adds
-    ``sum_c sum_a y.sum("k") <= max_total_assets`` -- a SYSTEM-WIDE cap on the total
-    number of (country, asset) build decisions across every country and every asset
-    combined (any mix of technologies, no per-asset or per-country sub-limit), on top
-    of whatever the ``budget``/``min_total_electrolyser_mw``/
-    ``require_electrolyser_for_others`` constraints already allow. E.g.
-    ``max_total_assets=20`` across 13 countries x 5 assets (65 possible (country,asset)
-    slots) lets the optimizer pick freely WHICH 20 to fund and at WHICH candidate size,
-    still subject to every other constraint (so, in particular, still needs enough
-    electrolyser installations among those 20 to satisfy ``min_total_electrolyser_mw``
-    if that's also set). Default ``None`` adds no such cap."""
+    ``max_total_assets`` (a system-wide cap on total (country, asset) build decisions),
+    ``disabled_assets`` (force specific assets to 0 MW everywhere), and
+    ``downstream_load_mw`` (a per-country electrolyser-vs-own-load floor, an alternative
+    to the shared-pool ``min_total_electrolyser_mw`` above) were all tried and REMOVED
+    2026-09-22 at user request, to leave ``budget`` as the sole discretionary
+    installation limit (on top of the joint-mode-required ``min_total_electrolyser_mw``/
+    ``require_electrolyser_for_others`` above, which aren't really "limitations" in the
+    same sense -- they just keep the joint subproblem feasible/physically sensible).
+    See git history around 2026-09-22 to restore any of the three."""
     m = linopy.Model()
     country_idx = pd.Index(countries, name="country")
     asset_idx = pd.Index(ASSETS, name="asset")
@@ -189,9 +162,6 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
     if budget is not None:
         capex_expr = (value_cost * y).sum()
         m.add_constraints(capex_expr <= budget, name="budget")
-    if downstream_load_mw is not None:
-        ely_cap = (cand_da * y).sum("k").sel(asset="electrolyser_mw")
-        m.add_constraints(ely_cap >= downstream_load_mw, name="min_electrolyser_vs_load")
     if min_total_electrolyser_mw is not None:
         ely_cap_total = (cand_da * y).sum(["k", "country"]).sel(asset="electrolyser_mw")
         m.add_constraints(ely_cap_total >= min_total_electrolyser_mw, name="min_total_electrolyser")
@@ -201,11 +171,6 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
             if a == "electrolyser_mw":
                 continue
             m.add_constraints(y.sum("k").sel(asset=a) <= ely_installed, name=f"require_ely_for_{a}")
-    if disabled_assets:
-        for a in disabled_assets:
-            m.add_constraints(y.sum("k").sel(asset=a) == 0, name=f"disable_{a}")
-    if max_total_assets is not None:
-        m.add_constraints(y.sum(["k", "asset", "country"]) <= max_total_assets, name="max_total_assets")
     m.add_objective(annualized_capex_expr + theta_term)
     return m
 

@@ -111,8 +111,7 @@ def eligible_countries() -> list[str]:
 def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_tol: float,
                 capex_cfg: hp.CapexAssumptions, joint_pool_mw: float, rep_days_per_month: int,
                 quiet_solver: bool = True, on_iteration=None, cvar_alpha: float | None = None,
-                max_total_assets: int | None = None, master_time_limit: float = 180.0,
-                use_pareto_cuts: bool = False):
+                master_time_limit: float = 180.0, use_pareto_cuts: bool = False):
     """Every iteration solves ALL of ``countries`` TOGETHER in one joint linopy model
     (``optimize_h2_producer.solve_joint``), sharing a fixed ``joint_pool_mw`` MW/hr
     downstream-demand pool -- see module docstring. Automatically floors the master's
@@ -149,7 +148,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
 
     ``master_time_limit`` (seconds, default 180, added 2026-09-16 at user request after
     the master MILP was observed taking 600-900s+ and STILL GROWING per iteration on a
-    13-country/``max_total_assets=20`` run as cuts accumulated -- a diagnostic against
+    13-country run (then using a since-removed ``max_total_assets`` cap) as cuts
+    accumulated -- a diagnostic against
     those REAL accumulated cuts found no ``solver_options`` combination (mip_rel_gap
     1e-4/1e-3/1e-2, mip_heuristic_effort, presolve+parallel) let the master itself prove
     even a 30% inner gap within 180s: this master is just genuinely hard to solve to
@@ -166,8 +166,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     time budget).
 
     ``use_pareto_cuts`` (default False, added 2026-09-17 at user request after
-    ``master_time_limit`` alone still left the 13-country/``max_total_assets=20`` run's
-    gap plateaued around 0.80 for 60+ iterations): builds each optimality cut from a
+    ``master_time_limit`` alone still left a 13-country run's gap plateaued around 0.80
+    for 60+ iterations): builds each optimality cut from a
     subproblem solve at a MOVING CORE POINT (Papadakos 2008's practical simplification
     of Magnanti-Wong Pareto-optimal cuts) instead of the trial point ``cap_star`` the
     master just proposed. Method: a one-time core point (mean of ``{0} u candidates``
@@ -187,7 +187,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     5-country test problems: identical final capacities/best_ub to the non-Pareto
     baseline (just reached in more, cheaper-to-solve-at-that-scale iterations -- no
     benefit shows up until the problem is large enough that cut quality, not sheer
-    problem size, is the bottleneck). At 13-country/``max_total_assets=20`` scale this
+    problem size, is the bottleneck). At 13-country scale this
     is decisive: a fresh 10-iteration head-to-head against the baseline reached gap
     0.0038 (vs baseline's 1.012, which never dropped below 1.0) for only +5.8% more
     wall time (~53s of extra subproblem solving per iteration is small next to the
@@ -221,7 +221,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     m = hp.build_master(countries, cand_mw, cand_capex, budget, crf, capex_cfg.theta_lower_bound_eur,
                         min_total_electrolyser_mw=min_total_electrolyser_mw,
                         require_electrolyser_for_others=True, scenario_probs=SCENARIO_PROBS,
-                        cvar_alpha=cvar_alpha, max_total_assets=max_total_assets)
+                        cvar_alpha=cvar_alpha)
 
     # One-time Pareto-cut core-point init (mean of {0} u candidates per (country, asset))
     # -- see use_pareto_cuts's docstring above. Unused when use_pareto_cuts is False.
@@ -394,11 +394,6 @@ def main() -> None:
                          "equally-likely scenarios (1/3 each), any alpha with "
                          "(1-alpha) < 1/3 (e.g. 0.95) collapses CVaR exactly to pure "
                          "worst-case over the 3 scenarios -- see build_master's docstring.")
-    ap.add_argument("--max-assets", type=int, default=None,
-                    help="cap the TOTAL number of (country, asset) build decisions across "
-                         "every included country and every asset combined -- any mix of "
-                         "technologies, no per-asset/per-country sub-limit "
-                         "(h2_planning.build_master's max_total_assets)")
     ap.add_argument("--master-time-limit", type=float, default=180.0,
                     help="wall-time cap (seconds) per master MILP solve, default 180 -- the "
                          "Benders lb is read from HiGHS's mip_dual_bound (valid even when "
@@ -456,8 +451,8 @@ def main() -> None:
     per_country_log, best_capex_by_asset) = run_benders(
         countries, budget, args.max_iters, args.gap_tol, capex_cfg,
         joint_pool_mw=args.joint_pool_mw, rep_days_per_month=args.rep_days_per_month,
-        cvar_alpha=args.cvar_alpha, max_total_assets=args.max_assets,
-        master_time_limit=args.master_time_limit, use_pareto_cuts=args.pareto_cuts)
+        cvar_alpha=args.cvar_alpha, master_time_limit=args.master_time_limit,
+        use_pareto_cuts=args.pareto_cuts)
     elapsed = time.time() - t0
 
     print(f"\nDone in {elapsed:.1f}s. Final capacities:")

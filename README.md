@@ -60,10 +60,20 @@ Full, current list also always available via `python plan_h2_capacity.py --help`
 **Budget / CAPEX**
 | Flag | Default | What it does |
 |---|---|---|
-| `--budget EUR` | 500,000,000 | System-wide raw/unannualized CAPEX budget, shared across every included country |
+| `--budget EUR` | 500,000,000 | System-wide raw/unannualized CAPEX budget, shared across every included country — the SOLE discretionary installation limit (on top of the always-on structural constraints below) |
 | `--no-budget` | off | Deactivate the budget constraint entirely — every country sizes purely off subproblem economics and annualized CAPEX |
 | `--discount-rate R` | 0.05 | Discount rate for the capital recovery factor |
 | `--lifetime-years N` | catalog's own (25/30/40/20/30yr for electrolyser/wind/PV/battery/tank) | Overrides EVERY asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
+
+A per-country downstream-load floor, a forced-off asset list, and a system-wide
+build-count cap were all tried and **removed** 2026-09-22 at user request, leaving
+`--budget` as the only discretionary lever on what gets built — see `Formulation.md`
+§4.9.3 if reviving any of them.
+
+**Capacity-uncertainty scenarios / risk measure**
+| Flag | Default | What it does |
+|---|---|---|
+| `--cvar-alpha A` | off (expected value) | Switch the risk measure across the 3 wind/PV capacity-uncertainty scenarios (`p100`/`wind70`/`pv70`, equal-weighted) from the default expected value to CVaR at confidence level `A` (0–1), REPLACING the expected value. With only 3 equally-likely scenarios, any `A` with `1-A < 1/3` (e.g. 0.95) collapses CVaR exactly to worst-case over the 3 scenarios — see `Formulation.md` §4.9.3 |
 
 **Subproblem / demand (both REQUIRED)**
 | Flag | What it does |
@@ -88,6 +98,8 @@ to `RunConfig`'s real 40/20 MW caps.
 |---|---|---|
 | `--max-iters N` | 30 | Benders iteration cap |
 | `--gap-tol G` | 0.01 (1%) | Relative Benders convergence gap |
+| `--master-time-limit S` | 180 | Wall-time cap (seconds) per master MILP solve — the master gets genuinely hard to solve to proven optimality as cuts accumulate at large scale (no `solver_options` tuning fixes this, see `Formulation.md` §4.9.3), so this bounds it instead; the Benders lower bound is read from HiGHS's own proven dual bound, so this stays mathematically rigorous even when the search is cut off early |
+| `--pareto-cuts` | off | Build each optimality cut from a subproblem solve at a moving CORE POINT (Papadakos-style Pareto-optimal cuts) instead of the trial point — a small extra cost per iteration, but the difference between genuinely converging and plateauing well above the gap tolerance at large scale (13-country, budget-only test: converged cleanly, gap monotonically decreasing every iteration, in 6 iterations / ~7.4 min — see `Formulation.md` §4.9.4). **Recommended for any run beyond a handful of countries.** |
 | `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv`/`_convergence.csv`/(with `--export-schedules`) `_schedule_<country>.csv` |
 | `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each included country's representative-day schedule |
 
