@@ -1,4 +1,4 @@
-"""Extract per-zone, per-hour feature tables from Project 3's dispatch-model output."""
+"""Extract per-zone, per-hour feature tables from the upstream dispatch model's output."""
 from __future__ import annotations
 
 import csv

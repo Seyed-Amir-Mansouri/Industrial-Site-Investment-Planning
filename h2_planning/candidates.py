@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from economic_dispatch import model as p3model
+from economic_dispatch import model as ed_model
 from economic_dispatch.config import RunConfig
 
 from .config import ASSETS, CapexAssumptions
@@ -18,8 +18,8 @@ DEFAULT_NETWORKS_DB = ROOT / "inputs" / "networks_2030.parquet"
 def default_sizing_and_zones(zones_db=DEFAULT_ZONES_DB, networks_db=DEFAULT_NETWORKS_DB):
     """Return (sizing, main_zones) for every country with a Hydrogen Producer."""
     cfg = RunConfig(zones_db=zones_db, networks_db=networks_db)
-    sizing = p3model._h2_producer_sizing(cfg)
-    main_zones = p3model._h2_main_zones(cfg)
+    sizing = ed_model._h2_producer_sizing(cfg)
+    main_zones = ed_model._h2_main_zones(cfg)
     return sizing, main_zones
 
 

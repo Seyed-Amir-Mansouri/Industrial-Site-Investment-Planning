@@ -15,8 +15,8 @@ sys.path.insert(0, str(ROOT))
 
 import linopy
 from economic_dispatch.config import RunConfig, discover_zones
-from economic_dispatch import model as p3model
-from economic_dispatch import data_loader as p3dl
+from economic_dispatch import model as ed_model
+from economic_dispatch import data_loader as ed_dl
 
 from price_model.multivariate import predict as model_predict
 from price_model.neighbors import add_neighbor_features, add_candidate_neighbor_prices, load_adjacency
@@ -154,20 +154,20 @@ def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict | None = 
     end_day = int(hours.max()) // HOURS_PER_DAY + 1
     cfg = _run_config(zone, start_day, end_day, capacities)
     country = zone[:2]
-    sizing = p3model._h2_producer_sizing(cfg)[country]
-    host_zone = p3model._h2_main_zones(cfg)[country]
+    sizing = ed_model._h2_producer_sizing(cfg)[country]
+    host_zone = ed_model._h2_main_zones(cfg)[country]
     if host_zone != zone:
         raise ValueError(f"{zone} is not {country}'s main H2 zone (that's {host_zone}); "
                          f"pass the main H2 zone instead.")
 
-    profile_info = p3model._h2_producer_renewable_profile_info(str(cfg.zones_db))
+    profile_info = ed_model._h2_producer_renewable_profile_info(str(cfg.zones_db))
     all_zones = discover_zones(cfg.zones_db)
 
     wind_candidates = _donor_candidates(country, host_zone, 0, profile_info, all_zones)
     pv_candidates = _donor_candidates(country, host_zone, 1, profile_info, all_zones)
     needed_zones = sorted({host_zone, *wind_candidates, *pv_candidates})
 
-    zdata = p3dl.load_zones_from_db(needed_zones, cfg.zones_db, 0, TOTAL_YEAR_HOURS)
+    zdata = ed_dl.load_zones_from_db(needed_zones, cfg.zones_db, 0, TOTAL_YEAR_HOURS)
     wind_donor = _donor_zone(wind_candidates, "Wind (onshore) (MW)", zdata)
     pv_donor = _donor_zone(pv_candidates, "Solar (MW)", zdata)
 
