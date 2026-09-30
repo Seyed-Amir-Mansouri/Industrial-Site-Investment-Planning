@@ -1,9 +1,4 @@
-"""Run configuration and tunable assumptions.
-
-Everything a user might reasonably want to change lives here so the model code
-stays free of magic numbers. Values flagged "ASSUMPTION" are documented in the
-README and are the ones to revisit if results look off.
-"""
+"""Run configuration and tunable assumptions for the dispatch model."""
 from __future__ import annotations
 
 import re
@@ -23,8 +18,6 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
 DEFAULT_EXPORTS_DIR = PROJECT_ROOT / "inputs"
 DEFAULT_ZONES_DB = DEFAULT_EXPORTS_DIR / "zones_2030.parquet"
 DEFAULT_NETWORKS_DB = DEFAULT_EXPORTS_DIR / "networks_2030.parquet"
-DEFAULT_H2_REF = DEFAULT_EXPORTS_DIR / "ReferenceGrid_Hydrogen.xlsx"
-DEFAULT_PLEXOS_REF = DEFAULT_DATA_DIR / "MMStandardOutputFile_NT2030_Plexos_CY2009_2.5_v40.xlsx"
 DEFAULT_MARGINAL_PRICE_ELEC_DB = DEFAULT_EXPORTS_DIR / "marginal_price_electricity_2030.parquet"
 DEFAULT_MARGINAL_PRICE_H2_DB = DEFAULT_EXPORTS_DIR / "marginal_price_hydrogen_2030.parquet"
 
@@ -37,15 +30,7 @@ _EXCLUDE_ZONES = {"NL6H", "PL00E", "PL00I"}
 
 
 def discover_zones_from_xlsx(data_dir=DEFAULT_DATA_DIR) -> list[str]:
-    """Zone codes = every ``*.xlsx`` in ``data_dir`` whose name matches a zone code.
-
-    Returns them sorted for reproducibility. Excel lock files (``~$*``),
-    ``Networks.xlsx``, non-zone workbooks, and ``_EXCLUDE_ZONES`` are skipped.
-    Empty list if the folder can't be read. Only used by build_db.py to
-    build zones_2030.parquet in the first place -- discover_zones() below
-    reads that database directly at runtime, so normal use never needs the
-    raw XLSXs/ folder at all.
-    """
+    """Sorted zone codes = every ``*.xlsx`` in ``data_dir`` matching a zone code."""
     data_dir = Path(data_dir)
     if not data_dir.is_dir():
         return []
@@ -88,7 +73,6 @@ class RunConfig:
     enable_uc: bool = False
     subtract_dsr_implicit: bool = False
     electricity_only: bool = False
-    enable_h2_producer: bool = False
 
     fuel_per_thermal: bool = True
     co2_per_thermal: bool = True
@@ -117,14 +101,8 @@ class RunConfig:
     h2_producer_battery_tank_step_mw: float = 2.5
     h2_producer_battery_efficiency: float = 0.92
     h2_producer_tank_efficiency: float = 1.0
-    h2_producer_grid_connection_mw: float = 40.0
-    h2_producer_h2_connection_mw: float = 20.0
     h2_producer_electrolyser_capacities_mw: list[float] = field(
         default_factory=lambda: [5, 5, 10, 10, 15, 15, 20, 20, 25, 25, 30, 35, 40])
-    h2_producer_downstream_demand_pct_of_electrolyser_capacity: float = 0.80
-    h2_producer_demand_flex_pct: float = 0.2
-    h2_producer_renewable_h2_quota: float = 0.42
-    h2_producer_gc_price_eur_per_mwh: float = 5.0
 
     h2_producer_electrolyser_mw_overrides: dict[str, float] = field(default_factory=dict)
     h2_producer_wind_mw_overrides: dict[str, float] = field(default_factory=dict)
@@ -135,18 +113,11 @@ class RunConfig:
     solver_name: str = "highs"
     mip_rel_gap: float = 1e-4
 
-    # Capacity-uncertainty scenarios (see run_capacity_scenarios.py): scale factors
-    # keyed "wind"/"solar"/"electrolyser" (see data_loader.apply_capacity_scale for the
-    # exact "Technology Capacities" keys each group covers), applied uniformly to every
-    # zone's installed capacity before the dispatch LP is built. Empty dict (default) =
-    # no change, byte-for-byte identical to every existing caller.
     capacity_scale: dict[str, float] = field(default_factory=dict)
-    # _override_renewable_upper_with_plexos (model.py) replaces wind/solar/ROR/other-RES
-    # generation with Project 3's own fixed historical PLEXOS-realized curves, which are
-    # NOT sensitive to installed capacity -- so it must be disabled for `capacity_scale`
-    # to have any effect on those technologies (electrolyser has no such override and is
-    # unaffected by this flag). Default True preserves every existing caller's behavior.
     use_plexos_renewable_override: bool = True
+
+    external_import_leg_cap: dict | None = None
+    external_export_leg_cap: dict | None = None
 
     def __post_init__(self) -> None:
         self.zones = _expand_to_countries(self.zones, self.zones_db)
@@ -157,11 +128,7 @@ class RunConfig:
         return base / self.out_tag if self.out_tag else base
 
     def hour_slice(self) -> tuple[int, int]:
-        """Return (start_row, end_row) 0-based half-open into the 8736-hour year.
-
-        Covers the inclusive day range [start_day, end_day], i.e.
-        ``num_days() * 24`` hours.
-        """
+        """0-based half-open (start_row, end_row) into the 8736-hour year for [start_day, end_day]."""
         start = (self.start_day - 1) * HOURS_PER_DAY
         end = self.end_day * HOURS_PER_DAY
         return start, end
@@ -170,11 +137,6 @@ class RunConfig:
         return self.end_day - self.start_day + 1
 
     def month_index(self) -> int:
-        """Approx calendar month (0-based) of the first day, for must-run selection.
-
-        The dataset year is 364 days (52 weeks); we map to 12 equal ~30.33-day
-        months purely to index the 12-value must-run lists. For a multi-day
-        horizon the first day's month is used for the whole run.
-        """
+        """Approx calendar month (0-based) of the first day, for must-run selection."""
         day0 = self.start_day - 1
         return min(11, int(day0 / (364 / 12)))

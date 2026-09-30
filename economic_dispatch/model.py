@@ -1,22 +1,4 @@
-"""Build the coupled electricity + hydrogen dispatch LP with linopy.
-
-Design
-------
-* One global index of "generators" (``gen``) spanning every supply resource
-  across all zones, plus indices for storage, electrolysers, and network lines.
-* Zone balances are assembled with incidence DataArrays (``A[gen, zone]``) via
-  ``(A * var).sum("gen")`` — fully vectorised over zones and hours.
-* The model is a pure LP: thermal fleets dispatch continuously between a
-  must-run floor and capacity (no integer commitment), and a small storage
-  throughput cost forbids simultaneous charge/discharge without a binary.
-* Inter-temporal constraints (ramps, storage state-of-charge) are expressed as
-  vectorised recursions with ``.shift()``; everything else is vectorised too.
-* Bidirectional lines are split into two non-negative flow variables so that the
-  fractional line loss can be applied on the receiving end unambiguously.
-
-The returned :class:`BuildResult` carries the linopy model and all lookup tables
-needed by report.py to extract and validate the solution.
-"""
+"""Build the coupled electricity + hydrogen dispatch LP with linopy."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -249,79 +231,10 @@ def _build_storage(zdata: dict[str, ZoneData], cfg: RunConfig):
     return storage, inflow
 
 
-def _h2_producer_countries(cfg: RunConfig) -> dict[str, str]:
-    """country -> attachment zone (that country's main H2 zone, see
-    ``_h2_main_zones``) for every country that gets a Hydrogen Producer this
-    run: only if ``cfg.enable_h2_producer`` (and the model isn't
-    ``electricity_only`` -- the Producer is one compact unit spanning both
-    carriers, so it doesn't have a power-only mode) AND that country's main H2
-    zone is actually part of the current zone selection -- same rule SMR and
-    H2 cross-border already use, so a country tested without its main H2 zone
-    in scope simply gets no Producer, rather than resolving to the wrong
-    sibling zone."""
-    if not cfg.enable_h2_producer or cfg.electricity_only:
-        return {}
-    main_map = _h2_main_zones(cfg)
-    return {c: z for c, z in main_map.items() if z in cfg.zones}
-
-
 def _h2_producer_sizing(cfg: RunConfig) -> dict[str, dict]:
-    """Per-country electrolyser, wind, PV, battery, and H2 tank capacity for
-    the Hydrogen Producer (§18.2/§18.7). Electrolyser capacity is assigned by
-    RANK against each country's *reference* national H2 load (average hourly
-    ``Hydrogen Demand Profile``, summed across every zone of that country,
-    averaged over the FULL stored year -- computed from the full zone
-    database rather than the current run's own zone/day selection, same
-    stability principle as ``_h2_main_zones``: a country's assigned capacity
-    must not shift depending on which subset of zones/days a given run
-    happens to test, otherwise a single-country test run couldn't be ranked
-    against the other 12 at all). Every country with a nonzero H2 load,
-    sorted by that reference load ascending, is zipped against
-    ``h2_producer_electrolyser_capacities_mw`` sorted ascending -- the
-    smallest-load country gets the smallest listed capacity, and so on. A
-    country-count / list-length mismatch is handled by padding with the
-    largest value (list too short) or dropping the smallest entries (list
-    too long), so every run-eligible country always gets *some* capacity
-    even if the list wasn't sized to match exactly.
-
-    Everything else is then derived straight off that assigned electrolyser
-    capacity, each independently rounded to the nearest multiple of its own
-    step (floored at one step so it's never 0):
-
-    * Wind + PV: combined = ``h2_producer_renewable_pct_of_electrolyser_mw``
-      (default 30%) of ``electrolyser_mw``, split so wind is
-      ``h2_producer_wind_to_pv_ratio`` (default 1.3) times PV, rounded to
-      ``h2_producer_renewable_capacity_step_mw`` (default 2.5 MW).
-    * Battery power = ``h2_producer_battery_pct_of_electrolyser_mw``
-      (default 25%) of ``electrolyser_mw``, rounded to
-      ``h2_producer_battery_tank_step_mw`` (default 2.5 MW); battery energy
-      = that power times ``h2_producer_battery_duration_hours`` (default 2h).
-    * H2 tank power = ``h2_producer_tank_pct_of_electrolyser_h2`` (default
-      50%) of the electrolyser's DELIVERABLE H2 (``electrolyser_mw *
-      h2_producer_electrolyser_efficiency`` -- the tank stores hydrogen, not
-      electricity, so it's sized off H2 output, not the raw electric
-      rating), rounded to the same battery/tank step; tank energy = that
-      power times ``h2_producer_tank_duration_hours`` (default 24h, "one
-      day of autonomy").
-
-    This reference load is used ONLY for electrolyser ranking -- the
-    Producer's actual downstream demand is a flat baseline derived directly
-    from the assigned electrolyser capacity instead (see
-    ``_build_h2_producer``), not from this reference at all.
-
-    Returns ``{country: {"demand_mw", "electrolyser_mw", "wind_mw", "pv_mw",
-    "battery_mw", "battery_mwh", "tank_mw", "tank_mwh"}}`` (all float) --
-    ``demand_mw`` is the ranking reference only, not the actual demand used.
-
-    Any of the five ``h2_producer_*_mw_overrides`` dicts (``{country: mw}``,
-    empty by default -- the web UI's per-country capacity table) then
-    overwrites that ONE asset for whichever countries appear as a key,
-    independently of the others, of the derivation above, and of every other
-    country (e.g. overriding DE's wind doesn't touch DE's PV/battery/tank,
-    the electrolyser ranking, or any other country's wind); battery/tank MWh
-    still comes from that override MW times the existing
-    ``h2_producer_battery_duration_hours``/``h2_producer_tank_duration_hours``.
-    """
+    """Per-country electrolyser (rank-assigned against reference H2 load), wind, PV,
+    battery, and H2 tank reference capacity for the Hydrogen Producer, with per-asset
+    overrides applied on top."""
     result = _h2_producer_sizing_cached(
         str(cfg.zones_db), tuple(cfg.h2_producer_electrolyser_capacities_mw),
         cfg.h2_producer_renewable_pct_of_electrolyser_mw, cfg.h2_producer_wind_to_pv_ratio,
@@ -376,8 +289,7 @@ def _h2_producer_sizing_cached(zones_db: str, capacities: tuple[float, ...],
     cap_by_country = dict(zip(countries_sorted, caps))
 
     def round_step(v: float, step: float) -> float:
-        """Round to the nearest multiple of ``step``, floored at one step
-        (never 0)."""
+        """Round to the nearest multiple of ``step``, floored at one step (never 0)."""
         return max(step, round(v / step) * step)
 
     result = {}
@@ -403,24 +315,7 @@ def _h2_producer_sizing_cached(zones_db: str, capacities: tuple[float, ...],
 
 @lru_cache(maxsize=4)
 def _h2_producer_renewable_profile_info(zones_db: str) -> dict[str, tuple[bool, float, bool, float]]:
-    """Per zone: ``(has_wind_data, wind_max, has_solar_data, solar_max)`` --
-    whether that zone's own ``Wind_Onshore Profile`` / ``Solar Profile`` has
-    ANY nonzero value, and its own historical peak value, both computed
-    across the FULL stored year (not just whatever hours a given run happens
-    to solve, so a single calm/cloudy day can't produce a false negative or
-    an unstable normalization). Used by ``_build_h2_producer`` for two
-    things: (1) finding a same-country donor zone for the Hydrogen
-    Producer's wind/PV weather data when its own host (main H2) zone has
-    none of its own -- e.g. BEOF/LUB1/NLLL are H2-hub zones with zero
-    installed wind/solar capacity and an all-zero profile of their own, even
-    though their country (BE/LU/NL) has real wind/solar data at a sibling
-    zone (BE00/LUG1/NL00 respectively); (2) normalizing the selected
-    donor's raw capacity-factor profile by its own historical max so the
-    profile's peak becomes exactly 1.0 -- these NT2030 profiles never
-    actually reach 1.0 even at their single best hour of the year (e.g.
-    DE00 wind tops out at 0.83, NL00 solar at 0.44), so without this an
-    assigned nameplate MW rating could never be reached even under the
-    best weather the year has to offer."""
+    """Per zone: ``(has_wind_data, wind_max, has_solar_data, solar_max)`` over the full stored year."""
     df = pd.read_parquet(zones_db)
     prof = df[df["section"] == "profiles"]
     wind = prof[prof["item"] == "Wind_Onshore Profile"].groupby("zone")["value_num"]
@@ -433,230 +328,6 @@ def _h2_producer_renewable_profile_info(zones_db: str) -> dict[str, tuple[bool, 
            for z in zones}
 
 
-def _build_h2_producer(m: linopy.Model, zdata: dict[str, ZoneData], zones: list[str],
-                       hours: pd.Index, cfg: RunConfig):
-    """Build the (optional) per-country 'Hydrogen Producer': a compact,
-    self-contained wind + PV + battery + electrolyser + H2-tank unit with its
-    own flexible downstream H2 demand, one instance per qualifying country
-    (see ``_h2_producer_countries``), attached to that country's main H2 zone.
-
-    It carries its OWN internal electricity balance and OWN internal hydrogen
-    balance (all its assets net against each other first) and touches the
-    rest of the model through exactly two coupling variables per country/hour:
-    ``prod_grid_net`` (electricity, +export/-import) and ``prod_h2_net``
-    (hydrogen, +export/-import) -- these are what gets added into the host
-    zone's §5/§6 balances, and what report.py surfaces so net import/export is
-    directly visible per country. None of its sizing has PLEXOS data behind
-    it; a few capacities (efficiencies, connection caps) are flat
-    ``config.py`` ASSUMPTIONs applied uniformly to every country (see the
-    RunConfig fields prefixed ``h2_producer_``). Electrolyser, wind, PV,
-    battery, and H2 tank capacity are all DERIVED per country instead
-    (``_h2_producer_sizing``): electrolyser by rank against that country's
-    own national H2 load; wind+PV combined as
-    ``h2_producer_renewable_pct_of_electrolyser_mw`` (default 30%) of that
-    electrolyser's own MW rating, split ``h2_producer_wind_to_pv_ratio``
-    (default 1.3) wind-to-PV; battery power as
-    ``h2_producer_battery_pct_of_electrolyser_mw`` (default 25%) of
-    electrolyser MW, energy = power × ``h2_producer_battery_duration_hours``
-    (default 2h); H2 tank power as ``h2_producer_tank_pct_of_electrolyser_h2``
-    (default 50%) of the electrolyser's deliverable H2, energy = power ×
-    ``h2_producer_tank_duration_hours`` (default 24h) -- each power rating
-    rounded to the nearest step (``h2_producer_renewable_capacity_step_mw``
-    for wind/PV, ``h2_producer_battery_tank_step_mw`` for battery/tank,
-    both 2.5 MW by default, floored at one step). Downstream demand is then
-    a FLAT baseline defined directly off the assigned electrolyser capacity
-    -- ``h2_producer_downstream_demand_pct_of_electrolyser_capacity`` (default
-    80%) of its H2-equivalent output (``electrolyser_mw * efficiency``),
-    every hour, with the flex band applied as +/-
-    ``h2_producer_demand_flex_pct`` of that SAME capacity -- so it can never
-    exceed what the electrolyser could deliver and never needs rescaling to
-    fit (see §18.2/§18.6).
-
-    Also enforces the RED III Art. 22a industrial RFNBO target
-    (``h2_producer_renewable_h2_quota``, default 0.42): each country's
-    horizon-total electrolyser output attributable to its OWN wind+PV
-    (``prod_ely_ren``, hourly-capped by renewable generation available that
-    hour) PLUS whatever it backs with purchased Green Certificates
-    (``prod_gc_buy``, a horizon-total, non-hourly-matched top-up priced at
-    ``h2_producer_gc_price_eur_per_mwh`` and capped by actual grid-sourced
-    electrolyser load) must cover at least that share of its horizon-total
-    downstream demand. Two-directional: unclaimed onsite wind+PV generation
-    (not already counted in ``prod_ely_ren``) can also be sold as Green
-    Certificates (``prod_gc_sell``, same price, own horizon-total cap) for
-    revenue, without affecting this country's own compliance -- see
-    Formulation.md §18.7 for the modelling rationale.
-
-    Returns ``(prod_df, grid_net_by_zone, h2_net_by_zone, extra_obj)`` --
-    zeroed/empty when disabled or no country qualifies.
-    """
-    zidx = pd.Index(zones, name=ZONE)
-    countries = _h2_producer_countries(cfg)
-    H = len(hours)
-    if not countries:
-        zero = xr.DataArray(np.zeros((len(zones), H)), coords={ZONE: zidx, HOUR: hours},
-                            dims=[ZONE, HOUR])
-        return pd.DataFrame(columns=["zone"]).rename_axis(PROD), zero, zero, 0.0
-
-    pidx = pd.Index(sorted(countries), name=PROD)
-    prod_zone = [countries[c] for c in pidx]
-
-    sizing = _h2_producer_sizing(cfg)
-    ely_cap_vec = np.array([sizing[c]["electrolyser_mw"] for c in pidx])
-    wind_cap_vec = np.array([sizing[c]["wind_mw"] for c in pidx])
-    pv_cap_vec = np.array([sizing[c]["pv_mw"] for c in pidx])
-    batt_mw_vec = np.array([sizing[c]["battery_mw"] for c in pidx])
-    batt_mwh_vec = np.array([sizing[c]["battery_mwh"] for c in pidx])
-    tank_mw_vec = np.array([sizing[c]["tank_mw"] for c in pidx])
-    tank_mwh_vec = np.array([sizing[c]["tank_mwh"] for c in pidx])
-
-    profile_info = _h2_producer_renewable_profile_info(str(cfg.zones_db))
-
-    def _has_data(z: str, resource_idx: int) -> bool:
-        return profile_info.get(z, (False, 0.0, False, 0.0))[resource_idx * 2]
-
-    def _profile_max(z: str, resource_idx: int) -> float:
-        return profile_info.get(z, (False, 0.0, False, 0.0))[resource_idx * 2 + 1]
-
-    def _donor_zone(country: str, host_zone: str, resource_idx: int, cap_key: str) -> str:
-        if _has_data(host_zone, resource_idx):
-            return host_zone
-        candidates = [z for z in zones if z[:2] == country and z != host_zone
-                     and _has_data(z, resource_idx)]
-        if not candidates:
-            return host_zone
-        return max(candidates, key=lambda z: zdata[z].capacities.get(cap_key, 0.0))
-
-    wind_donor = [_donor_zone(c, countries[c], 0, "Wind (onshore) (MW)") for c in pidx]
-    pv_donor = [_donor_zone(c, countries[c], 1, "Solar (MW)") for c in pidx]
-
-    wind_max_vec = np.array([max(_profile_max(z, 0), 1e-9) for z in wind_donor])
-    pv_max_vec = np.array([max(_profile_max(z, 1), 1e-9) for z in pv_donor])
-
-    def cf_profile_for(zone_list: list[str], col: str) -> np.ndarray:
-        return np.vstack([_num(zdata[z].profiles[col].to_numpy()) if col in zdata[z].profiles
-                          else np.zeros(H) for z in zone_list])
-
-    ely_eff_scalar = cfg.h2_producer_electrolyser_efficiency
-    capacity_h2_vec = ely_cap_vec * ely_eff_scalar
-    demand_pct = cfg.h2_producer_downstream_demand_pct_of_electrolyser_capacity
-    baseline_vec = demand_pct * capacity_h2_vec
-
-    wind_cf_raw = np.clip(cf_profile_for(wind_donor, "Wind_Onshore Profile"), 0.0, None)
-    pv_cf_raw = np.clip(cf_profile_for(pv_donor, "Solar Profile"), 0.0, None)
-    wind_cf_norm = np.clip(wind_cf_raw / wind_max_vec[:, None], 0.0, 1.0)
-    pv_cf_norm = np.clip(pv_cf_raw / pv_max_vec[:, None], 0.0, 1.0)
-
-    wind_upper = xr.DataArray(
-        wind_cf_norm * wind_cap_vec[:, None],
-        coords={PROD: pidx, HOUR: hours}, dims=[PROD, HOUR])
-    pv_upper = xr.DataArray(
-        pv_cf_norm * pv_cap_vec[:, None],
-        coords={PROD: pidx, HOUR: hours}, dims=[PROD, HOUR])
-
-    prod_wind_p = m.add_variables(lower=0.0, upper=wind_upper, name="prod_wind_p")
-    prod_pv_p = m.add_variables(lower=0.0, upper=pv_upper, name="prod_pv_p")
-
-    def _bc_prod(vec: np.ndarray) -> xr.DataArray:
-        """Broadcast a per-country vector to (prod, hour), same pattern as
-        ``ely_upper`` below."""
-        return xr.DataArray(np.tile(vec[:, None], (1, H)),
-                            coords={PROD: pidx, HOUR: hours}, dims=[PROD, HOUR])
-
-    batt_mw_upper, batt_mwh_upper = _bc_prod(batt_mw_vec), _bc_prod(batt_mwh_vec)
-    prod_batt_dis = m.add_variables(lower=0.0, upper=batt_mw_upper, name="prod_batt_dis")
-    prod_batt_ch = m.add_variables(lower=0.0, upper=batt_mw_upper, name="prod_batt_ch")
-    prod_batt_soc = m.add_variables(lower=0.0, upper=batt_mwh_upper, name="prod_batt_soc")
-
-    ely_upper = _bc_prod(ely_cap_vec)
-    prod_ely_p = m.add_variables(lower=0.0, upper=ely_upper, name="prod_ely_p")
-
-    tank_mw_upper, tank_mwh_upper = _bc_prod(tank_mw_vec), _bc_prod(tank_mwh_vec)
-    prod_tank_dis = m.add_variables(lower=0.0, upper=tank_mw_upper, name="prod_tank_dis")
-    prod_tank_ch = m.add_variables(lower=0.0, upper=tank_mw_upper, name="prod_tank_ch")
-    prod_tank_soc = m.add_variables(lower=0.0, upper=tank_mwh_upper, name="prod_tank_soc")
-
-    grid_cap, h2_cap = cfg.h2_producer_grid_connection_mw, cfg.h2_producer_h2_connection_mw
-    prod_grid_net = m.add_variables(lower=-grid_cap, upper=grid_cap, coords=[pidx, hours], name="prod_grid_net")
-    prod_h2_net = m.add_variables(lower=-h2_cap, upper=h2_cap, coords=[pidx, hours], name="prod_h2_net")
-
-    flex = max(cfg.h2_producer_demand_flex_pct, 0.0)
-    flex_amount_vec = flex * capacity_h2_vec
-    prod_demand = m.add_variables(lower=baseline_vec - flex_amount_vec, upper=baseline_vec + flex_amount_vec,
-                                  coords=[pidx, hours], name="prod_demand")
-
-    m.add_constraints(
-        prod_wind_p + prod_pv_p + prod_batt_dis - prod_batt_ch - prod_ely_p - prod_grid_net == 0,
-        name="prod_elec_balance",
-    )
-    ely_eff = cfg.h2_producer_electrolyser_efficiency
-    m.add_constraints(
-        ely_eff * prod_ely_p + prod_tank_dis - prod_tank_ch - prod_demand - prod_h2_net == 0,
-        name="prod_h2_balance",
-    )
-
-    prod_ely_ren = m.add_variables(lower=0.0, coords=[pidx, hours], name="prod_ely_ren")
-    m.add_constraints(prod_ely_ren <= prod_wind_p + prod_pv_p, name="prod_ely_ren_cap_avail")
-    m.add_constraints(prod_ely_ren <= prod_ely_p, name="prod_ely_ren_cap_ely")
-
-    prod_gc_buy = m.add_variables(lower=0.0, coords=[pidx], name="prod_gc_buy")
-    prod_gc_sell = m.add_variables(lower=0.0, coords=[pidx], name="prod_gc_sell")
-    m.add_constraints(
-        prod_gc_buy <= prod_ely_p.sum(HOUR) - prod_ely_ren.sum(HOUR),
-        name="prod_gc_buy_cap",
-    )
-    m.add_constraints(
-        prod_gc_sell <= (prod_wind_p + prod_pv_p).sum(HOUR) - prod_ely_ren.sum(HOUR),
-        name="prod_gc_sell_cap",
-    )
-
-    batt_soc0 = xr.DataArray(cfg.initial_soc_fraction * batt_mwh_vec, coords={PROD: pidx}, dims=[PROD])
-    tank_soc0 = xr.DataArray(cfg.initial_soc_fraction * tank_mwh_vec, coords={PROD: pidx}, dims=[PROD])
-    zeros_ph = xr.DataArray(np.zeros((len(pidx), H)), coords={PROD: pidx, HOUR: hours}, dims=[PROD, HOUR])
-    rhs_batt = zeros_ph.copy()
-    rhs_batt.loc[{HOUR: hours[0]}] = batt_soc0
-    rhs_tank = zeros_ph.copy()
-    rhs_tank.loc[{HOUR: hours[0]}] = tank_soc0
-
-    batt_eff, tank_eff = cfg.h2_producer_battery_efficiency, cfg.h2_producer_tank_efficiency
-    m.add_constraints(
-        prod_batt_soc - prod_batt_soc.shift({HOUR: 1}) - batt_eff * prod_batt_ch + prod_batt_dis == rhs_batt,
-        name="prod_batt_balance",
-    )
-    m.add_constraints(
-        prod_tank_soc - prod_tank_soc.shift({HOUR: 1}) - tank_eff * prod_tank_ch + prod_tank_dis == rhs_tank,
-        name="prod_tank_balance",
-    )
-    if cfg.cyclic_storage:
-        m.add_constraints(prod_batt_soc.sel({HOUR: hours[-1]}) >= batt_soc0, name="prod_batt_cyclic")
-        m.add_constraints(prod_tank_soc.sel({HOUR: hours[-1]}) >= tank_soc0, name="prod_tank_cyclic")
-
-    baseline_total = xr.DataArray(baseline_vec * H, coords={PROD: pidx}, dims=[PROD])
-    m.add_constraints(prod_demand.sum(HOUR) == baseline_total, name="prod_demand_conservation")
-
-    quota = max(cfg.h2_producer_renewable_h2_quota, 0.0)
-    if quota > 0.0:
-        m.add_constraints(
-            ely_eff * (prod_ely_ren.sum(HOUR) + prod_gc_buy) >= quota * prod_demand.sum(HOUR),
-            name="prod_red3_quota",
-        )
-
-    A_prod = _incidence(pd.Series(prod_zone, index=pidx), zones, PROD)
-    grid_net_by_zone = (A_prod * prod_grid_net).sum(PROD)
-    h2_net_by_zone = (A_prod * prod_h2_net).sum(PROD)
-
-    gc_price = cfg.h2_producer_gc_price_eur_per_mwh
-    extra_obj = cfg.storage_op_cost_eur_per_mwh * (
-        prod_batt_ch.sum() + prod_batt_dis.sum() + prod_tank_ch.sum() + prod_tank_dis.sum()
-    ) + gc_price * prod_gc_buy.sum() - gc_price * prod_gc_sell.sum()
-
-    prod_df = pd.DataFrame({"zone": prod_zone, "downstream_demand_mw": baseline_vec,
-                           "electrolyser_mw": ely_cap_vec, "wind_mw": wind_cap_vec,
-                           "pv_mw": pv_cap_vec, "wind_donor_zone": wind_donor, "pv_donor_zone": pv_donor,
-                           "battery_mw": batt_mw_vec, "battery_mwh": batt_mwh_vec,
-                           "tank_mw": tank_mw_vec, "tank_mwh": tank_mwh_vec}, index=pidx)
-    return prod_df, grid_net_by_zone, h2_net_by_zone, extra_obj
-
-
 def _incidence(members: pd.Series, zones: list[str], dim: str) -> xr.DataArray:
     """One-hot (member, zone) matrix from a Series mapping member -> zone."""
     A = np.zeros((len(members), len(zones)))
@@ -667,10 +338,7 @@ def _incidence(members: pd.Series, zones: list[str], dim: str) -> xr.DataArray:
 
 
 def uc_candidates(gens: pd.DataFrame) -> list[str]:
-    """Fleets eligible for cfg.enable_uc: no must-run floor (so they can
-    genuinely be off -- must-run fleets are already permanently on via their
-    continuous floor) AND min_up_h/min_down_h > 1h (a 1h minimum is a no-op
-    at hourly resolution)."""
+    """Fleets eligible for cfg.enable_uc: no must-run floor and min_up_h/min_down_h > 1h."""
     return [gid for gid, row in gens.iterrows()
             if row.get("pmin_floor", 0.0) == 0.0
             and max(row.get("min_up_h", 0.0), row.get("min_down_h", 0.0)) > 1.0]
@@ -679,23 +347,8 @@ def uc_candidates(gens: pd.DataFrame) -> list[str]:
 def build_model(zdata: dict[str, ZoneData], net: NetworkData, cfg: RunConfig,
                 cyclic: bool | None = None,
                 fixed_uc_profile: dict[str, np.ndarray] | None = None) -> BuildResult:
-    """Build the dispatch LP (or, with ``cfg.enable_uc``, a small MILP).
-
-    ``cyclic`` controls the end-of-horizon storage closure:
-      * ``None`` -> use ``cfg.cyclic_storage``;
-      * ``True`` -> ``soc[T-1] >= soc0`` (every device ends no lower than it
-        started, i.e. a full storage cycle over the horizon);
-      * ``False`` -> no closure constraint.
-
-    ``fixed_uc_profile``: only meaningful with ``cfg.enable_uc``.
-    ``None`` (pass 1) builds the MILP: a commitment binary + start/stop +
-    min-up/down-time constraints for ``uc_candidates(gens)``. A dict
-    ``{gen_id: np.array(H)}`` (pass 2) instead bakes a solved 0/pmax
-    commitment schedule in as fixed capacity data and builds a PURE LP with
-    no binaries at all -- needed because HiGHS/linopy cannot return duals
-    (marginal prices) once any integer variable exists in the model, even
-    after it's solved. See pipeline.solve_scenario for the two-pass orchestration.
-    """
+    """Build the dispatch LP (or, with ``cfg.enable_uc``, a small MILP; see
+    pipeline.solve_scenario for the two-pass fixed_uc_profile orchestration)."""
     zones = cfg.zones
     H = len(zdata[zones[0]].profiles)
     hours = pd.Index(range(H), name=HOUR)
@@ -835,8 +488,9 @@ def build_model(zdata: dict[str, ZoneData], net: NetworkData, cfg: RunConfig,
     else:
         term_cap = np.zeros(len(zones))
 
-    prod_df, prod_grid_net_by_zone, prod_h2_net_by_zone, prod_extra_obj = \
-        _build_h2_producer(m, zdata, zones, hours, cfg)
+    prod_df = pd.DataFrame(columns=["zone"]).rename_axis(PROD)
+    prod_grid_net_by_zone = prod_h2_net_by_zone = 0.0
+    prod_extra_obj = 0.0
 
     net_e, fe_pos, fe_neg = _flow_terms(m, net.elec, zones, hours, "e")
     net_h, fh_pos, fh_neg = (0.0, None, None) if cfg.electricity_only \
@@ -916,25 +570,15 @@ def build_model(zdata: dict[str, ZoneData], net: NetworkData, cfg: RunConfig,
 
 
 def marginal_prices(build: BuildResult):
-    """Zonal marginal prices (EUR/MWh) as the duals of the nodal balances.
-
-    The dispatch is a pure LP, so the balance duals come straight from the
-    already-solved model — no commitment-fixing re-solve is needed. Returns
-    (price_e, price_h) DataArrays over (zone, hour). The dual of
-    ``balance == demand`` is d(cost)/d(demand) = the marginal price of supply.
-    """
+    """Zonal marginal prices (EUR/MWh) as the duals of the nodal balances; returns (price_e, price_h)."""
     price_e = build.model.constraints["elec_balance"].dual
     price_h = build.model.constraints["h2_balance"].dual if not build.cfg.electricity_only else None
     return price_e, price_h
 
 
 def uc_fixed_profile_and_cost(build: BuildResult) -> tuple[dict[str, np.ndarray], float]:
-    """From a solved pass-1 MILP build (``build.uc_gens`` non-empty): the
-    solved 0/pmax commitment profile per gen (for pass 2's fixed_uc_profile)
-    and the total start-up cost actually incurred (sum of
-    ``startup_cost_eur * uc_start`` over the solved schedule) -- this is the
-    only place that total is computable, since pass 2 has no uc_start
-    variable at all (the commitment decision is already fixed by then)."""
+    """From a solved pass-1 MILP build: the solved 0/pmax commitment profile per gen
+    (for pass 2's fixed_uc_profile) and the total start-up cost incurred."""
     x_on_sol = build.model.solution["uc_on"]
     y_start_sol = build.model.solution["uc_start"]
     fixed_profile: dict[str, np.ndarray] = {}
@@ -966,18 +610,8 @@ def _profile_da(zdata, zones, hours, col) -> xr.DataArray:
 
 
 def _h2_main_zones(cfg: RunConfig) -> dict[str, str]:
-    """Main H2 zone per country = the country's zone with the most H2 demand,
-    computed over the FULL declared zone universe (``discover_zones``), not
-    just the current run's selection -- stable regardless of which subset of
-    zones a given run tests, so a single-zone run attributes SMR,
-    electrolyser generation, and H2 cross-border trade to the SAME zone a
-    full joint run would (e.g. Belgium's H2 always routes through BEOF,
-    never BE00, even when BE00 is tested alone). Selection-dependent main
-    zones were a real bug: testing BEOF alone (Belgium's real main zone)
-    still broke because the external-leg node lookup could independently
-    resolve a neighbouring country like DE to whichever of DE00/DEKF the dict
-    happened to see last.
-    """
+    """Main H2 zone per country = the country's zone with the most H2 demand, computed over
+    the full declared zone universe so it's stable regardless of the current run's selection."""
     from .config import discover_zones
     all_zones = discover_zones(cfg.zones_db)
     df = pd.read_parquet(cfg.zones_db)
@@ -994,20 +628,9 @@ def _h2_main_zones(cfg: RunConfig) -> dict[str, str]:
 
 
 def _priced_external_elec(m: linopy.Model, zones: list[str], hours: pd.Index, cfg: RunConfig):
-    """Priced/controllable import & export legs for every zone's EXTERNAL
-    neighbours (any neighbour outside ``zones``): each leg is a decision
-    variable capped at that border's REAL physical line capacity
-    (Networks.xlsx rating, both directions -- see
-    network_loader.border_line_caps), priced at the neighbour's own PLEXOS
-    marginal price (0 if the neighbour has no PLEXOS price data). Returns
-    (net_injection_expr, objective_cost_expr) used as ``external_e``.
-
-    Real line capacity was validated (single-zone, all 21 CORE zones)
-    against two alternatives: capping at historical realized flow (mean
-    corr vs PLEXOS 0.754) and leaving trade uncapped (mean corr 0.909) --
-    real line capacity scored highest (mean corr 0.958) and is the
-    physically correct choice.
-    """
+    """Priced/controllable import & export legs for every zone's external electricity
+    neighbours, capped at real line capacity and priced at the neighbour's PLEXOS marginal
+    price; returns (net_injection_expr, objective_cost_expr)."""
     from . import marginal_price_loader as mpl
 
     zidx = pd.Index(zones, name=ZONE)
@@ -1027,8 +650,7 @@ def _priced_external_elec(m: linopy.Model, zones: list[str], hours: pd.Index, cf
     line_caps = nl.border_line_caps("electricity", cfg.networks_db)
 
     def _border_cap(z: str, n: str) -> tuple[float, float]:
-        """(import cap z<-n, export cap z->n) MW, from whichever orientation
-        the line record was stored in -- 0 if no line exists at all."""
+        """(import cap z<-n, export cap z->n) MW; 0 if no line exists."""
         if (z, n) in line_caps:
             ft, tf = line_caps[(z, n)]
             return tf, ft
@@ -1041,6 +663,17 @@ def _priced_external_elec(m: linopy.Model, zones: list[str], hours: pd.Index, cf
     exp_vec = np.array([_border_cap(z, n)[1] for z, n in pairs])
     imp_cap = np.tile(imp_vec[:, None], (1, len(hours)))
     exp_cap = np.tile(exp_vec[:, None], (1, len(hours)))
+
+    if cfg.external_import_leg_cap:
+        for i, (z, n) in enumerate(pairs):
+            leg_cap = cfg.external_import_leg_cap.get(f"{z}|{n}")
+            if leg_cap is not None:
+                imp_cap[i, :] = np.minimum(imp_cap[i, :], np.asarray(leg_cap, dtype=float))
+    if cfg.external_export_leg_cap:
+        for i, (z, n) in enumerate(pairs):
+            leg_cap = cfg.external_export_leg_cap.get(f"{z}|{n}")
+            if leg_cap is not None:
+                exp_cap[i, :] = np.minimum(exp_cap[i, :], np.asarray(leg_cap, dtype=float))
 
     neighbors = sorted({n for _, n in pairs})
     ghours = pd.RangeIndex(h0, h1)
@@ -1066,24 +699,9 @@ def _priced_external_elec(m: linopy.Model, zones: list[str], hours: pd.Index, cf
 
 
 def _priced_external_h2(m: linopy.Model, zones: list[str], hours: pd.Index, cfg: RunConfig):
-    """Priced/controllable import & export legs for every zone's EXTERNAL H2
-    neighbours (any neighbouring COUNTRY outside ``zones``) -- the hydrogen
-    analogue of ``_priced_external_elec``: each leg is a decision variable
-    capped at that border's REAL physical pipeline capacity (Networks.xlsx
-    "Hydrogen Pipelines" rating, both directions -- see
-    network_loader.border_line_caps), priced at the neighbour's own PLEXOS
-    H2 marginal price (0 if the neighbour has no PLEXOS H2 price data).
-    PLEXOS's H2 side is modelled at COUNTRY granularity (unlike electricity,
-    which is zone-level), so legs originate from each country's "main H2
-    zone" (see ``_h2_main_zones``); other zones in the same country get no
-    injection from this term, matching the existing fixed-exchange
-    behaviour. Does NOT include SMR or virtual-source H2 (ammonia-import
-    terminals, external non-ENTSO-E pipelines) -- neither has a real
-    Networks.xlsx line or PLEXOS price to look up, so both stay a fixed
-    injection either way; see ``_fixed_h2_supply_injection``, which must be
-    added back separately. Returns (net_injection_expr, objective_cost_expr)
-    used as (part of) ``external_h2``.
-    """
+    """Hydrogen analogue of ``_priced_external_elec``: priced/controllable cross-border H2
+    legs from each country's main H2 zone, capped at real pipeline capacity. Excludes SMR
+    and virtual-source H2 (see ``_fixed_h2_supply_injection``)."""
     from . import marginal_price_loader as mpl
 
     zidx = pd.Index(zones, name=ZONE)
@@ -1111,7 +729,7 @@ def _priced_external_h2(m: linopy.Model, zones: list[str], hours: pd.Index, cfg:
                 country_node[c] = n
 
     def _border_cap(z: str, n: str) -> tuple[float, float]:
-        """(import cap z<-n, export cap z->n) MW -- 0 if no line/no mapped node."""
+        """(import cap z<-n, export cap z->n) MW; 0 if no line/no mapped node."""
         node = country_node.get(n)
         if node is None:
             return 0.0, 0.0
@@ -1153,21 +771,9 @@ def _priced_external_h2(m: linopy.Model, zones: list[str], hours: pd.Index, cfg:
 
 
 def _smr_priced_generation(m: linopy.Model, zones: list[str], hours: pd.Index, cfg: RunConfig):
-    """Steam-Methane-Reformer as a real generation variable: bounded above by
-    PLEXOS's own historical hourly SMR output for that country (assigned at
-    its main H2 zone, zero elsewhere -- same routing as ``smr_injection``),
-    priced at PLEXOS's own realized H2 marginal price for that zone/hour --
-    the best available proxy for SMR's marginal cost, since SMR has no
-    cost/fuel/efficiency data anywhere in this dataset -- confirmed to be
-    the actual marginal (price-setting) resource for at least some
-    countries (e.g. HR00, where SMR exactly covers demand every hour in
-    PLEXOS with zero real ENS). Without this, a country whose H2 balance
-    rests entirely on SMR (no cross-border capacity, no other flexible
-    resource) sees its price degenerate to a 0/VOLL flip on every sub-MWh
-    rounding residual between the (fixed, unpriced) SMR injection and its
-    own demand profile. Returns (smr_gen variable, objective cost expr,
-    fixed-injection DataArray to subtract from whichever priced external_h2
-    term already added SMR as a plain fixed injection)."""
+    """Steam-Methane-Reformer as a real generation variable, bounded above by PLEXOS's realized
+    hourly SMR output per country and priced at PLEXOS's realized H2 marginal price; returns
+    (smr_gen variable, objective cost expr, fixed-injection DataArray to subtract elsewhere)."""
     from . import marginal_price_loader as mpl
 
     zidx = pd.Index(zones, name=ZONE)
@@ -1202,12 +808,8 @@ def _smr_priced_generation(m: linopy.Model, zones: list[str], hours: pd.Index, c
 
 
 def _fixed_h2_supply_injection(zones: list[str], hours: pd.Index, cfg: RunConfig) -> xr.DataArray:
-    """Steam-Methane-Reformer output PLUS virtual-source H2 (ammonia-import
-    terminals, external non-ENTSO-E pipelines -- see
-    ``exports_loader.exogenous_h2_injection``) as a (zone, hour) injection
-    DataArray -- always fixed/uncapacitated, added back on top of
-    ``_priced_external_h2``'s cross-border legs (which deliberately exclude
-    both: neither has a real Networks.xlsx line or PLEXOS price to look up)."""
+    """SMR output plus virtual-source H2 as a fixed/uncapacitated (zone, hour) injection
+    DataArray, added back on top of ``_priced_external_h2``'s cross-border legs."""
     main_map = _h2_main_zones(cfg)
     h0, h1 = cfg.hour_slice()
     smr = pd.read_parquet(Path(cfg.exports_dir) / "smr_production_2030.parquet")
@@ -1243,11 +845,7 @@ def _renewable_plexos_dbs():
 
 
 def _new_renewable_row(z: str, tech: str, category: str, pmax: float) -> dict:
-    """Minimal gens row for a renewable generator created purely from PLEXOS
-    data (see _override_renewable_upper_with_plexos) -- same column subset
-    _build_generators itself uses for CAT_VRES/CAT_ROR rows; every other
-    column (pmin_floor, ramp_up, ...) is implicitly NaN via pd.concat,
-    exactly as for a normally-built VRES/ROR row."""
+    """Minimal gens row for a renewable generator created purely from PLEXOS data."""
     return dict(gen=f"{z}|{tech}", zone=z, tech=tech, category=category,
                h2_fuel=False, mc=0.0, eff=1.0, pmax=pmax)
 
@@ -1255,19 +853,9 @@ def _new_renewable_row(z: str, tech: str, category: str, pmax: float) -> dict:
 def _override_renewable_upper_with_plexos(zdata: dict[str, ZoneData], gens: pd.DataFrame,
                                           gupper: dict[str, np.ndarray], zones: list[str],
                                           cfg: RunConfig) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
-    """Replace every renewable generator's hourly availability with PLEXOS's
-    own realized generation for that technology, discarding this model's
-    own capacity x capacity-factor profile calculation entirely (PLEXOS
-    dispatches these zero-marginal-cost, must-take resources at their full
-    available output in virtually every hour, so its realized generation IS
-    its available power). Also CREATES a generator for any zone
-    that has real installed capacity for a technology but was skipped by
-    _build_generators because its own profile happened to be all-zero
-    (e.g. BEOF/DEKF's offshore wind: real capacity, empty profile data) --
-    a zone with genuinely zero capacity is left alone; nothing to source
-    generation from either way. Returns the (possibly extended) ``gens``
-    and ``gupper``; must run BEFORE gen_p's upper bound DataArray is built.
-    """
+    """Replace every renewable generator's hourly availability with PLEXOS's realized
+    generation for that technology, creating a generator for any zone with real capacity
+    but an all-zero profile. Must run before gen_p's upper bound DataArray is built."""
     from . import marginal_price_loader as mpl
     dbs = _renewable_plexos_dbs()
     h0, h1 = cfg.hour_slice()
@@ -1311,13 +899,7 @@ def _override_renewable_upper_with_plexos(zdata: dict[str, ZoneData], gens: pd.D
 
 def _joint_renewable_constraints(m: linopy.Model, gens: pd.DataFrame, gen_p, zones: list[str],
                                  hours: pd.Index, cfg: RunConfig) -> None:
-    """For renewable techs where PLEXOS publishes one aggregate category
-    covering several of this model's own generators (see
-    _RENEWABLE_JOINT), add the real limit: sum(gen_p over the group) <=
-    PLEXOS's realized total for that category. Each individual generator's
-    own upper bound was already set to the (generous) full category total
-    by _override_renewable_upper_with_plexos, so this is what actually
-    enforces the combined ceiling."""
+    """For _RENEWABLE_JOINT techs, cap sum(gen_p over the group) at PLEXOS's realized total."""
     from . import marginal_price_loader as mpl
     dbs = _renewable_plexos_dbs()
     h0, h1 = cfg.hour_slice()

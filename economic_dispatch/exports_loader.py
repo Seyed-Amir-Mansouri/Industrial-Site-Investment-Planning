@@ -1,28 +1,8 @@
-"""Compute fixed cross-border exchange from the NT2030 result databases.
-
-Instead of reading the pre-baked ``Exports_*`` / ``H2Exports_*`` columns from the
-per-zone Excel files (which assume a FIXED zone selection), this derives the
-external exchange on the fly from the crossborder-flow parquet databases in
-``inputs/`` for the ACTUAL selected zones: a border is treated as an internal
-(optimised) line when both endpoints are in the selection, or as a fixed
-external exchange when the neighbour is outside it.
-
-Full specification: ``inputs/EXPORTS_CALCULATION.md``.
-
-Sign convention (as in the guide): a produced series is a NET EXPORT, positive =
-export out of the zone. The model wants a net INJECTION (import positive), so the
-public entry point returns ``-net_export``.
-"""
+"""Derive fixed cross-border electricity/hydrogen exchange for the selected zones from the crossborder-flow parquet databases."""
 from __future__ import annotations
-
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import xarray as xr
-
-ZONE = "zone"
-HOUR = "hour"
 
 
 def country(zone: str) -> str:
@@ -38,33 +18,8 @@ def _num(series: pd.Series) -> np.ndarray:
     return np.nan_to_num(series.to_numpy(dtype=float))
 
 
-def elec_net_export(selected: list[str], edf: pd.DataFrame) -> dict[str, np.ndarray]:
-    """Net electricity export (MW, + = export) per selected zone, full-year arrays.
-
-    For each directed flow ``A->B``: if A is selected and B is not, it is an
-    export of A (+); if B is selected and A is not, an import of B (-). Flows
-    between two selected zones are internal (skipped).
-    """
-    sel = set(selected)
-    out = {z: np.zeros(len(edf)) for z in selected}
-    for f in _flow_cols(edf):
-        a, b = f.split("->")
-        if a in sel and b not in sel:
-            out[a] = out[a] + _num(edf[f])
-        elif b in sel and a not in sel:
-            out[b] = out[b] - _num(edf[f])
-    return out
-
-
 def elec_border_legs(selected: list[str], edf: pd.DataFrame) -> dict[tuple[str, str], np.ndarray]:
-    """Per-(zone, external neighbour) signed net flow (MW, + = zone exports to
-    that neighbour), full-year arrays -- same sign convention as
-    ``elec_net_export`` but keyed by neighbour instead of summed across all of
-    a zone's external borders. Used to price each cross-border leg separately
-    against its own neighbour's marginal price (model.py's
-    ``_priced_external_elec``) rather than treating a zone's external
-    exchange as one fixed, unpriced net injection.
-    """
+    """Per-(zone, external neighbour) signed net flow (MW, + = zone exports), full-year arrays."""
     sel = set(selected)
     out: dict[tuple[str, str], np.ndarray] = {}
     for f in _flow_cols(edf):
@@ -82,9 +37,7 @@ def _cc(node: str) -> str:
 
 
 def _h2_edges(hdf: pd.DataFrame) -> list[tuple[str, str, np.ndarray]]:
-    """Resolve ``IB*`` interconnector hubs (A->hub + hub->B => A->B, carrying
-    the A->hub value) and return the flattened (from_node, to_node, array)
-    edge list -- shared by ``h2_net_export`` and ``h2_border_legs``."""
+    """Resolve ``IB*`` interconnector hubs and return the flattened (from_node, to_node, array) edge list."""
     flows = _flow_cols(hdf)
     hub_sinks: dict[str, list[str]] = {}
     for f in flows:
@@ -107,9 +60,7 @@ def _h2_edges(hdf: pd.DataFrame) -> list[tuple[str, str, np.ndarray]]:
 
 def smr_injection(selected: list[str], main_map: dict[str, str],
                   smr: pd.DataFrame) -> dict[str, np.ndarray]:
-    """Steam-Methane-Reformer output as a per-main-zone injection (MW, + =
-    domestic supply added to the H2 balance) -- always fixed/domestic,
-    independent of whether cross-border H2 trade is priced or not."""
+    """Steam-Methane-Reformer output as a per-main-zone H2 injection (MW, + = domestic supply)."""
     out: dict[str, np.ndarray] = {}
     for C in {country(z) for z in selected}:
         M = main_map.get(C)
@@ -120,15 +71,7 @@ def smr_injection(selected: list[str], main_map: dict[str, str],
 
 def exogenous_h2_injection(selected: list[str], main_map: dict[str, str],
                            hdf: pd.DataFrame) -> dict[str, np.ndarray]:
-    """Non-cross-border H2 supply from virtual source nodes (MW, + = supply
-    added to the H2 balance) -- edges like ``XAmmonia->NL_H2`` (ammonia-
-    import-terminal H2) or ``XDZ->ES_H2``/``XNO->DE_H2`` (external, non-ENTSO-E
-    pipeline sources) whose OTHER endpoint isn't a real ``*_H2`` network node.
-    These have no physical line in Networks.xlsx and no PLEXOS market price
-    (they aren't countries), so -- like SMR -- they're always a fixed,
-    uncapacitated injection at the main zone, independent of whether
-    cross-border H2 trade with REAL neighbours is priced or not.
-    """
+    """Non-cross-border H2 supply from virtual source nodes (MW, + = supply added to the H2 balance)."""
     sel_c = {country(z) for z in selected}
     out: dict[str, np.ndarray] = {}
     for l, r, arr in _h2_edges(hdf):
@@ -148,48 +91,9 @@ def exogenous_h2_injection(selected: list[str], main_map: dict[str, str],
     return out
 
 
-def h2_net_export(selected: list[str], main_map: dict[str, str],
-                  hdf: pd.DataFrame, smr: pd.DataFrame) -> dict[str, np.ndarray]:
-    """Net hydrogen export (MW, + = export) per country's main zone, full-year.
-
-    Resolves ``IB*`` interconnector hubs, classifies each edge by the §2 sign
-    rule keeping only edges whose other endpoint's country is outside the
-    selection, then folds Steam-Methane-Reformer output and virtual-source
-    (ammonia/external-pipeline) H2 in as imported H2.
-    """
-    sel_c = {country(z) for z in selected}
-    out = {z: np.zeros(len(hdf)) for z in main_map.values()}
-    for l, r, arr in _h2_edges(hdf):
-        xc, yc = _cc(l), _cc(r)
-        if xc in sel_c and yc not in sel_c:
-            C, sign = xc, 1.0
-        elif yc in sel_c and xc not in sel_c:
-            C, sign = yc, -1.0
-        else:
-            continue
-        M = main_map.get(C)
-        if M is not None:
-            out[M] = out[M] + sign * arr
-
-    smr_inj = smr_injection(selected, main_map, smr)
-    for M, arr in smr_inj.items():
-        out[M] = out[M] - arr
-    return out
-
-
 def h2_border_legs(selected: list[str], main_map: dict[str, str],
                    hdf: pd.DataFrame) -> dict[tuple[str, str], np.ndarray]:
-    """Per-(main zone, external neighbour COUNTRY) signed net H2 flow (MW, +
-    = zone exports to that neighbour), full-year arrays -- same edge
-    resolution as ``h2_net_export`` (IB* hub folding) but keyed by neighbour
-    instead of summed into one net number per country. Used to price each H2
-    cross-border leg separately against its own neighbour's PLEXOS H2
-    marginal price (model.py's ``_priced_external_h2``), the H2 analogue of
-    ``elec_border_legs``. Excludes SMR (that's domestic production, not
-    cross-border trade -- see ``smr_injection``) and virtual source nodes
-    like ``XAmmonia``/``XDZ``/``XMA``/``XNO``/``XUA`` (no real Networks.xlsx
-    line or PLEXOS price to look up -- see ``exogenous_h2_injection``).
-    """
+    """Per-(main zone, external neighbour country) signed net H2 flow (MW, + = exports), full-year."""
     sel = set(selected)
     sel_c = {country(z) for z in selected}
     out: dict[tuple[str, str], np.ndarray] = {}
@@ -209,28 +113,3 @@ def h2_border_legs(selected: list[str], main_map: dict[str, str],
         key = (M, N)
         out[key] = out.get(key, 0.0) + sign * arr
     return out
-
-
-def load_external_injection(cfg, zones: list[str], hours: pd.Index,
-                            main_map: dict[str, str]) -> tuple[xr.DataArray, xr.DataArray]:
-    """Return (external_e, external_h2) net-injection DataArrays (import +).
-
-    dims ``(zone, hour)`` sliced to the model's hour window. Reads the three
-    parquet databases from ``cfg.exports_dir``; raises ``FileNotFoundError`` if
-    any is missing so the caller can fall back to the Excel columns.
-    """
-    d = Path(cfg.exports_dir)
-    edf = pd.read_parquet(d / "crossborder_electricity_2030.parquet")
-    hdf = pd.read_parquet(d / "crossborder_hydrogen_2030.parquet")
-    smr = pd.read_parquet(d / "smr_production_2030.parquet")
-
-    h0, h1 = cfg.hour_slice()
-    e_exp = elec_net_export(zones, edf)
-    h_exp = h2_net_export(zones, main_map, hdf, smr)
-    zidx = pd.Index(zones, name=ZONE)
-
-    def to_injection(exp: dict[str, np.ndarray], n: int) -> xr.DataArray:
-        rows = [-exp.get(z, np.zeros(n))[h0:h1] for z in zones]
-        return xr.DataArray(np.vstack(rows), coords={ZONE: zidx, HOUR: hours}, dims=[ZONE, HOUR])
-
-    return to_injection(e_exp, len(edf)), to_injection(h_exp, len(hdf))

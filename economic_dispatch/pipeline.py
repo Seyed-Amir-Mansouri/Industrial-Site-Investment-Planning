@@ -1,23 +1,12 @@
-"""End-to-end scenario runner shared by the CLI and the web UI.
-
-``solve_scenario`` loads the data, builds and solves the dispatch LP for the
-whole horizon, attaches marginal prices, and returns the :class:`BuildResult`.
-"""
+"""End-to-end scenario runner: load data, build and solve the dispatch LP."""
 from __future__ import annotations
 
 from .config import RunConfig
 from . import data_loader, network_loader, model, solve
-from .model import BuildResult
 
 
 def solve_scenario(cfg: RunConfig, return_zdata: bool = False):
-    """Load data, build and solve the dispatch, attach prices; return the result.
-
-    ``return_zdata=True`` also returns the (possibly capacity-scaled, see
-    ``cfg.capacity_scale``) per-zone data used to build the model -- e.g. so
-    ``run_capacity_scenarios.py`` can read back each zone's actual scaled capacity for
-    its output manifest. Default ``False`` preserves the original single-value return.
-    """
+    """Load data, build and solve the dispatch, attach prices; return the result (and zdata if requested)."""
     h0, h1 = cfg.hour_slice()
     zdata = data_loader.load_zones_from_db(cfg.zones, cfg.zones_db, h0, h1)
     if cfg.capacity_scale:

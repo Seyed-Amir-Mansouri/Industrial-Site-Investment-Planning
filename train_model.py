@@ -1,14 +1,4 @@
-"""Train the per-zone demand -> price models for both commodities and save them.
-
-For each commodity in ``price_model/config.py`` reads its feature table and writes:
-
-* ``outputs/<commodity>_model.joblib`` -- the trained per-zone model bundle
-* ``outputs/<commodity>_metrics.csv``  -- per-zone CV R^2, RMSE, n, top features
-
-Usage:
-    ../projects-venv/Scripts/python.exe train_model.py                 # both commodities
-    ../projects-venv/Scripts/python.exe train_model.py --only hydrogen
-"""
+"""Train the per-zone demand -> price models for both commodities and save them."""
 from __future__ import annotations
 
 import argparse
@@ -23,11 +13,13 @@ from price_model.multivariate import train_all
 from price_model.neighbors import load_adjacency
 
 ROOT = Path(__file__).resolve().parent
-INPUTS = ROOT / "inputs"   # pre-built sample parquets ship here (skip build_dataset)
-OUT = ROOT / "outputs"     # trained models + metrics land here
+INPUTS = ROOT / "inputs"
+SAMPLES_DIR = ROOT / "data_exchange" / "01_dispatch_output__train_input"
+OUT = ROOT / "data_exchange" / "02_train_output__benders_input"
 
 
 def _metrics_frame(bundle: dict) -> pd.DataFrame:
+    """Per-zone top-3 feature importances, as a sorted-by-zone frame."""
     rows = []
     for zone, e in bundle["zones"].items():
         top = sorted(e["importances"].items(), key=lambda kv: kv[1], reverse=True)[:3]
@@ -39,6 +31,7 @@ def _metrics_frame(bundle: dict) -> pd.DataFrame:
 
 
 def _summary(bundle: dict) -> str:
+    """One-line CV R^2 / demand-only R^2 summary across all zones in the bundle."""
     r2 = np.array([e["cv_r2"] for e in bundle["zones"].values()])
     dor2 = np.array([e["demand_only_r2"] for e in bundle["zones"].values()])
     n = np.array([e["n"] for e in bundle["zones"].values()], float)
@@ -50,9 +43,10 @@ def _summary(bundle: dict) -> str:
 
 
 def train_commodity(name: str) -> None:
+    """Train, save, and print a summary for one commodity's model bundle."""
     cfg = COMMODITIES[name]
     OUT.mkdir(parents=True, exist_ok=True)
-    df = pd.read_parquet(INPUTS / cfg["samples"])
+    df = pd.read_parquet(SAMPLES_DIR / cfg["samples"])
     adjacency = load_adjacency(INPUTS / cfg["adjacency"])
     bundle = train_all(df, name, cfg["target"], cfg["features"],
                        cfg["demand"], cfg["unit"], adjacency=adjacency,
@@ -75,6 +69,7 @@ def train_commodity(name: str) -> None:
 
 
 def main(only: str | None = None) -> None:
+    """Train one commodity, or all of them if ``only`` is unset."""
     for name in ([only] if only else COMMODITIES):
         train_commodity(name)
 

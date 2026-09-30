@@ -1,24 +1,10 @@
-"""Parse a zone workbook into structured pandas objects.
-
-Each zone workbook has six sheets with a fixed schema (see README). Four are
-key/value ("Parameter", "Value"); "Hourly Profiles" and "Technology
-Characteristics" are tables. This module only *reads* — all modelling logic
-(classification, costs) lives in model.py, except the pure name-based
-``classify`` helper below which both share.
-"""
+"""Zone data structures and per-zone capacity/classification helpers for the dispatch model."""
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pandas as pd
-
-S_CAP = "Technology Capacities"
-S_STO = "Storage Capacities"
-S_RES = "Reserve Requirements"
-S_PROF = "Hourly Profiles"
-S_CHAR = "Technology Characteristics"
-S_GH = "Gas & Hydrogen Assets"
 
 CAT_COMMIT = "committable"
 CAT_VRES = "vres"
@@ -50,13 +36,7 @@ class ZoneData:
             return default
 
     def must_run_pct(self, tech: str, month: int) -> float:
-        """Must-run share for the given 0-based month, as % of installed capacity.
-
-        The column holds either a scalar or a comma-separated 12-value string.
-        ("Must Run (Number of units)" is a separate, unreliable column in this
-        data -- it is 0 for fleets that "Must Run (%)" shows as partially
-        must-run, so the floor is computed from the %-of-capacity column.)
-        """
+        """Must-run share for the given 0-based month, as % of installed capacity."""
         try:
             raw = self.char.at[tech, "Must Run (%)"]
         except KeyError:
@@ -77,69 +57,6 @@ def _month_value(raw, month: int) -> float:
         return float(parts[idx])
     except ValueError:
         return 0.0
-
-
-def _read_kv_ws(ws) -> dict[str, float]:
-    """Read a two-column key/value worksheet (skips the 'Code' row)."""
-    out: dict[str, float] = {}
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row:
-            continue
-        k, v = row[0], (row[1] if len(row) > 1 else None)
-        if not isinstance(k, str) or k == "Code":
-            continue
-        try:
-            out[k] = float(v)
-        except (TypeError, ValueError):
-            out[k] = 0.0
-    return out
-
-
-def _read_table_ws(ws, row_start: int | None = None, row_end: int | None = None) -> pd.DataFrame:
-    """Read a worksheet as a DataFrame. Header is row 1; data rows are the given
-    1-based half-open [row_start, row_end) window (all rows if unspecified)."""
-    rows = ws.iter_rows(values_only=True)
-    header = list(next(rows))
-    ncol = len(header)
-    data = []
-    lo = 0 if row_start is None else row_start
-    hi = None if row_end is None else row_end
-    for i, r in enumerate(rows):
-        if i < lo:
-            continue
-        if hi is not None and i >= hi:
-            break
-        data.append(list(r)[:ncol] + [None] * (ncol - len(r)))
-    return pd.DataFrame(data, columns=header)
-
-
-def load_zone(code: str, data_dir: Path, hour_start: int, hour_end: int) -> ZoneData:
-    path = Path(data_dir) / f"{code}.xlsx"
-    if not path.exists():
-        raise FileNotFoundError(f"Zone workbook not found: {path}")
-    import openpyxl
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-
-    capacities = _read_kv_ws(wb[S_CAP])
-    storage_energy = _read_kv_ws(wb[S_STO])
-    reserves = _read_kv_ws(wb[S_RES])
-    h2_assets = {k: v for k, v in _read_kv_ws(wb[S_GH]).items() if "(Gas)" not in k}
-
-    char = _read_table_ws(wb[S_CHAR])
-    char = char.set_index(char.columns[0])
-
-    profiles = _read_table_ws(wb[S_PROF], hour_start, hour_end).reset_index(drop=True)
-    profiles = profiles.drop(columns=[c for c in profiles.columns if c == "Gas Demand Profile"],
-                             errors="ignore")
-
-    wb.close()
-    return ZoneData(code, capacities, storage_energy, reserves, h2_assets, char, profiles)
-
-
-def zones_in_db(db_path: Path) -> list[str]:
-    """Sorted list of zone codes present in the zones parquet database."""
-    df = pd.read_parquet(db_path, columns=["zone"])
-    return sorted(df["zone"].unique().tolist())
 
 
 def _zone_from_db(zdf: pd.DataFrame, code: str, h0: int, h1: int) -> ZoneData:
@@ -181,10 +98,6 @@ def load_zones_from_db(codes: list[str], db_path: Path,
     return {z: _zone_from_db(by_zone[z], z, hour_start, hour_end) for z in codes}
 
 
-# Capacity-uncertainty scenario groups (run_capacity_scenarios.py) -- "Technology
-# Capacities" keys each group's scale factor is applied to. Wind onshore+offshore move
-# together as one "wind" factor; every solar variant (PV, rooftop, thermal, thermal
-# w/ storage) moves together as one "solar" factor; electrolyser is its own factor.
 CAPACITY_SCALE_KEYS: dict[str, list[str]] = {
     "wind": ["Wind (onshore) (MW)", "Wind (offshore) (MW)"],
     "solar": ["Solar (MW)", "Solar (rooftop) (MW)",
@@ -192,38 +105,48 @@ CAPACITY_SCALE_KEYS: dict[str, list[str]] = {
     "electrolyser": ["Electrolyser (MW)"],
 }
 
+BATTERY_CHAR_TECH = "Battery (MWh)"
+BATTERY_CHAR_MW_COLS = ["Net maximum capacity - generation perspective (MW)",
+                        "Net maximum capacity - demand perspective (MW)"]
+H2_STORAGE_ASSET_KEYS = ["Withdraw (Hydrogen) (MW)", "Injection (Hydrogen) (MW)"]
 
-def apply_capacity_scale(zdata: dict[str, ZoneData], scale: dict[str, float]) -> dict[str, ZoneData]:
-    """Return a copy of ``zdata`` with each zone's installed capacity for the technology
-    groups named in ``scale`` (keys "wind"/"solar"/"electrolyser", see
-    ``CAPACITY_SCALE_KEYS``) multiplied by that group's factor. Groups not present in
-    ``scale`` are left unchanged; a capacity key missing from a given zone is simply
-    skipped (a zone with no installed capacity of a technology stays at zero regardless
-    of the scale factor). Empty ``scale`` returns ``zdata`` unchanged (same object, no
-    copy) -- the no-op default for every caller that doesn't opt into scenarios."""
+
+def apply_capacity_scale(zdata: dict[str, ZoneData],
+                         scale: dict[str, float | dict[str, float]]) -> dict[str, ZoneData]:
+    """Return a copy of ``zdata`` with each zone's installed capacity scaled per ``scale``
+    (group -> factor, or group -> {country: factor}); empty ``scale`` is a no-op."""
     if not scale:
         return zdata
     out = {}
     for z, zd in zdata.items():
         caps = dict(zd.capacities)
+        char = zd.char.copy()
+        storage_energy = dict(zd.storage_energy)
+        h2_assets = dict(zd.h2_assets)
         for group, factor in scale.items():
+            f = factor.get(z[:2], 1.0) if isinstance(factor, dict) else factor
+            if group == "battery":
+                if BATTERY_CHAR_TECH in char.index:
+                    for col in BATTERY_CHAR_MW_COLS:
+                        if col in char.columns and pd.notna(char.at[BATTERY_CHAR_TECH, col]):
+                            char.at[BATTERY_CHAR_TECH, col] = char.at[BATTERY_CHAR_TECH, col] * f
+                if BATTERY_CHAR_TECH in storage_energy:
+                    storage_energy[BATTERY_CHAR_TECH] = storage_energy[BATTERY_CHAR_TECH] * f
+                continue
+            if group == "tank":
+                for key in H2_STORAGE_ASSET_KEYS:
+                    if key in h2_assets:
+                        h2_assets[key] = h2_assets[key] * f
+                continue
             for key in CAPACITY_SCALE_KEYS.get(group, []):
                 if key in caps:
-                    caps[key] = caps[key] * factor
-        out[z] = replace(zd, capacities=caps)
+                    caps[key] = caps[key] * f
+        out[z] = replace(zd, capacities=caps, char=char, storage_energy=storage_energy, h2_assets=h2_assets)
     return out
 
 
 def classify(tech: str) -> tuple[str, bool]:
-    """Map a Technology-Capacities row name to (category, is_h2_fuel).
-
-    ``is_h2_fuel`` marks committable plants that consume hydrogen drawn from
-    the H2 balance rather than an exogenous fuel. Hydrogen (fc)/(ccgt) are
-    NOT flagged this way: their "Fuel (EUR/MWh)" is a real, priced fuel input
-    (like natural gas for a Gas plant) -- not sourced from the modelled H2
-    network -- so they are priced and dispatched exactly like any other
-    thermal fleet (fuel/CO2 cost divided by efficiency, must-run floor, ramp).
-    """
+    """Map a Technology-Capacities row name to (category, is_h2_fuel)."""
     t = tech
     if (t.startswith("Nuclear") or t.startswith("Hard Coal") or t.startswith("Lignite")
             or t.startswith("Gas (") or t.startswith("Light Oil")

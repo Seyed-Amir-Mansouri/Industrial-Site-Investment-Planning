@@ -1,20 +1,4 @@
-"""The two demand -> price functions.
-
-    electricity_price(zone, demand, **context)   -> electricity price [EUR/MWh]
-    hydrogen_price(zone, h2_demand, **context)   -> hydrogen price   [EUR/MWhH2]
-
-Both take the zone and its **demand** as the only required inputs. Any supporting driver
-(wind, solar, ... for electricity; electrolyser_gen, smr, ... for hydrogen) may be passed
-as a keyword to override its default, which is that zone's median. Vectorised: pass array
--like ``demand`` to get an array of prices back.
-
-Example::
-
-    from price_model import electricity_price, hydrogen_price
-    electricity_price("DE00", 55000)                 # price at 55 GW demand, median weather
-    electricity_price("DE00", 55000, wind=2000)      # ... with low wind
-    hydrogen_price("DE00", 1200)                      # H2 price at 1200 MWH2 demand
-"""
+"""Public demand -> price API: electricity_price / hydrogen_price."""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -26,7 +10,7 @@ import numpy as np
 from .config import COMMODITIES
 from .multivariate import demand_only_row, predict as _predict
 
-_OUTPUTS = Path(__file__).resolve().parent.parent / "outputs"
+_OUTPUTS = Path(__file__).resolve().parent.parent / "data_exchange" / "02_train_output__benders_input"
 
 
 @lru_cache(maxsize=None)
