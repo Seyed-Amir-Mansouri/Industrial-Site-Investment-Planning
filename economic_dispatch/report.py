@@ -34,7 +34,7 @@ def extract(build: BuildResult) -> dict[str, pd.DataFrame]:
     prod_tank_dis = _sol(build, "prod_tank_dis")
     prod_tank_ch = _sol(build, "prod_tank_ch")
     if not prod_wind_p.empty:
-        ely_eff = build.cfg.h2_producer_electrolyser_efficiency
+        ely_eff = build.cfg.g_investor_electrolyser_efficiency
         prod_grid_net = prod_wind_p + prod_pv_p + prod_batt_dis - prod_batt_ch - prod_ely_p
         prod_h2_net = ely_eff * prod_ely_p + prod_tank_dis - prod_tank_ch
     else:
@@ -91,8 +91,8 @@ def _prod_on_rows(df: pd.DataFrame, prod_idx) -> pd.DataFrame:
 
 
 def _prod_zone_sum(df: pd.DataFrame, build: BuildResult, zones: list[str], H: int) -> pd.DataFrame:
-    """Sum a (country x hour) Hydrogen-Producer solution frame into (zone x hour)."""
-    prod = build.h2_producer
+    """Sum a (country x hour) General-Investor solution frame into (zone x hour)."""
+    prod = build.g_investor
     if df.empty or prod.empty:
         return pd.DataFrame(0.0, index=zones, columns=range(H))
     df = _prod_on_rows(df, prod.index)
@@ -220,7 +220,7 @@ def hourly_balance_tables(build: BuildResult) -> dict:
     prod_tank_ch = _prod_zone_sum(sol["prod_tank_ch"], build, z, H)
     prod_grid_net = _prod_zone_sum(sol["prod_grid_net"], build, z, H)
     prod_h2_net = _prod_zone_sum(sol["prod_h2_net"], build, z, H)
-    prod_ely_h2 = prod_ely * build.cfg.h2_producer_electrolyser_efficiency
+    prod_ely_h2 = prod_ely * build.cfg.g_investor_electrolyser_efficiency
 
     def build_table(per_zone_cols):
         data = {}

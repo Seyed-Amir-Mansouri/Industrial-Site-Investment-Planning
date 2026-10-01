@@ -1,4 +1,4 @@
-# Price Models & H2 Producer Capacity Planning
+# Price Models & General Investor Capacity Planning
 
 Two pieces of work, both built on an upstream LP economic-dispatch engine's output for
 the 20-zone Central-European CORE region (NT2030 scenario):
@@ -20,37 +20,37 @@ hydrogen_price("AT00", 500)        # H2 price at 500 MWH2 demand
 
 Retrain with `python train_model.py`.
 
-## 2. H2 Producer capacity planning (`h2_planning/`, `optimize_h2_producer.py`)
+## 2. General Investor capacity planning (`g_investor_planning/`, `optimize_g_investor.py`)
 
-Sizes each country's Hydrogen Producer (electrolyser, wind, PV, battery, H2 tank)
+Sizes each country's General Investor (electrolyser, wind, PV, battery, H2 tank)
 using the price models above as a price-taker market signal, instead of the full
 network coupling the upstream dispatch engine solves.
 
-- `optimize_h2_producer.py` — a merchant LP: each asset buys or sells electricity
+- `optimize_g_investor.py` — a merchant LP: each asset buys or sells electricity
   and hydrogen at the modeled market price, bounded only by its own installed
   capacity, with no downstream demand obligation. `solve` runs one country on its
   own, either over a contiguous day range or a representative-day sample.
   `solve_joint` runs every requested country's LP together in a single model
   (still independent problems, just solved in one call) and is the only mode
   `plan_h2_capacity.py` uses.
-- `h2_planning/` + `plan_h2_capacity.py` — turns the five asset sizes into a
+- `g_investor_planning/` + `plan_h2_capacity.py` — turns the five asset sizes into a
   discrete/binary choice under a CAPEX budget, solved via Benders decomposition
   (MILP master + one joint LP subproblem covering every included country together,
   `solve_joint` — not independent per-country subproblems).
 
 ```bash
-python optimize_h2_producer.py --zone DE00 --day 5
+python optimize_g_investor.py --zone DE00 --day 5
 python plan_h2_capacity.py --countries DE,FR,PL --rep-days-per-month 1
 ```
 
-`optimize_h2_producer.py`'s standalone `--day`/`--start-day`/`--end-day` CLI also
+`optimize_g_investor.py`'s standalone `--day`/`--start-day`/`--end-day` CLI also
 accepts `--rep-days-per-month N`, to solve on N representative days/month (weighted
 to approximate the full year) instead of a contiguous day range. `plan_h2_capacity.py`
 always solves every included country together (`solve_joint`) on representative days,
 so `--rep-days-per-month` is effectively required there too — `solve_joint` has no
 contiguous-range mode.
 
-CAPEX/lifetime figures in `h2_planning/config.py::CANDIDATE_CATALOG` come from
+CAPEX/lifetime figures in `g_investor_planning/config.py::CANDIDATE_CATALOG` come from
 `Help/Candidates (Edited).docx`'s 2030 candidate-product table (four real-world MW
 sizes per asset, each with its own absolute CAPEX and lifetime) — a real cited source,
 not a vendor quote.
@@ -87,7 +87,7 @@ and no separate cap on how many assets a country can build.
 | `--rep-days-per-month N` | 7 | Solves the joint subproblem on N representative days/month (1–29, weighted to approximate the full year) — `solve_joint` has no contiguous-range mode |
 
 Every country's subproblem is solved together, in one joint linopy model
-(`optimize_h2_producer.solve_joint`); there's no independent-per-country mode.
+(`optimize_g_investor.solve_joint`); there's no independent-per-country mode.
 No downstream hydrogen demand is modeled anywhere in this pipeline — each asset is a
 merchant participant, trading purely at the modeled market prices. PV and wind each
 sell independently into the electricity market; the electrolyser buys electricity and
@@ -96,7 +96,7 @@ each bounded only by its own installed capacity, more like five separate one-ass
 investments than one co-located microgrid with a shared site balance or a shared
 grid/pipeline connection limit. A country can freely build wind/PV/battery/tank with
 zero electrolyser (a standalone merchant power-and-storage plant), or the reverse.
-`optimize_h2_producer.solve`, the standalone single-country CLI, follows the same
+`optimize_g_investor.solve`, the standalone single-country CLI, follows the same
 merchant model.
 
 **Solve control / output**
@@ -116,7 +116,7 @@ once, as one MILP with a full year of hourly LP dispatch variables per country, 
 scale — so `plan_h2_capacity.py` splits it into a master problem and one joint
 subproblem (covering every included country together), iterating between them:
 
-1. **Master (MILP, `h2_planning/master.py`)** — picks one candidate MW value per
+1. **Master (MILP, `g_investor_planning/master.py`)** — picks one candidate MW value per
    asset per country (a binary one-hot choice over `CANDIDATE_CATALOG`'s four-product-
    per-asset catalog — real MW sizes, each with its own absolute CAPEX and lifetime),
    subject to the annualized, system-wide CAPEX budget. Its objective is annualized
@@ -124,7 +124,7 @@ subproblem (covering every included country together), iterating between them:
    tightened every round by the cuts below. There's one `theta_s` per
    capacity-uncertainty scenario (equal-weighted, or CVaR-weighted under
    `--cvar-alpha`) rather than a single shared scalar.
-2. **Joint subproblem (LP, every country in one linopy model, `optimize_h2_producer.
+2. **Joint subproblem (LP, every country in one linopy model, `optimize_g_investor.
    solve_joint`)** — for the master's chosen capacities, solves the merchant
    representative-day dispatch (`--rep-days-per-month`), once per capacity-uncertainty
    scenario, and returns each country's own realized operating profit (buying and
@@ -148,9 +148,9 @@ tractable.
 ## Structure
 
 ```
-price_model/             demand -> price models
-h2_planning/              Benders master + candidate grids + CAPEX assumptions
-optimize_h2_producer.py   standalone / joint H2 Producer LP
+price_model/              demand -> price models
+g_investor_planning/      Benders master + candidate grids + CAPEX assumptions
+optimize_g_investor.py    standalone / joint General Investor LP
 plan_h2_capacity.py       Benders CLI driver
 economic_dispatch/        LP dispatch engine, vendored locally
 data_exchange/            hand-off directory between pipeline stages: dispatch

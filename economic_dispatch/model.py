@@ -50,7 +50,7 @@ class BuildResult:
     price_h: xr.DataArray | None = None
     uc_gens: list[str] | None = None
     startup_cost_eur: float = 0.0
-    h2_producer: pd.DataFrame = field(default_factory=pd.DataFrame)
+    g_investor: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def _marginal_cost(zd: ZoneData, tech: str, h2_fuel: bool, co2_price: float,
@@ -231,23 +231,23 @@ def _build_storage(zdata: dict[str, ZoneData], cfg: RunConfig):
     return storage, inflow
 
 
-def _h2_producer_sizing(cfg: RunConfig) -> dict[str, dict]:
+def _g_investor_sizing(cfg: RunConfig) -> dict[str, dict]:
     """Per-country electrolyser (rank-assigned against reference H2 load), wind, PV,
-    battery, and H2 tank reference capacity for the Hydrogen Producer, with per-asset
+    battery, and H2 tank reference capacity for the General Investor, with per-asset
     overrides applied on top."""
-    result = _h2_producer_sizing_cached(
-        str(cfg.zones_db), tuple(cfg.h2_producer_electrolyser_capacities_mw),
-        cfg.h2_producer_renewable_pct_of_electrolyser_mw, cfg.h2_producer_wind_to_pv_ratio,
-        cfg.h2_producer_renewable_capacity_step_mw, cfg.h2_producer_electrolyser_efficiency,
-        cfg.h2_producer_battery_pct_of_electrolyser_mw, cfg.h2_producer_battery_duration_hours,
-        cfg.h2_producer_tank_pct_of_electrolyser_h2, cfg.h2_producer_tank_duration_hours,
-        cfg.h2_producer_battery_tank_step_mw,
+    result = _g_investor_sizing_cached(
+        str(cfg.zones_db), tuple(cfg.g_investor_electrolyser_capacities_mw),
+        cfg.g_investor_renewable_pct_of_electrolyser_mw, cfg.g_investor_wind_to_pv_ratio,
+        cfg.g_investor_renewable_capacity_step_mw, cfg.g_investor_electrolyser_efficiency,
+        cfg.g_investor_battery_pct_of_electrolyser_mw, cfg.g_investor_battery_duration_hours,
+        cfg.g_investor_tank_pct_of_electrolyser_h2, cfg.g_investor_tank_duration_hours,
+        cfg.g_investor_battery_tank_step_mw,
     )
-    ely_ov = cfg.h2_producer_electrolyser_mw_overrides
-    wind_ov = cfg.h2_producer_wind_mw_overrides
-    pv_ov = cfg.h2_producer_pv_mw_overrides
-    batt_ov = cfg.h2_producer_battery_mw_overrides
-    tank_ov = cfg.h2_producer_tank_mw_overrides
+    ely_ov = cfg.g_investor_electrolyser_mw_overrides
+    wind_ov = cfg.g_investor_wind_mw_overrides
+    pv_ov = cfg.g_investor_pv_mw_overrides
+    batt_ov = cfg.g_investor_battery_mw_overrides
+    tank_ov = cfg.g_investor_tank_mw_overrides
     if ely_ov or wind_ov or pv_ov or batt_ov or tank_ov:
         result = {c: dict(row) for c, row in result.items()}
         for c, row in result.items():
@@ -259,15 +259,15 @@ def _h2_producer_sizing(cfg: RunConfig) -> dict[str, dict]:
                 row["pv_mw"] = pv_ov[c]
             if c in batt_ov:
                 row["battery_mw"] = batt_ov[c]
-                row["battery_mwh"] = batt_ov[c] * cfg.h2_producer_battery_duration_hours
+                row["battery_mwh"] = batt_ov[c] * cfg.g_investor_battery_duration_hours
             if c in tank_ov:
                 row["tank_mw"] = tank_ov[c]
-                row["tank_mwh"] = tank_ov[c] * cfg.h2_producer_tank_duration_hours
+                row["tank_mwh"] = tank_ov[c] * cfg.g_investor_tank_duration_hours
     return result
 
 
 @lru_cache(maxsize=8)
-def _h2_producer_sizing_cached(zones_db: str, capacities: tuple[float, ...],
+def _g_investor_sizing_cached(zones_db: str, capacities: tuple[float, ...],
                                renewable_pct: float, wind_to_pv_ratio: float, renewable_step: float,
                                ely_eff: float, battery_pct: float, battery_hours: float,
                                tank_pct: float, tank_hours: float, batt_tank_step: float) -> dict[str, dict]:
@@ -314,7 +314,7 @@ def _h2_producer_sizing_cached(zones_db: str, capacities: tuple[float, ...],
 
 
 @lru_cache(maxsize=4)
-def _h2_producer_renewable_profile_info(zones_db: str) -> dict[str, tuple[bool, float, bool, float]]:
+def _g_investor_renewable_profile_info(zones_db: str) -> dict[str, tuple[bool, float, bool, float]]:
     """Per zone: ``(has_wind_data, wind_max, has_solar_data, solar_max)`` over the full stored year."""
     df = pd.read_parquet(zones_db)
     prof = df[df["section"] == "profiles"]
@@ -562,7 +562,7 @@ def build_model(zdata: dict[str, ZoneData], net: NetworkData, cfg: RunConfig,
 
     br = BuildResult(m, cfg, zones, hours, gens, commit, storage, gen_upper,
                      demand_e, demand_h, external_e, external_h2, net.elec, net.hydrogen, net,
-                     uc_gens=(uc_gens if uc_x_on is not None else None), h2_producer=prod_df)
+                     uc_gens=(uc_gens if uc_x_on is not None else None), g_investor=prod_df)
     br._ely_eff = pd.Series(ely_eff, index=zones)
     br._ely_cap = pd.Series(ely_cap, index=zones)
     br._term_cap = pd.Series(term_cap, index=zones)

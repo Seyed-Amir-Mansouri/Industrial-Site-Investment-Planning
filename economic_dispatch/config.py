@@ -90,25 +90,25 @@ class RunConfig:
     h2_storage_efficiency: float = 1.0
     default_hydro_efficiency: float = 1.0
 
-    h2_producer_renewable_pct_of_electrolyser_mw: float = 0.30
-    h2_producer_wind_to_pv_ratio: float = 1.3
-    h2_producer_renewable_capacity_step_mw: float = 2.5
-    h2_producer_electrolyser_efficiency: float = 0.68
-    h2_producer_battery_pct_of_electrolyser_mw: float = 0.25
-    h2_producer_battery_duration_hours: float = 2.0
-    h2_producer_tank_pct_of_electrolyser_h2: float = 0.50
-    h2_producer_tank_duration_hours: float = 24.0
-    h2_producer_battery_tank_step_mw: float = 2.5
-    h2_producer_battery_efficiency: float = 0.92
-    h2_producer_tank_efficiency: float = 1.0
-    h2_producer_electrolyser_capacities_mw: list[float] = field(
+    g_investor_renewable_pct_of_electrolyser_mw: float = 0.30
+    g_investor_wind_to_pv_ratio: float = 1.3
+    g_investor_renewable_capacity_step_mw: float = 2.5
+    g_investor_electrolyser_efficiency: float = 0.68
+    g_investor_battery_pct_of_electrolyser_mw: float = 0.25
+    g_investor_battery_duration_hours: float = 2.0
+    g_investor_tank_pct_of_electrolyser_h2: float = 0.50
+    g_investor_tank_duration_hours: float = 24.0
+    g_investor_battery_tank_step_mw: float = 2.5
+    g_investor_battery_efficiency: float = 0.92
+    g_investor_tank_efficiency: float = 1.0
+    g_investor_electrolyser_capacities_mw: list[float] = field(
         default_factory=lambda: [5, 5, 10, 10, 15, 15, 20, 20, 25, 25, 30, 35, 40])
 
-    h2_producer_electrolyser_mw_overrides: dict[str, float] = field(default_factory=dict)
-    h2_producer_wind_mw_overrides: dict[str, float] = field(default_factory=dict)
-    h2_producer_pv_mw_overrides: dict[str, float] = field(default_factory=dict)
-    h2_producer_battery_mw_overrides: dict[str, float] = field(default_factory=dict)
-    h2_producer_tank_mw_overrides: dict[str, float] = field(default_factory=dict)
+    g_investor_electrolyser_mw_overrides: dict[str, float] = field(default_factory=dict)
+    g_investor_wind_mw_overrides: dict[str, float] = field(default_factory=dict)
+    g_investor_pv_mw_overrides: dict[str, float] = field(default_factory=dict)
+    g_investor_battery_mw_overrides: dict[str, float] = field(default_factory=dict)
+    g_investor_tank_mw_overrides: dict[str, float] = field(default_factory=dict)
 
     solver_name: str = "highs"
     mip_rel_gap: float = 1e-4
