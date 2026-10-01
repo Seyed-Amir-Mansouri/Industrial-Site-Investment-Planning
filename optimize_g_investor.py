@@ -1,4 +1,4 @@
-"""Standalone Hydrogen Producer optimization for one zone/day-range, priced by the trained price proxy."""
+"""Standalone General Investor optimization for one zone/day-range, priced by the trained price proxy."""
 from __future__ import annotations
 
 import argparse
@@ -74,15 +74,15 @@ def first_n_days(n: int, total_days: int = TOTAL_YEAR_DAYS, n_months: int = N_MO
         weights.extend([w] * n)
     return days, weights
 
-_ELEC_PRODUCER_COLS = ["H2 Producer wind (MW)", "H2 Producer pv (MW)",
+_ELEC_INVESTOR_COLS = ["H2 Producer wind (MW)", "H2 Producer pv (MW)",
                       "H2 Producer battery discharge (MW)", "H2 Producer battery charge (-) (MW)",
                       "H2 Producer electrolyser load (-) (MW)", "H2 Producer grid exchange (MW)"]
-_H2_PRODUCER_COLS = ["H2 Producer electrolyser production (MW)", "H2 Producer tank discharge (MW)",
+_H2_INVESTOR_COLS = ["H2 Producer electrolyser production (MW)", "H2 Producer tank discharge (MW)",
                     "H2 Producer tank charge (-) (MW)", "H2 Producer pipeline exchange (MW)"]
 
 
 def load_actual_schedule(zone: str, start_day: int, end_day: int) -> pd.DataFrame:
-    """Actual H2 Producer schedule for this zone/day-range from the real full-year joint solve."""
+    """Actual General Investor schedule for this zone/day-range from the real full-year joint solve."""
     hours = list(range((start_day - 1) * HOURS_PER_DAY, end_day * HOURS_PER_DAY))
     ezones, ecats, evals = _read_balance_csv(DEFAULT_ELEC_CSV)
     hzones, hcats, hvals = _read_balance_csv(DEFAULT_H2_CSV)
@@ -94,9 +94,9 @@ def load_actual_schedule(zone: str, start_day: int, end_day: int) -> pd.DataFram
         return vals[hours, idx[0]]
 
     data = {"hour": list(range(len(hours)))}
-    for c in _ELEC_PRODUCER_COLS:
+    for c in _ELEC_INVESTOR_COLS:
         data[c] = col(ezones, ecats, evals, c)
-    for c in _H2_PRODUCER_COLS:
+    for c in _H2_INVESTOR_COLS:
         data[c] = col(hzones, hcats, hvals, c)
     return pd.DataFrame(data)
 
@@ -104,11 +104,11 @@ def load_actual_schedule(zone: str, start_day: int, end_day: int) -> pd.DataFram
 _ELEC_ZONE_OVERRIDES = {"BE": "BE00", "NL": "NL00"}
 
 _CAPACITY_OVERRIDE_FIELDS = {
-    "electrolyser_mw": "h2_producer_electrolyser_mw_overrides",
-    "wind_mw": "h2_producer_wind_mw_overrides",
-    "pv_mw": "h2_producer_pv_mw_overrides",
-    "battery_mw": "h2_producer_battery_mw_overrides",
-    "tank_mw": "h2_producer_tank_mw_overrides",
+    "electrolyser_mw": "g_investor_electrolyser_mw_overrides",
+    "wind_mw": "g_investor_wind_mw_overrides",
+    "pv_mw": "g_investor_pv_mw_overrides",
+    "battery_mw": "g_investor_battery_mw_overrides",
+    "tank_mw": "g_investor_tank_mw_overrides",
 }
 
 TANK_EFFICIENCY = 0.99
@@ -125,7 +125,7 @@ def _run_config(zone: str, start_day: int, end_day: int, capacities: dict | None
         zones=[zone], start_day=start_day, end_day=end_day,
         zones_db=ROOT / "inputs" / "zones_2030.parquet",
         networks_db=ROOT / "inputs" / "networks_2030.parquet",
-        h2_producer_tank_efficiency=TANK_EFFICIENCY,
+        g_investor_tank_efficiency=TANK_EFFICIENCY,
         **overrides,
     )
 
@@ -149,18 +149,18 @@ def _donor_zone(candidates: list[str], cap_key: str, zdata: dict) -> str:
 
 
 def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict | None = None):
-    """Resolve this country's Producer sizing plus wind/PV availability upper bounds for the given year-hour positions."""
+    """Resolve this country's Investor sizing plus wind/PV availability upper bounds for the given year-hour positions."""
     start_day = int(hours.min()) // HOURS_PER_DAY + 1
     end_day = int(hours.max()) // HOURS_PER_DAY + 1
     cfg = _run_config(zone, start_day, end_day, capacities)
     country = zone[:2]
-    sizing = ed_model._h2_producer_sizing(cfg)[country]
+    sizing = ed_model._g_investor_sizing(cfg)[country]
     host_zone = ed_model._h2_main_zones(cfg)[country]
     if host_zone != zone:
         raise ValueError(f"{zone} is not {country}'s main H2 zone (that's {host_zone}); "
                          f"pass the main H2 zone instead.")
 
-    profile_info = ed_model._h2_producer_renewable_profile_info(str(cfg.zones_db))
+    profile_info = ed_model._g_investor_renewable_profile_info(str(cfg.zones_db))
     all_zones = discover_zones(cfg.zones_db)
 
     wind_candidates = _donor_candidates(country, host_zone, 0, profile_info, all_zones)
@@ -300,7 +300,7 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
          capacities: dict | None = None, return_duals: bool = False,
          edf: pd.DataFrame | None = None, hdf: pd.DataFrame | None = None,
          day_selection: str = "first", quiet: bool = False) -> pd.DataFrame:
-    """Solve one zone's Hydrogen Producer LP over a contiguous day range or representative-day sample, priced by the proxy models."""
+    """Solve one zone's General Investor LP over a contiguous day range or representative-day sample, priced by the proxy models."""
     if fix_storage and return_duals:
         raise ValueError("return_duals=True is incompatible with fix_storage=True: "
                          "storage bounds are fixed-to-actual under fix_storage, not "
@@ -344,8 +344,8 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
 
     ely_mw, batt_mw, batt_mwh = s["electrolyser_mw"], s["battery_mw"], s["battery_mwh"]
     tank_mw, tank_mwh = s["tank_mw"], s["tank_mwh"]
-    ely_eff = cfg.h2_producer_electrolyser_efficiency
-    batt_eff, tank_eff = cfg.h2_producer_battery_efficiency, cfg.h2_producer_tank_efficiency
+    ely_eff = cfg.g_investor_electrolyser_efficiency
+    batt_eff, tank_eff = cfg.g_investor_battery_efficiency, cfg.g_investor_tank_efficiency
     sto_cost = cfg.storage_op_cost_eur_per_mwh
     batt_soc0 = cfg.initial_soc_fraction * batt_mwh
     tank_soc0 = cfg.initial_soc_fraction * tank_mwh
@@ -467,11 +467,11 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
             batt_soc0_terms += float(m.dual["batt_cyclic"].sum())
             tank_soc0_terms += float(m.dual["tank_cyclic"].sum())
         mu_battery = (float(m.dual["batt_dis_cap"].sum()) + float(m.dual["batt_ch_cap"].sum())
-                     + float(m.dual["batt_soc_cap"].sum()) * cfg.h2_producer_battery_duration_hours
-                     + batt_soc0_terms * cfg.initial_soc_fraction * cfg.h2_producer_battery_duration_hours)
+                     + float(m.dual["batt_soc_cap"].sum()) * cfg.g_investor_battery_duration_hours
+                     + batt_soc0_terms * cfg.initial_soc_fraction * cfg.g_investor_battery_duration_hours)
         mu_tank = (float(m.dual["tank_dis_cap"].sum()) + float(m.dual["tank_ch_cap"].sum())
-                  + float(m.dual["tank_soc_cap"].sum()) * cfg.h2_producer_tank_duration_hours
-                  + tank_soc0_terms * cfg.initial_soc_fraction * cfg.h2_producer_tank_duration_hours)
+                  + float(m.dual["tank_soc_cap"].sum()) * cfg.g_investor_tank_duration_hours
+                  + tank_soc0_terms * cfg.initial_soc_fraction * cfg.g_investor_tank_duration_hours)
         cut_coeffs = {"electrolyser_mw": mu_electrolyser, "wind_mw": mu_wind, "pv_mw": mu_pv,
                      "battery_mw": mu_battery, "tank_mw": mu_tank}
 
@@ -523,7 +523,7 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
                 return_duals: bool = True,
                 edf: pd.DataFrame | None = None, hdf: pd.DataFrame | None = None,
                 day_selection: str = "first", quiet: bool = False) -> dict:
-    """Solve every zone's Hydrogen Producer LP jointly (representative-day horizon only) for a given trial capacity vector."""
+    """Solve every zone's General Investor LP jointly (representative-day horizon only) for a given trial capacity vector."""
     t0 = time.time()
     if day_selection == "first":
         days, day_weights = first_n_days(rep_days_per_month)
@@ -550,7 +550,7 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
         wind_cf_norm, pv_cf_norm) = sizing_and_profiles(z, hours, capacities[z])
         cfgs[z] = cfg
         host_zones[z] = host_zone
-        ely_effs[z] = cfg.h2_producer_electrolyser_efficiency
+        ely_effs[z] = cfg.g_investor_electrolyser_efficiency
         ely_mws[z] = s["electrolyser_mw"]
         batt_mws[z], batt_mwhs[z] = s["battery_mw"], s["battery_mwh"]
         tank_mws[z], tank_mwhs[z] = s["tank_mw"], s["tank_mwh"]
@@ -582,7 +582,7 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
     tank_mwh_da = xr.DataArray([tank_mwhs[z] for z in zones], coords=[zone_idx])
 
     cfg0 = cfgs[zones[0]]
-    batt_eff, tank_eff = cfg0.h2_producer_battery_efficiency, cfg0.h2_producer_tank_efficiency
+    batt_eff, tank_eff = cfg0.g_investor_battery_efficiency, cfg0.g_investor_tank_efficiency
     sto_cost = cfg0.storage_op_cost_eur_per_mwh
     batt_soc0_da = cfg0.initial_soc_fraction * batt_mwh_da
     tank_soc0_da = cfg0.initial_soc_fraction * tank_mwh_da
@@ -638,11 +638,11 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
             batt_soc0_terms = batt_soc0_terms + m.dual["batt_cyclic"].sum("day")
             tank_soc0_terms = tank_soc0_terms + m.dual["tank_cyclic"].sum("day")
         mu_battery_da = (m.dual["batt_dis_cap"].sum(["day", "hid"]) + m.dual["batt_ch_cap"].sum(["day", "hid"])
-                        + m.dual["batt_soc_cap"].sum(["day", "hid"]) * cfg0.h2_producer_battery_duration_hours
-                        + batt_soc0_terms * cfg0.initial_soc_fraction * cfg0.h2_producer_battery_duration_hours)
+                        + m.dual["batt_soc_cap"].sum(["day", "hid"]) * cfg0.g_investor_battery_duration_hours
+                        + batt_soc0_terms * cfg0.initial_soc_fraction * cfg0.g_investor_battery_duration_hours)
         mu_tank_da = (m.dual["tank_dis_cap"].sum(["day", "hid"]) + m.dual["tank_ch_cap"].sum(["day", "hid"])
-                    + m.dual["tank_soc_cap"].sum(["day", "hid"]) * cfg0.h2_producer_tank_duration_hours
-                    + tank_soc0_terms * cfg0.initial_soc_fraction * cfg0.h2_producer_tank_duration_hours)
+                    + m.dual["tank_soc_cap"].sum(["day", "hid"]) * cfg0.g_investor_tank_duration_hours
+                    + tank_soc0_terms * cfg0.initial_soc_fraction * cfg0.g_investor_tank_duration_hours)
         cut_coeffs = {z: {"electrolyser_mw": float(mu_electrolyser_da.sel(zone=z)),
                           "wind_mw": float(mu_wind_da.sel(zone=z)),
                           "pv_mw": float(mu_pv_da.sel(zone=z)),
