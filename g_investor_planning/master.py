@@ -1,4 +1,4 @@
-"""Benders master MILP for H2 Producer capacity planning."""
+"""Benders master MILP for General Investor capacity planning."""
 from __future__ import annotations
 
 import linopy
@@ -22,7 +22,7 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
     n_k = len(cand_mw[countries[0]][ASSETS[0]])
     k_idx = pd.Index(range(n_k), name="k")
 
-    y = m.add_variables(lower=0, integer=True, coords=[country_idx, asset_idx, k_idx], name="y")
+    y = m.add_variables(lower=0, upper=np.inf, integer=True, coords=[country_idx, asset_idx, k_idx], name="y")
     if cvar_alpha is not None and scenario_probs is None:
         raise ValueError("cvar_alpha requires scenario_probs")
     if scenario_probs is None:

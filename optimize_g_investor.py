@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -20,13 +22,61 @@ from economic_dispatch import data_loader as ed_dl
 
 from price_model.multivariate import predict as model_predict
 from price_model.neighbors import add_neighbor_features, add_candidate_neighbor_prices, load_adjacency
-from price_model.extract import _read_balance_csv, DEFAULT_ELEC_CSV, DEFAULT_H2_CSV
 from price_model import api as price_api
 
 HOURS_PER_DAY = 24
 TOTAL_YEAR_DAYS = 364
 N_MONTHS = 12
 TOTAL_YEAR_HOURS = TOTAL_YEAR_DAYS * HOURS_PER_DAY
+
+UNCERTAINTY_SCENARIOS_PATH = ROOT / "inputs" / "uncertainty_scenarios.json"
+RESCALE_TARGET_MAX_PCT = 50.0
+
+
+@lru_cache(maxsize=1)
+def _load_uncertainty_scenarios() -> dict:
+    return json.loads(UNCERTAINTY_SCENARIOS_PATH.read_text())["scenarios"]
+
+
+@lru_cache(maxsize=1)
+def _global_max_error_pct() -> float:
+    """Largest wind/solar capacity_scale error (%) across every unc scenario/country, used
+    as the rescale reference point so RESCALE_TARGET_MAX_PCT corresponds to that worst case."""
+    scenarios = _load_uncertainty_scenarios()
+    max_err = 0.0
+    for name, sc in scenarios.items():
+        if name == "p100":
+            continue
+        for resource in ("wind", "solar"):
+            for scale in sc[resource].values():
+                err = (1.0 - scale) * 100.0
+                if err > max_err:
+                    max_err = err
+    return max_err
+
+
+def _rescaled_capacity_scale(scenario: str | None, country: str) -> tuple[float, float]:
+    """(wind_scale, solar_scale) for this scenario/country, rescaled so the worst case across
+    every unc scenario/country corresponds to RESCALE_TARGET_MAX_PCT error (not the real,
+    larger error baked into the training data) -- (1.0, 1.0) if scenario is None/unknown or
+    has no entry for this country (e.g. 'p100'). Only used for the candidate's OWN available
+    capacity (and hence its own contribution to the price-model input); the rest of the
+    system's price features keep reflecting the real, un-rescaled scenario severity, since
+    those come straight from edf/hdf's real per-scenario dispatch data."""
+    if not scenario:
+        return 1.0, 1.0
+    sc = _load_uncertainty_scenarios().get(scenario)
+    if sc is None:
+        return 1.0, 1.0
+    factor = RESCALE_TARGET_MAX_PCT / _global_max_error_pct()
+
+    def rescale(raw_scale: float) -> float:
+        err = (1.0 - raw_scale) * 100.0
+        return 1.0 - (err * factor) / 100.0
+
+    wind_scale = rescale(sc["wind"].get(country, 1.0))
+    solar_scale = rescale(sc["solar"].get(country, 1.0))
+    return wind_scale, solar_scale
 
 
 def _month_boundaries(total_days: int = TOTAL_YEAR_DAYS, n_months: int = N_MONTHS) -> list[int]:
@@ -73,33 +123,6 @@ def first_n_days(n: int, total_days: int = TOTAL_YEAR_DAYS, n_months: int = N_MO
         days.extend(range(lo + 1, lo + 1 + n))
         weights.extend([w] * n)
     return days, weights
-
-_ELEC_INVESTOR_COLS = ["H2 Producer wind (MW)", "H2 Producer pv (MW)",
-                      "H2 Producer battery discharge (MW)", "H2 Producer battery charge (-) (MW)",
-                      "H2 Producer electrolyser load (-) (MW)", "H2 Producer grid exchange (MW)"]
-_H2_INVESTOR_COLS = ["H2 Producer electrolyser production (MW)", "H2 Producer tank discharge (MW)",
-                    "H2 Producer tank charge (-) (MW)", "H2 Producer pipeline exchange (MW)"]
-
-
-def load_actual_schedule(zone: str, start_day: int, end_day: int) -> pd.DataFrame:
-    """Actual General Investor schedule for this zone/day-range from the real full-year joint solve."""
-    hours = list(range((start_day - 1) * HOURS_PER_DAY, end_day * HOURS_PER_DAY))
-    ezones, ecats, evals = _read_balance_csv(DEFAULT_ELEC_CSV)
-    hzones, hcats, hvals = _read_balance_csv(DEFAULT_H2_CSV)
-
-    def col(zones, cats, vals, cat):
-        idx = [i for i, (z, c) in enumerate(zip(zones, cats)) if z == zone and c == cat]
-        if not idx:
-            return np.full(len(hours), np.nan)
-        return vals[hours, idx[0]]
-
-    data = {"hour": list(range(len(hours)))}
-    for c in _ELEC_INVESTOR_COLS:
-        data[c] = col(ezones, ecats, evals, c)
-    for c in _H2_INVESTOR_COLS:
-        data[c] = col(hzones, hcats, hvals, c)
-    return pd.DataFrame(data)
-
 
 _ELEC_ZONE_OVERRIDES = {"BE": "BE00", "NL": "NL00"}
 
@@ -148,8 +171,15 @@ def _donor_zone(candidates: list[str], cap_key: str, zdata: dict) -> str:
     return max(candidates, key=lambda z: zdata[z].capacities.get(cap_key, 0.0))
 
 
-def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict | None = None):
-    """Resolve this country's Investor sizing plus wind/PV availability upper bounds for the given year-hour positions."""
+def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict | None = None,
+                        scenario: str | None = None):
+    """Resolve this country's Investor sizing plus wind/PV availability upper bounds for the
+    given year-hour positions. If ``scenario`` is given, the candidate's OWN wind/PV capacity
+    factor (and hence its own available-capacity bound and its own contribution to the price
+    feature row) is derated by that scenario's country-level capacity_scale, rescaled so the
+    worst case across all scenarios/countries corresponds to RESCALE_TARGET_MAX_PCT error --
+    NOT the real, larger error baked into the training data (see ``_rescaled_capacity_scale``).
+    The rest of the system's price features are untouched, still reflecting the real severity."""
     start_day = int(hours.min()) // HOURS_PER_DAY + 1
     end_day = int(hours.max()) // HOURS_PER_DAY + 1
     cfg = _run_config(zone, start_day, end_day, capacities)
@@ -180,12 +210,41 @@ def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict | None = 
     wind_cf_norm = np.clip(wind_cf / wind_max, 0.0, 1.0)
     pv_cf_norm = np.clip(pv_cf / pv_max, 0.0, 1.0)
 
+    wind_scale, pv_scale = _rescaled_capacity_scale(scenario, country)
+    wind_cf_norm = wind_cf_norm * wind_scale
+    pv_cf_norm = pv_cf_norm * pv_scale
+
     wind_upper = wind_cf_norm * sizing["wind_mw"]
     pv_upper = pv_cf_norm * sizing["pv_mw"]
     return cfg, sizing, host_zone, wind_donor, pv_donor, wind_upper, pv_upper, wind_cf_norm, pv_cf_norm
 
 
 _BACKTEST_SCENARIO = "p100"
+
+
+def _backfill_required_price_cols(df: pd.DataFrame, raw_df: pd.DataFrame, target_col: str,
+                                  commodity: str) -> pd.DataFrame:
+    """Ensure every ``price_<zone>`` column any trained zone model actually needs is present.
+
+    ``add_candidate_neighbor_prices`` recomputes each zone's top-5 correlated neighbours from
+    whatever (possibly one-scenario, possibly unusual) data it's given -- a scenario extreme
+    enough to shift that correlation ranking can silently drop a column the trained model still
+    expects (KeyError at predict time). The model's own required feature list is fixed at
+    training time, so we just backfill any of ITS needed ``price_<zone>`` columns straight from
+    ``raw_df`` (same scenario, so ``hour`` keys are unique) regardless of this scenario's own
+    correlation structure.
+    """
+    bundle = price_api._bundle(commodity)
+    needed_zones = {n[len("price_"):] for z in bundle["zones"] for n in bundle["zones"][z]["features"]
+                    if n.startswith("price_")}
+    missing = [z for z in needed_zones if f"price_{z}" not in df.columns and z in raw_df["zone"].values]
+    if not missing:
+        return df
+    wide = raw_df[raw_df["zone"].isin(missing)].pivot_table(index="hour", columns="zone", values=target_col,
+                                                            aggfunc="first")
+    for z in missing:
+        df[f"price_{z}"] = df["hour"].map(wide[z])
+    return df
 
 
 def enriched_elec_df(scenario: str = _BACKTEST_SCENARIO) -> pd.DataFrame:
@@ -195,9 +254,11 @@ def enriched_elec_df(scenario: str = _BACKTEST_SCENARIO) -> pd.DataFrame:
     edf = pd.read_parquet(ROOT_EXCHANGE / "elec_samples.parquet")
     if "scenario" in edf.columns:
         edf = edf[edf["scenario"] == scenario].drop(columns="scenario")
+    raw_edf = edf
     eadj = load_adjacency(ROOT_IN / "elec_adjacency.json")
     edf, _ = add_neighbor_features(edf, "demand", eadj, "residual_load")
     edf, _ = add_candidate_neighbor_prices(edf, "price_eur_mwh", eadj)
+    edf = _backfill_required_price_cols(edf, raw_edf, "price_eur_mwh", "electricity")
     return edf
 
 
@@ -208,9 +269,11 @@ def enriched_h2_df(scenario: str = _BACKTEST_SCENARIO) -> pd.DataFrame:
     hdf = pd.read_parquet(ROOT_EXCHANGE / "h2_samples.parquet")
     if "scenario" in hdf.columns:
         hdf = hdf[hdf["scenario"] == scenario].drop(columns="scenario")
+    raw_hdf = hdf
     hadj = load_adjacency(ROOT_IN / "h2_adjacency.json")
     hdf, _ = add_neighbor_features(hdf, "h2_demand", hadj, None)
     hdf, _ = add_candidate_neighbor_prices(hdf, "h2_price", hadj)
+    hdf = _backfill_required_price_cols(hdf, raw_hdf, "h2_price", "hydrogen")
     return hdf
 
 
@@ -296,25 +359,20 @@ def _capacity_bounded(m: linopy.Model, name: str, coords: list[pd.Index], upper_
 
 
 def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
-         rep_days_per_month: int | None = None, fix_storage: bool = False,
+         rep_days_per_month: int | None = None,
          capacities: dict | None = None, return_duals: bool = False,
          edf: pd.DataFrame | None = None, hdf: pd.DataFrame | None = None,
-         day_selection: str = "first", quiet: bool = False) -> pd.DataFrame:
-    """Solve one zone's General Investor LP over a contiguous day range or representative-day sample, priced by the proxy models."""
-    if fix_storage and return_duals:
-        raise ValueError("return_duals=True is incompatible with fix_storage=True: "
-                         "storage bounds are fixed-to-actual under fix_storage, not "
-                         "capacity-linked, so no battery/tank cut coefficients exist.")
+         day_selection: str = "first", quiet: bool = False,
+         scenario: str | None = None) -> pd.DataFrame:
+    """Solve one zone's General Investor LP over a contiguous day range or representative-day sample, priced by the proxy models.
+    ``scenario``, if given, derates the candidate's OWN wind/PV capacity (rescaled, see
+    ``sizing_and_profiles``) -- pass the same scenario name used to build ``edf``/``hdf``."""
     representative = rep_days_per_month is not None
     if representative:
         if start_day is not None or end_day is not None:
             raise ValueError("rep_days_per_month is mutually exclusive with "
                              "start_day/end_day -- representative sampling always "
                              "spans the full 364-day year.")
-        if fix_storage:
-            raise ValueError("fix_storage=True needs a real contiguous historical "
-                             "trajectory to replay; incompatible with "
-                             "rep_days_per_month (independent-per-day storage).")
         if day_selection == "first":
             days, day_weights = first_n_days(rep_days_per_month)
         else:
@@ -334,7 +392,7 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
 
     t0 = time.time()
     (cfg, s, host_zone, wind_donor, pv_donor, wind_upper, pv_upper,
-    wind_cf_norm, pv_cf_norm) = sizing_and_profiles(zone, hours, capacities)
+    wind_cf_norm, pv_cf_norm) = sizing_and_profiles(zone, hours, capacities, scenario)
     elec_zone = _ELEC_ZONE_OVERRIDES.get(zone[:2], zone)
     p_elec, p_h2 = proxy_price_series(elec_zone, hours, h2_zone=zone, edf=edf, hdf=hdf,
                                       wind_gen_add=wind_cf_norm * s["wind_mw"],
@@ -351,13 +409,6 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
     tank_soc0 = cfg.initial_soc_fraction * tank_mwh
     annual_hours = TOTAL_YEAR_HOURS if representative else H
 
-    if fix_storage:
-        act = load_actual_schedule(zone, start_day, end_day)
-        fixed_batt_dis = np.nan_to_num(act["H2 Producer battery discharge (MW)"].to_numpy(), nan=0.0)
-        fixed_batt_ch = np.nan_to_num(-act["H2 Producer battery charge (-) (MW)"].to_numpy(), nan=0.0)
-        fixed_tank_dis = np.nan_to_num(act["H2 Producer tank discharge (MW)"].to_numpy(), nan=0.0)
-        fixed_tank_ch = np.nan_to_num(-act["H2 Producer tank charge (-) (MW)"].to_numpy(), nan=0.0)
-
     m = linopy.Model()
 
     if not representative:
@@ -365,24 +416,12 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
         coords = [hour_idx]
         wind_p = _capacity_bounded(m, "wind_p", coords, wind_upper, return_duals, "wind_cap")
         pv_p = _capacity_bounded(m, "pv_p", coords, pv_upper, return_duals, "pv_cap")
-        if fix_storage:
-            batt_dis = m.add_variables(lower=fixed_batt_dis, upper=fixed_batt_dis, coords=coords, name="batt_dis")
-            batt_ch = m.add_variables(lower=fixed_batt_ch, upper=fixed_batt_ch, coords=coords, name="batt_ch")
-            tank_dis = m.add_variables(lower=fixed_tank_dis, upper=fixed_tank_dis, coords=coords, name="tank_dis")
-            tank_ch = m.add_variables(lower=fixed_tank_ch, upper=fixed_tank_ch, coords=coords, name="tank_ch")
-        else:
-            batt_dis = _capacity_bounded(m, "batt_dis", coords, batt_mw, return_duals, "batt_dis_cap")
-            batt_ch = _capacity_bounded(m, "batt_ch", coords, batt_mw, return_duals, "batt_ch_cap")
-            tank_dis = _capacity_bounded(m, "tank_dis", coords, tank_mw, return_duals, "tank_dis_cap")
-            tank_ch = _capacity_bounded(m, "tank_ch", coords, tank_mw, return_duals, "tank_ch_cap")
-        if fix_storage:
-            soc_slack = max(1.0, 0.02 * batt_mwh)
-            tank_slack = max(1.0, 0.02 * tank_mwh)
-            batt_soc = m.add_variables(lower=-soc_slack, upper=batt_mwh + soc_slack, coords=coords, name="batt_soc")
-            tank_soc = m.add_variables(lower=-tank_slack, upper=tank_mwh + tank_slack, coords=coords, name="tank_soc")
-        else:
-            batt_soc = _capacity_bounded(m, "batt_soc", coords, batt_mwh, return_duals, "batt_soc_cap")
-            tank_soc = _capacity_bounded(m, "tank_soc", coords, tank_mwh, return_duals, "tank_soc_cap")
+        batt_dis = _capacity_bounded(m, "batt_dis", coords, batt_mw, return_duals, "batt_dis_cap")
+        batt_ch = _capacity_bounded(m, "batt_ch", coords, batt_mw, return_duals, "batt_ch_cap")
+        tank_dis = _capacity_bounded(m, "tank_dis", coords, tank_mw, return_duals, "tank_dis_cap")
+        tank_ch = _capacity_bounded(m, "tank_ch", coords, tank_mw, return_duals, "tank_ch_cap")
+        batt_soc = _capacity_bounded(m, "batt_soc", coords, batt_mwh, return_duals, "batt_soc_cap")
+        tank_soc = _capacity_bounded(m, "tank_soc", coords, tank_mwh, return_duals, "tank_soc_cap")
         ely_p = _capacity_bounded(m, "ely_p", coords, ely_mw, return_duals, "ely_cap")
 
         m.add_constraints(batt_soc.isel(hour=0) - batt_soc0 - batt_eff * batt_ch.isel(hour=0) + batt_dis.isel(hour=0) == 0,
@@ -395,7 +434,7 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
         m.add_constraints(tank_soc.isel(hour=slice(1, None)) - tank_soc.isel(hour=slice(None, -1))
                           - tank_eff * tank_ch.isel(hour=slice(1, None)) + tank_dis.isel(hour=slice(1, None)) == 0,
                           name="tank_balance")
-        if cfg.cyclic_storage and not fix_storage:
+        if cfg.cyclic_storage:
             m.add_constraints(batt_soc.isel(hour=-1) >= batt_soc0, name="batt_cyclic")
             m.add_constraints(tank_soc.isel(hour=-1) >= tank_soc0, name="tank_cyclic")
 
@@ -512,7 +551,6 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
     out.attrs["annualized_hours"] = annual_hours
     out.attrs["rep_days_per_month"] = rep_days_per_month
     out.attrs["sampled_days"] = days if representative else None
-    out.attrs["fix_storage"] = fix_storage
     out.attrs["capacities"] = {"electrolyser_mw": ely_mw, "wind_mw": s["wind_mw"], "pv_mw": s["pv_mw"],
                               "battery_mw": batt_mw, "tank_mw": tank_mw}
     out.attrs["cut_coeffs"] = cut_coeffs
@@ -522,8 +560,12 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
 def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_month: int,
                 return_duals: bool = True,
                 edf: pd.DataFrame | None = None, hdf: pd.DataFrame | None = None,
-                day_selection: str = "first", quiet: bool = False) -> dict:
-    """Solve every zone's General Investor LP jointly (representative-day horizon only) for a given trial capacity vector."""
+                day_selection: str = "first", quiet: bool = False,
+                scenario: str | None = None) -> dict:
+    """Solve every zone's General Investor LP jointly (representative-day horizon only) for a
+    given trial capacity vector. ``scenario``, if given, derates every zone's own wind/PV
+    capacity (rescaled, see ``sizing_and_profiles``) -- pass the same scenario name used to
+    build ``edf``/``hdf``."""
     t0 = time.time()
     if day_selection == "first":
         days, day_weights = first_n_days(rep_days_per_month)
@@ -547,7 +589,7 @@ def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_mont
     host_zones = {}
     for z in zones:
         (cfg, s, host_zone, wind_donor, pv_donor, wind_upper, pv_upper,
-        wind_cf_norm, pv_cf_norm) = sizing_and_profiles(z, hours, capacities[z])
+        wind_cf_norm, pv_cf_norm) = sizing_and_profiles(z, hours, capacities[z], scenario)
         cfgs[z] = cfg
         host_zones[z] = host_zone
         ely_effs[z] = cfg.g_investor_electrolyser_efficiency
@@ -715,20 +757,17 @@ if __name__ == "__main__":
     ap.add_argument("--rep-days-per-month", type=int, default=None,
                     help="representative-sampling mode: N evenly-spaced days per month (1-29), "
                          "mutually exclusive with --day/--start-day/--end-day")
-    ap.add_argument("--fix-storage", action="store_true",
-                    help="fix battery/tank charge-discharge to actual historical values "
-                         "(contiguous mode only)")
     args = ap.parse_args()
     if args.rep_days_per_month is not None:
         if args.day is not None or args.start_day is not None or args.end_day is not None:
             ap.error("--rep-days-per-month is mutually exclusive with --day/--start-day/--end-day")
-        df = solve(args.zone, rep_days_per_month=args.rep_days_per_month, fix_storage=args.fix_storage)
+        df = solve(args.zone, rep_days_per_month=args.rep_days_per_month)
     else:
         if args.day is not None:
             start_day, end_day = args.day, args.day
         else:
             start_day, end_day = (args.start_day or 5), (args.end_day or args.start_day or 5)
-        df = solve(args.zone, start_day, end_day, fix_storage=args.fix_storage)
+        df = solve(args.zone, start_day, end_day)
     if df.attrs["n_hours"] <= 48:
         print(df.to_string(index=False))
     else:

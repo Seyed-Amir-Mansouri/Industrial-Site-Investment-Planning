@@ -1,4 +1,4 @@
-"""Candidate-catalog CAPEX / lifetime / annualization assumptions for H2 Producer capacity planning."""
+"""Candidate-catalog CAPEX / lifetime / annualization assumptions for General Investor capacity planning."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -18,33 +18,18 @@ class AssetCandidate(NamedTuple):
 CANDIDATE_CATALOG: dict[str, list[AssetCandidate]] = {
     "electrolyser_mw": [
         AssetCandidate(mw=5.0, capex_eur=5_210_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=20.0, capex_eur=18_500_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=50.0, capex_eur=38_600_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=100.0, capex_eur=65_500_000.0, lifetime_years=25.0),
     ],
     "wind_mw": [
         AssetCandidate(mw=5.0, capex_eur=6_640_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=10.0, capex_eur=13_300_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=50.0, capex_eur=66_400_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=100.0, capex_eur=133_000_000.0, lifetime_years=30.0),
     ],
     "pv_mw": [
         AssetCandidate(mw=5.0, capex_eur=2_500_000.0, lifetime_years=40.0),
-        AssetCandidate(mw=25.0, capex_eur=12_500_000.0, lifetime_years=40.0),
-        AssetCandidate(mw=50.0, capex_eur=25_000_000.0, lifetime_years=40.0),
-        AssetCandidate(mw=100.0, capex_eur=50_000_000.0, lifetime_years=40.0),
     ],
     "battery_mw": [
         AssetCandidate(mw=2.0, mwh=4.0, capex_eur=1_130_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=10.0, mwh=20.0, capex_eur=5_640_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=20.0, mwh=80.0, capex_eur=20_600_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=50.0, mwh=200.0, capex_eur=51_400_000.0, lifetime_years=20.0),
     ],
     "tank_mw": [
         AssetCandidate(mw=1.0, mwh=16.7, capex_eur=950_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=5.0, mwh=166.7, capex_eur=3_750_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=20.0, mwh=666.7, capex_eur=14_000_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=50.0, mwh=3_333.0, capex_eur=65_000_000.0, lifetime_years=30.0),
     ],
 }
 

@@ -1,4 +1,4 @@
-"""Discrete candidate capacity grids for H2 Producer capacity planning."""
+"""Discrete candidate capacity grids for General Investor capacity planning."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,9 +16,9 @@ DEFAULT_NETWORKS_DB = ROOT / "inputs" / "networks_2030.parquet"
 
 
 def default_sizing_and_zones(zones_db=DEFAULT_ZONES_DB, networks_db=DEFAULT_NETWORKS_DB):
-    """Return (sizing, main_zones) for every country with a Hydrogen Producer."""
+    """Return (sizing, main_zones) for every country with a General Investor."""
     cfg = RunConfig(zones_db=zones_db, networks_db=networks_db)
-    sizing = ed_model._h2_producer_sizing(cfg)
+    sizing = ed_model._g_investor_sizing(cfg)
     main_zones = ed_model._h2_main_zones(cfg)
     return sizing, main_zones
 
@@ -30,7 +30,7 @@ def build_candidates(countries: list[str], capex_cfg: CapexAssumptions | None = 
     sizing, main_zones = default_sizing_and_zones(zones_db, networks_db)
     missing = [c for c in countries if c not in sizing]
     if missing:
-        raise ValueError(f"no Hydrogen Producer sizing for {missing} -- eligible "
+        raise ValueError(f"no General Investor sizing for {missing} -- eligible "
                          f"countries: {sorted(sizing)}")
 
     default_mw = {c: {a: float(sizing[c][a]) for a in ASSETS} for c in countries}

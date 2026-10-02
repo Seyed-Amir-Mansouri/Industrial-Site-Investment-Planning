@@ -1,7 +1,7 @@
 """Build the coupled electricity + hydrogen dispatch LP with linopy."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -21,7 +21,6 @@ HOUR = "hour"
 GEN = "gen"
 ZONE = "zone"
 STO = "sto"
-PROD = "prod"
 
 
 def _num(arr) -> np.ndarray:
@@ -50,7 +49,6 @@ class BuildResult:
     price_h: xr.DataArray | None = None
     uc_gens: list[str] | None = None
     startup_cost_eur: float = 0.0
-    g_investor: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def _marginal_cost(zd: ZoneData, tech: str, h2_fuel: bool, co2_price: float,
@@ -488,10 +486,6 @@ def build_model(zdata: dict[str, ZoneData], net: NetworkData, cfg: RunConfig,
     else:
         term_cap = np.zeros(len(zones))
 
-    prod_df = pd.DataFrame(columns=["zone"]).rename_axis(PROD)
-    prod_grid_net_by_zone = prod_h2_net_by_zone = 0.0
-    prod_extra_obj = 0.0
-
     net_e, fe_pos, fe_neg = _flow_terms(m, net.elec, zones, hours, "e")
     net_h, fh_pos, fh_neg = (0.0, None, None) if cfg.electricity_only \
         else _flow_terms(m, net.hydrogen, zones, hours, "h")
@@ -523,14 +517,14 @@ def build_model(zdata: dict[str, ZoneData], net: NetworkData, cfg: RunConfig,
         dump_h = m.add_variables(lower=0.0, coords=[zidx, hours], name="dump_h")
 
     elec_lhs = (gen_by_zone + dis_by_zone - ch_by_zone - ely_p + net_e
-                + external_e + shed_e - dump_e + prod_grid_net_by_zone)
+                + external_e + shed_e - dump_e)
     m.add_constraints(elec_lhs == demand_e, name="elec_balance")
 
     if not cfg.electricity_only:
         h2_lhs = (ely_h2_term + term_h2 + net_h + external_h2
                   + (smr_gen if smr_gen is not None else 0.0)
                   + dis_h2_by_zone - ch_h2_by_zone + shed_h
-                  - h2_cons_by_zone - dump_h + prod_h2_net_by_zone)
+                  - h2_cons_by_zone - dump_h)
         m.add_constraints(h2_lhs == demand_h, name="h2_balance")
 
     ramp_commit = commit.drop(index=uc_gens, errors="ignore") if uc_gens else commit
@@ -557,12 +551,11 @@ def build_model(zdata: dict[str, ZoneData], net: NetworkData, cfg: RunConfig,
             + ext_h2_obj + smr_obj
     if have_sto:
         obj = obj + cfg.storage_op_cost_eur_per_mwh * (ch.sum() + dis.sum())
-    obj = obj + prod_extra_obj
     m.add_objective(obj)
 
     br = BuildResult(m, cfg, zones, hours, gens, commit, storage, gen_upper,
                      demand_e, demand_h, external_e, external_h2, net.elec, net.hydrogen, net,
-                     uc_gens=(uc_gens if uc_x_on is not None else None), g_investor=prod_df)
+                     uc_gens=(uc_gens if uc_x_on is not None else None))
     br._ely_eff = pd.Series(ely_eff, index=zones)
     br._ely_cap = pd.Series(ely_cap, index=zones)
     br._term_cap = pd.Series(term_cap, index=zones)

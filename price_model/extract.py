@@ -22,10 +22,6 @@ def _classify_elec(cat: str):
     """Map an electricity balance-CSV category name to (feature group, sign)."""
     c = cat.strip()
     if c.startswith("Marginal Price"):        return ("price_eur_mwh", 1)
-    if c.startswith("H2 Producer wind"):      return ("wind", 1)
-    if c.startswith("H2 Producer pv"):        return ("solar", 1)
-    if c.startswith("H2 Producer battery"):   return ("battery", 1)
-    if c.startswith("H2 Producer electrolyser load"): return ("demand", -1)
     if c.startswith("Demand"):                return ("demand", -1)
     if c.startswith("DSR"):                   return ("dsr", 1)
     if c.startswith("Wind"):                  return ("wind", 1)
@@ -45,9 +41,6 @@ def _classify_h2(cat: str):
     """Map a hydrogen balance-CSV category name to (feature group, sign)."""
     c = cat.strip()
     if c.startswith("Marginal Price"):        return ("h2_price", 1)
-    if c.startswith("H2 Producer electrolyser production"): return ("electrolyser_gen", 1)
-    if c.startswith("H2 Producer tank"):      return ("storage", 1)
-    if c.startswith("H2 Producer downstream demand"): return ("h2_demand", -1)
     if c.startswith("Demand"):                return ("h2_demand", -1)
     if c.startswith("Electrolyser production"): return ("electrolyser_gen", 1)
     if c.startswith("SMR production"):        return ("smr", 1)

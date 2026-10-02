@@ -17,7 +17,7 @@ from economic_dispatch.report import write_hourly_balance
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "data_exchange" / "01_dispatch_output__train_input" / "scenarios"
-UNCERTAINTY_JSON = ROOT / "inputs" / "uncertainty_scenarios_11.json"
+UNCERTAINTY_JSON = ROOT / "inputs" / "uncertainty_scenarios.json"
 
 _OFAT_PCTS = (110, 120, 130)
 _SINGLE_ASSET_TAGS = {"wind": "wind", "solar": "pv", "battery": "batt",
@@ -32,7 +32,7 @@ _MIX_GROUPS = {
 
 
 def _uncertainty_scenarios() -> dict[str, dict]:
-    """wind/solar per-country ``capacity_scale`` dicts for every scenario in ``uncertainty_scenarios_11.json``."""
+    """wind/solar per-country ``capacity_scale`` dicts for every scenario in ``uncertainty_scenarios.json``."""
     if not UNCERTAINTY_JSON.exists():
         return {}
     scenarios = json.loads(UNCERTAINTY_JSON.read_text())["scenarios"]

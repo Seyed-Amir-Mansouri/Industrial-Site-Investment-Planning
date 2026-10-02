@@ -25,21 +25,7 @@ def _to_pandas(da) -> pd.DataFrame:
 
 
 def extract(build: BuildResult) -> dict[str, pd.DataFrame]:
-    """Pull every dispatch/H2-Producer variable's solution into a dict of DataFrames."""
-    prod_wind_p = _sol(build, "prod_wind_p")
-    prod_pv_p = _sol(build, "prod_pv_p")
-    prod_batt_dis = _sol(build, "prod_batt_dis")
-    prod_batt_ch = _sol(build, "prod_batt_ch")
-    prod_ely_p = _sol(build, "prod_ely_p")
-    prod_tank_dis = _sol(build, "prod_tank_dis")
-    prod_tank_ch = _sol(build, "prod_tank_ch")
-    if not prod_wind_p.empty:
-        ely_eff = build.cfg.g_investor_electrolyser_efficiency
-        prod_grid_net = prod_wind_p + prod_pv_p + prod_batt_dis - prod_batt_ch - prod_ely_p
-        prod_h2_net = ely_eff * prod_ely_p + prod_tank_dis - prod_tank_ch
-    else:
-        prod_grid_net = pd.DataFrame()
-        prod_h2_net = pd.DataFrame()
+    """Pull every dispatch variable's solution into a dict of DataFrames."""
     return {
         "gen_p": _sol(build, "gen_p"),
         "dis": _sol(build, "dis"),
@@ -53,15 +39,6 @@ def extract(build: BuildResult) -> dict[str, pd.DataFrame]:
         "dump_e": _sol(build, "dump_e"),
         "dump_h": _sol(build, "dump_h"),
         "smr_gen": _sol(build, "smr_gen"),
-        "prod_wind_p": prod_wind_p,
-        "prod_pv_p": prod_pv_p,
-        "prod_batt_dis": prod_batt_dis,
-        "prod_batt_ch": prod_batt_ch,
-        "prod_ely_p": prod_ely_p,
-        "prod_tank_dis": prod_tank_dis,
-        "prod_tank_ch": prod_tank_ch,
-        "prod_grid_net": prod_grid_net,
-        "prod_h2_net": prod_h2_net,
     }
 
 
@@ -81,23 +58,6 @@ def _zones_on_rows(df: pd.DataFrame, zones: list[str]) -> pd.DataFrame:
     if set(zones) & set(df.columns):
         return df.T
     return df
-
-
-def _prod_on_rows(df: pd.DataFrame, prod_idx) -> pd.DataFrame:
-    """Orient a (country x hour) Hydrogen-Producer solution frame so country ids are the row index."""
-    if set(prod_idx) & set(df.index):
-        return df
-    return df.T
-
-
-def _prod_zone_sum(df: pd.DataFrame, build: BuildResult, zones: list[str], H: int) -> pd.DataFrame:
-    """Sum a (country x hour) General-Investor solution frame into (zone x hour)."""
-    prod = build.g_investor
-    if df.empty or prod.empty:
-        return pd.DataFrame(0.0, index=zones, columns=range(H))
-    df = _prod_on_rows(df, prod.index)
-    grp = df.groupby(lambda c: prod.loc[c, "zone"]).sum()
-    return grp.reindex(zones).fillna(0.0)
 
 
 def _ely_production(build: BuildResult, sol) -> pd.DataFrame:
@@ -211,17 +171,6 @@ def hourly_balance_tables(build: BuildResult) -> dict:
             if gid in gp.index:
                 h2_cons.loc[row["zone"]] += gp.loc[gid].to_numpy() / row["eff"]
 
-    prod_wind = _prod_zone_sum(sol["prod_wind_p"], build, z, H)
-    prod_pv = _prod_zone_sum(sol["prod_pv_p"], build, z, H)
-    prod_batt_dis = _prod_zone_sum(sol["prod_batt_dis"], build, z, H)
-    prod_batt_ch = _prod_zone_sum(sol["prod_batt_ch"], build, z, H)
-    prod_ely = _prod_zone_sum(sol["prod_ely_p"], build, z, H)
-    prod_tank_dis = _prod_zone_sum(sol["prod_tank_dis"], build, z, H)
-    prod_tank_ch = _prod_zone_sum(sol["prod_tank_ch"], build, z, H)
-    prod_grid_net = _prod_zone_sum(sol["prod_grid_net"], build, z, H)
-    prod_h2_net = _prod_zone_sum(sol["prod_h2_net"], build, z, H)
-    prod_ely_h2 = prod_ely * build.cfg.g_investor_electrolyser_efficiency
-
     def build_table(per_zone_cols):
         data = {}
         for zone in z:
@@ -245,12 +194,6 @@ def hourly_balance_tables(build: BuildResult) -> dict:
             ("Load shedding", shed_e.loc[zone]),
             ("Dumped/curtailed (-)", -dmp_e.loc[zone]),
             ("Demand (-)", -dem_e.loc[zone]),
-            ("H2 Producer wind (MW)", prod_wind.loc[zone]),
-            ("H2 Producer pv (MW)", prod_pv.loc[zone]),
-            ("H2 Producer battery discharge (MW)", prod_batt_dis.loc[zone]),
-            ("H2 Producer battery charge (-) (MW)", -prod_batt_ch.loc[zone]),
-            ("H2 Producer electrolyser load (-) (MW)", -prod_ely.loc[zone]),
-            ("H2 Producer grid exchange (MW)", prod_grid_net.loc[zone]),
         ]
         if price_e is not None:
             out.append(("Marginal Price (EUR/MWh)", price_e.loc[zone]))
@@ -270,10 +213,6 @@ def hourly_balance_tables(build: BuildResult) -> dict:
             ("Dumped/curtailed (-)", -dmp_h.loc[zone]),
             ("H2 plant consumption (-)", -h2_cons.loc[zone]),
             ("Demand (-)", -dem_h.loc[zone]),
-            ("H2 Producer electrolyser production (MW)", prod_ely_h2.loc[zone]),
-            ("H2 Producer tank discharge (MW)", prod_tank_dis.loc[zone]),
-            ("H2 Producer tank charge (-) (MW)", -prod_tank_ch.loc[zone]),
-            ("H2 Producer pipeline exchange (MW)", prod_h2_net.loc[zone]),
         ]
         if price_h is not None:
             out.append(("Marginal Price (EUR/MWh)", price_h.loc[zone]))
