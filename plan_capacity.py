@@ -46,7 +46,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                 master_time_limit: float = 180.0,
                 disabled_assets: list[str] | None = None,
                 scenario_probs: dict[str, float] | None = None,
-                workers: int | None = None):
+                workers: int | None = None,
+                max_units_per_candidate: int | None = None):
     """Run the Benders loop: master MILP proposes capacities, joint subproblems (one per scenario) price them and return cuts, repeat to convergence."""
     scenario_probs = scenario_probs if scenario_probs is not None else SCENARIO_PROBS
     default_mw, cand_mw, cand_capex, host_zone = hp.build_candidates(countries, capex_cfg)
@@ -70,7 +71,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
         max_mw = {c: {a: 0.0 for a in disabled_assets} for c in countries}
 
     m = hp.build_master(countries, cand_mw, cand_capex, budget, crf, capex_cfg.theta_lower_bound_eur,
-                        scenario_probs=scenario_probs, cvar_alpha=cvar_alpha, max_mw=max_mw)
+                        scenario_probs=scenario_probs, cvar_alpha=cvar_alpha, max_mw=max_mw,
+                        max_units_per_candidate=max_units_per_candidate)
 
     core_cap = {c: {a: float(sum([0.0] + list(cand_mw[c][a])) / (len(cand_mw[c][a]) + 1))
                     for a in hp.ASSETS} for c in countries}
@@ -245,6 +247,10 @@ def main() -> None:
                          "parallel (they're mutually independent); default min(4, cpu_count) -- "
                          "raise this if your machine has memory headroom for more. "
                          "Pass 1 to force sequential (e.g. for debugging).")
+    ap.add_argument("--max-units-per-candidate", type=int, default=3,
+                    help="max buildable units of each individual candidate product per "
+                         "country/asset (there are 5 real candidate products per asset in the "
+                         "catalog); default 3. Pass 0 or a negative number for unbounded.")
     args = ap.parse_args()
 
     capex_cfg = hp.CapexAssumptions()
@@ -284,6 +290,13 @@ def main() -> None:
     crf_str = ", ".join(f"{a}={crfs[a]:.4f}({capex_cfg.lifetime_years[a]:.0f}yr)" for a in hp.ASSETS)
     print(f"Budget: {budget:,.0f} EUR (raw/unannualized) | CRF @ {capex_cfg.discount_rate:.1%} discount: "
          f"{crf_str}")
+    n_candidates = len(capex_cfg.catalog[hp.ASSETS[0]])
+    units_note = ("unbounded" if args.max_units_per_candidate <= 0
+                 else f"max {args.max_units_per_candidate} units/candidate")
+    print(f"Candidates: {n_candidates} products/asset ({units_note}, per country):")
+    for a in hp.ASSETS:
+        cand_str = ", ".join(f"{c.mw:g}MW/{c.capex_eur:,.0f}EUR" for c in capex_cfg.catalog[a])
+        print(f"  {a}: {cand_str}")
     print(f"Subproblems: {args.rep_days_per_month} representative day(s)/month "
          f"({args.rep_days_per_month * 12} days solved, weighted to approximate the full year)")
     print("Joint mode: ALL countries solved together per iteration, merchant electricity "
@@ -303,7 +316,9 @@ def main() -> None:
         countries, budget, args.max_iters, args.gap_tol, capex_cfg,
         rep_days_per_month=args.rep_days_per_month,
         cvar_alpha=args.cvar_alpha, master_time_limit=args.master_time_limit,
-        disabled_assets=disabled_assets, scenario_probs=scenario_probs, workers=args.workers)
+        disabled_assets=disabled_assets, scenario_probs=scenario_probs, workers=args.workers,
+        max_units_per_candidate=(args.max_units_per_candidate
+                                 if args.max_units_per_candidate > 0 else None))
     elapsed = time.time() - t0
 
     print(f"\nDone in {elapsed:.1f}s. Final capacities:")

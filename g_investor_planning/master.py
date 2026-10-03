@@ -14,7 +14,8 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
                  crf: dict[str, float], theta_lower: float,
                  scenario_probs: dict[str, float] | None = None,
                  cvar_alpha: float | None = None,
-                 max_mw: dict[str, dict[str, float]] | None = None) -> linopy.Model:
+                 max_mw: dict[str, dict[str, float]] | None = None,
+                 max_units_per_candidate: int | None = None) -> linopy.Model:
     """Build a fresh Benders master MILP (candidate selection, budget, and optional CVaR/scenario objective) with no cuts yet."""
     m = linopy.Model()
     country_idx = pd.Index(countries, name="country")
@@ -22,7 +23,8 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
     n_k = len(cand_mw[countries[0]][ASSETS[0]])
     k_idx = pd.Index(range(n_k), name="k")
 
-    y = m.add_variables(lower=0, upper=np.inf, integer=True, coords=[country_idx, asset_idx, k_idx], name="y")
+    units_upper = np.inf if max_units_per_candidate is None else max_units_per_candidate
+    y = m.add_variables(lower=0, upper=units_upper, integer=True, coords=[country_idx, asset_idx, k_idx], name="y")
     if cvar_alpha is not None and scenario_probs is None:
         raise ValueError("cvar_alpha requires scenario_probs")
     if scenario_probs is None:
