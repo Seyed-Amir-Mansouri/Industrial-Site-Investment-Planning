@@ -78,6 +78,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                     for a in hp.ASSETS} for c in countries}
 
     best_ub, best_capacities, best_capex, best_capex_by_asset = float("inf"), None, None, None
+    best_units = None
     log = []
     per_country_log = {c: [] for c in countries}
     gap = float("inf")
@@ -176,6 +177,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                 ub = annualized_capex + total_Q
             if ub < best_ub:
                 best_ub, best_capacities, best_capex, best_capex_by_asset = ub, cap_star, raw_capex, capex_star
+                best_units = hp.extract_units(m, countries)
             gap = (best_ub - lb) / max(abs(best_ub), 1e-6)
             log.append({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
                         "master_seconds": round(master_s, 2),
@@ -204,7 +206,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
             executor.shutdown(wait=True)
 
     return (best_capacities, best_capex, best_ub, pd.DataFrame(log), host_zone, price_frames,
-           per_country_log, best_capex_by_asset)
+           per_country_log, best_capex_by_asset, best_units)
 
 
 def main() -> None:
@@ -247,10 +249,10 @@ def main() -> None:
                          "parallel (they're mutually independent); default min(4, cpu_count) -- "
                          "raise this if your machine has memory headroom for more. "
                          "Pass 1 to force sequential (e.g. for debugging).")
-    ap.add_argument("--max-units-per-candidate", type=int, default=3,
+    ap.add_argument("--max-units-per-candidate", type=int, default=0,
                     help="max buildable units of each individual candidate product per "
                          "country/asset (there are 5 real candidate products per asset in the "
-                         "catalog); default 3. Pass 0 or a negative number for unbounded.")
+                         "catalog); default 0 = unbounded. Pass e.g. 3 to cap each product at 3 units.")
     args = ap.parse_args()
 
     capex_cfg = hp.CapexAssumptions()
@@ -312,7 +314,7 @@ def main() -> None:
 
     t0 = time.time()
     (best_capacities, best_capex, best_ub, log_df, host_zone, price_frames,
-    per_country_log, best_capex_by_asset) = run_benders(
+    per_country_log, best_capex_by_asset, best_units) = run_benders(
         countries, budget, args.max_iters, args.gap_tol, capex_cfg,
         rep_days_per_month=args.rep_days_per_month,
         cvar_alpha=args.cvar_alpha, master_time_limit=args.master_time_limit,
@@ -339,7 +341,15 @@ def main() -> None:
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
     cap_df.to_csv(f"{out_prefix}_capacities.csv", index=False)
     log_df.to_csv(f"{out_prefix}_convergence.csv", index=False)
-    print(f"\nwrote {out_prefix}_capacities.csv, {out_prefix}_convergence.csv")
+    units_rows = []
+    for c in countries:
+        for a in hp.ASSETS:
+            for k, (cand, n) in enumerate(zip(capex_cfg.catalog[a], best_units[c][a])):
+                if n > 0:
+                    units_rows.append({"country": c, "asset": a, "candidate": k, "candidate_mw": cand.mw,
+                                       "units": int(n), "total_mw": cand.mw * int(n)})
+    pd.DataFrame(units_rows).to_csv(f"{out_prefix}_units.csv", index=False)
+    print(f"\nwrote {out_prefix}_capacities.csv, {out_prefix}_convergence.csv, {out_prefix}_units.csv")
 
     if args.export_schedules:
         zones = [host_zone[c] for c in countries]

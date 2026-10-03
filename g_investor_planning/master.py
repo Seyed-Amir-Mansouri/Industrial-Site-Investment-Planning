@@ -119,6 +119,13 @@ def extract_capacities(m: linopy.Model, countries: list[str],
     return out
 
 
+def extract_units(m: linopy.Model, countries: list[str]) -> dict[str, dict[str, np.ndarray]]:
+    """Integer unit count per (country, asset) for each candidate product, as read from the master's ``y`` solution."""
+    y_sol = m.variables["y"].solution
+    return {c: {a: np.rint(y_sol.sel(country=c, asset=a).to_numpy()).astype(int) for a in ASSETS}
+            for c in countries}
+
+
 def extract_capex(m: linopy.Model, countries: list[str],
                   cand_capex: dict[str, dict[str, np.ndarray]]) -> dict[str, dict[str, float]]:
     """Same ``y``-solution reading as ``extract_capacities``, but returns each chosen candidate's absolute CAPEX (EUR) instead of MW."""
