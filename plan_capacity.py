@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import json
@@ -43,7 +45,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                 quiet_solver: bool = True, on_iteration=None, cvar_alpha: float | None = None,
                 master_time_limit: float = 180.0,
                 disabled_assets: list[str] | None = None,
-                scenario_probs: dict[str, float] | None = None):
+                scenario_probs: dict[str, float] | None = None,
+                workers: int | None = None):
     """Run the Benders loop: master MILP proposes capacities, joint subproblems (one per scenario) price them and return cuts, repeat to convergence."""
     scenario_probs = scenario_probs if scenario_probs is not None else SCENARIO_PROBS
     default_mw, cand_mw, cand_capex, host_zone = hp.build_candidates(countries, capex_cfg)
@@ -76,85 +79,127 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     log = []
     per_country_log = {c: [] for c in countries}
     gap = float("inf")
-    for it in range(1, max_iters + 1):
-        status, cond = m.solve(solver_name="highs", output_flag=False, time_limit=master_time_limit,
-                               presolve="on", parallel="on")
-        if status != "ok":
-            raise RuntimeError(f"master solve failed at iteration {it}: {status}/{cond}")
-        cap_star = hp.extract_capacities(m, countries, cand_mw)
-        lb = float(m.solver_model.getInfo().mip_dual_bound)
-        master_mip_gap = float(m.solver_model.getInfo().mip_gap)
-        master_cut_off = (cond == "time_limit")
 
-        t_sub = time.time()
-        zones = [host_zone[c] for c in countries]
-        caps_by_zone = {host_zone[c]: cap_star[c] for c in countries}
+    n_workers = workers if workers is not None else min(4, os.cpu_count() or 1)
+    executor = ProcessPoolExecutor(max_workers=n_workers) if n_workers > 1 else None
+    if executor is not None:
+        print(f"Subproblems will run across {n_workers} worker processes "
+             f"(each scenario's trial-point and core-point solves are independent).")
+    try:
+        for it in range(1, max_iters + 1):
+            t_master = time.time()
+            status, cond = m.solve(solver_name="highs", output_flag=False, time_limit=master_time_limit,
+                                   presolve="on", parallel="on")
+            master_s = time.time() - t_master
+            if status != "ok":
+                raise RuntimeError(f"master solve failed at iteration {it}: {status}/{cond}")
+            cap_star = hp.extract_capacities(m, countries, cand_mw)
+            lb = float(m.solver_model.getInfo().mip_dual_bound)
+            master_mip_gap = float(m.solver_model.getInfo().mip_gap)
+            master_cut_off = (cond == "time_limit")
 
-        caps_core_by_zone = {host_zone[c]: core_cap[c] for c in countries}
-        results = {}
-        for s in scenario_probs:
-            edf_s, hdf_s = price_frames[s]
-            results[s] = ohp.solve_joint(zones, caps_by_zone, rep_days_per_month,
-                                         return_duals=False, edf=edf_s, hdf=hdf_s,
-                                         quiet=quiet_solver, scenario=s)
+            t_sub = time.time()
+            sub_build_s = sub_solve_s = 0.0
+            n_cuts = 0
+            zones = [host_zone[c] for c in countries]
+            caps_by_zone = {host_zone[c]: cap_star[c] for c in countries}
+            caps_core_by_zone = {host_zone[c]: core_cap[c] for c in countries}
 
-        total_Q = 0.0
-        Q_total_by_scenario: dict[str, float] = {}
-        Q_by_country = {c: 0.0 for c in countries}
-        Q_by_country_by_scenario: dict[str, dict[str, float]] = {}
-        for s, prob in scenario_probs.items():
-            result = results[s]
-            total_Q += prob * float(result["objective"])
-            Q_total_by_scenario[s] = float(result["objective"])
-            Q_s = {c: result["objective_by_zone"][host_zone[c]] for c in countries}
-            Q_by_country_by_scenario[s] = Q_s
+            if executor is not None:
+                trial_futures = {s: executor.submit(ohp.solve_joint, zones, caps_by_zone, rep_days_per_month,
+                                                    return_duals=False, edf=price_frames[s][0],
+                                                    hdf=price_frames[s][1], quiet=quiet_solver, scenario=s)
+                                 for s in scenario_probs}
+                core_futures = {s: executor.submit(ohp.solve_joint, zones, caps_core_by_zone, rep_days_per_month,
+                                                   return_duals=True, edf=price_frames[s][0],
+                                                   hdf=price_frames[s][1], quiet=quiet_solver, scenario=s)
+                                for s in scenario_probs}
+                results = {s: f.result() for s, f in trial_futures.items()}
+                results_core = {s: f.result() for s, f in core_futures.items()}
+            else:
+                results = {}
+                for s in scenario_probs:
+                    edf_s, hdf_s = price_frames[s]
+                    results[s] = ohp.solve_joint(zones, caps_by_zone, rep_days_per_month,
+                                                 return_duals=False, edf=edf_s, hdf=hdf_s,
+                                                 quiet=quiet_solver, scenario=s)
+                results_core = {}
+                for s in scenario_probs:
+                    edf_s, hdf_s = price_frames[s]
+                    results_core[s] = ohp.solve_joint(zones, caps_core_by_zone, rep_days_per_month,
+                                                      return_duals=True, edf=edf_s, hdf=hdf_s,
+                                                      quiet=quiet_solver, scenario=s)
+
+            for s in scenario_probs:
+                sub_build_s += results[s]["build_seconds"]
+                sub_solve_s += results[s]["solve_seconds"]
+
+            total_Q = 0.0
+            Q_total_by_scenario: dict[str, float] = {}
+            Q_by_country = {c: 0.0 for c in countries}
+            Q_by_country_by_scenario: dict[str, dict[str, float]] = {}
+            for s, prob in scenario_probs.items():
+                result = results[s]
+                total_Q += prob * float(result["objective"])
+                Q_total_by_scenario[s] = float(result["objective"])
+                Q_s = {c: result["objective_by_zone"][host_zone[c]] for c in countries}
+                Q_by_country_by_scenario[s] = Q_s
+                for c in countries:
+                    Q_by_country[c] += prob * Q_s[c]
+
+                result_core = results_core[s]
+                sub_build_s += result_core["build_seconds"]
+                sub_solve_s += result_core["solve_seconds"]
+                Q_cut = {c: result_core["objective_by_zone"][host_zone[c]] for c in countries}
+                mu_cut = {c: result_core["cut_coeffs"][host_zone[c]] for c in countries}
+                hp.add_optimality_cut(m, countries, it, Q_cut, mu_cut, core_cap, cand_mw, scenario=s)
+                n_cuts += 1
+            sub_s = time.time() - t_sub
+
             for c in countries:
-                Q_by_country[c] += prob * Q_s[c]
+                for a in hp.ASSETS:
+                    core_cap[c][a] = 0.5 * core_cap[c][a] + 0.5 * cap_star[c][a]
 
-            edf_s, hdf_s = price_frames[s]
-            result_core = ohp.solve_joint(zones, caps_core_by_zone, rep_days_per_month,
-                                          return_duals=True, edf=edf_s, hdf=hdf_s,
-                                          quiet=quiet_solver, scenario=s)
-            Q_cut = {c: result_core["objective_by_zone"][host_zone[c]] for c in countries}
-            mu_cut = {c: result_core["cut_coeffs"][host_zone[c]] for c in countries}
-            hp.add_optimality_cut(m, countries, it, Q_cut, mu_cut, core_cap, cand_mw, scenario=s)
-        sub_s = time.time() - t_sub
-
-        for c in countries:
-            for a in hp.ASSETS:
-                core_cap[c][a] = 0.5 * core_cap[c][a] + 0.5 * cap_star[c][a]
-
-        capex_star = hp.extract_capex(m, countries, cand_capex)
-        for c in countries:
-            per_country_log[c].append({"iter": it, "objective": Q_by_country[c],
-                                       "objective_by_scenario": {s: Q_by_country_by_scenario[s][c]
-                                                                 for s in scenario_probs},
-                                       "capex": sum(capex_star[c].values()), "capacities": dict(cap_star[c])})
-        raw_capex = sum(capex_star[c][a] for c in countries for a in hp.ASSETS)
-        annualized_capex = sum(capex_star[c][a] * crf[a] for c in countries for a in hp.ASSETS)
-        if cvar_alpha is not None:
-            ub = annualized_capex + hp.cvar_value(Q_total_by_scenario, scenario_probs, cvar_alpha)
+            capex_star = hp.extract_capex(m, countries, cand_capex)
+            for c in countries:
+                per_country_log[c].append({"iter": it, "objective": Q_by_country[c],
+                                           "objective_by_scenario": {s: Q_by_country_by_scenario[s][c]
+                                                                     for s in scenario_probs},
+                                           "capex": sum(capex_star[c].values()), "capacities": dict(cap_star[c])})
+            raw_capex = sum(capex_star[c][a] for c in countries for a in hp.ASSETS)
+            annualized_capex = sum(capex_star[c][a] * crf[a] for c in countries for a in hp.ASSETS)
+            if cvar_alpha is not None:
+                ub = annualized_capex + hp.cvar_value(Q_total_by_scenario, scenario_probs, cvar_alpha)
+            else:
+                ub = annualized_capex + total_Q
+            if ub < best_ub:
+                best_ub, best_capacities, best_capex, best_capex_by_asset = ub, cap_star, raw_capex, capex_star
+            gap = (best_ub - lb) / max(abs(best_ub), 1e-6)
+            log.append({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
+                        "master_seconds": round(master_s, 2),
+                        "subproblems_seconds": round(sub_s, 1),
+                        "subproblems_build_seconds": round(sub_build_s, 1),
+                        "subproblems_solve_seconds": round(sub_solve_s, 1),
+                        "n_cuts": n_cuts,
+                        "master_mip_gap": master_mip_gap, "master_cut_off": master_cut_off})
+            cutoff_note = " [MASTER CUT OFF AT time_limit]" if master_cut_off else ""
+            print(f"iter {it:>3}: LB={lb:>16,.0f}  UB={ub:>16,.0f}  best={best_ub:>16,.0f}  gap={gap:.4f}  "
+                 f"master={master_s:.2f}s  subproblems={sub_s:.1f}s (build={sub_build_s:.1f}s, "
+                 f"solve={sub_solve_s:.1f}s)  cuts_added={n_cuts}  "
+                 f"master_mip_gap={master_mip_gap:.4f}{cutoff_note}")
+            if on_iteration is not None:
+                on_iteration({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
+                             "best_capacities": best_capacities, "best_capex_by_asset": best_capex_by_asset,
+                             "host_zone": host_zone, "log": list(log), "per_country_log": per_country_log})
+            if gap <= gap_tol:
+                print(f"converged (gap {gap:.4f} <= tol {gap_tol}) after {it} iteration(s)")
+                break
         else:
-            ub = annualized_capex + total_Q
-        if ub < best_ub:
-            best_ub, best_capacities, best_capex, best_capex_by_asset = ub, cap_star, raw_capex, capex_star
-        gap = (best_ub - lb) / max(abs(best_ub), 1e-6)
-        log.append({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
-                    "subproblems_seconds": round(sub_s, 1), "master_mip_gap": master_mip_gap,
-                    "master_cut_off": master_cut_off})
-        cutoff_note = " [MASTER CUT OFF AT time_limit]" if master_cut_off else ""
-        print(f"iter {it:>3}: LB={lb:>16,.0f}  UB={ub:>16,.0f}  best={best_ub:>16,.0f}  "
-             f"gap={gap:.4f}  (subproblems {sub_s:.1f}s, master_mip_gap={master_mip_gap:.4f}){cutoff_note}")
-        if on_iteration is not None:
-            on_iteration({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
-                         "best_capacities": best_capacities, "best_capex_by_asset": best_capex_by_asset,
-                         "host_zone": host_zone, "log": list(log), "per_country_log": per_country_log})
-        if gap <= gap_tol:
-            print(f"converged (gap {gap:.4f} <= tol {gap_tol}) after {it} iteration(s)")
-            break
-    else:
-        print(f"WARNING: reached --max-iters={max_iters} without closing the gap "
-             f"(final gap {gap:.4f}) -- results below are the best FOUND, not proven optimal")
+            print(f"WARNING: reached --max-iters={max_iters} without closing the gap "
+                 f"(final gap {gap:.4f}) -- results below are the best FOUND, not proven optimal")
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
 
     return (best_capacities, best_capex, best_ub, pd.DataFrame(log), host_zone, price_frames,
            per_country_log, best_capex_by_asset)
@@ -195,6 +240,11 @@ def main() -> None:
                          f"over, probabilities renormalized to sum to 1.0, e.g. p100 for a single "
                          f"deterministic baseline run (default: all {len(SCENARIO_PROBS)}). "
                          f"Choices: {SCENARIOS}")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="worker processes for running each iteration's scenario subproblems in "
+                         "parallel (they're mutually independent); default min(4, cpu_count) -- "
+                         "raise this if your machine has memory headroom for more. "
+                         "Pass 1 to force sequential (e.g. for debugging).")
     args = ap.parse_args()
 
     capex_cfg = hp.CapexAssumptions()
@@ -253,7 +303,7 @@ def main() -> None:
         countries, budget, args.max_iters, args.gap_tol, capex_cfg,
         rep_days_per_month=args.rep_days_per_month,
         cvar_alpha=args.cvar_alpha, master_time_limit=args.master_time_limit,
-        disabled_assets=disabled_assets, scenario_probs=scenario_probs)
+        disabled_assets=disabled_assets, scenario_probs=scenario_probs, workers=args.workers)
     elapsed = time.time() - t0
 
     print(f"\nDone in {elapsed:.1f}s. Final capacities:")

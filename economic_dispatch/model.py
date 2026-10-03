@@ -605,9 +605,14 @@ def _profile_da(zdata, zones, hours, col) -> xr.DataArray:
 def _h2_main_zones(cfg: RunConfig) -> dict[str, str]:
     """Main H2 zone per country = the country's zone with the most H2 demand, computed over
     the full declared zone universe so it's stable regardless of the current run's selection."""
+    return _h2_main_zones_cached(str(cfg.zones_db))
+
+
+@lru_cache(maxsize=4)
+def _h2_main_zones_cached(zones_db: str) -> dict[str, str]:
     from .config import discover_zones
-    all_zones = discover_zones(cfg.zones_db)
-    df = pd.read_parquet(cfg.zones_db)
+    all_zones = discover_zones(zones_db)
+    df = pd.read_parquet(zones_db)
     prof = df[(df["section"] == "profiles") & (df["item"] == "Hydrogen Demand Profile")]
     dem = prof.groupby("zone")["value_num"].sum()
     best: dict[str, str] = {}

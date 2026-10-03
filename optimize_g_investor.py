@@ -171,20 +171,18 @@ def _donor_zone(candidates: list[str], cap_key: str, zdata: dict) -> str:
     return max(candidates, key=lambda z: zdata[z].capacities.get(cap_key, 0.0))
 
 
-def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict | None = None,
-                        scenario: str | None = None):
-    """Resolve this country's Investor sizing plus wind/PV availability upper bounds for the
-    given year-hour positions. If ``scenario`` is given, the candidate's OWN wind/PV capacity
-    factor (and hence its own available-capacity bound and its own contribution to the price
-    feature row) is derated by that scenario's country-level capacity_scale, rescaled so the
-    worst case across all scenarios/countries corresponds to RESCALE_TARGET_MAX_PCT error --
-    NOT the real, larger error baked into the training data (see ``_rescaled_capacity_scale``).
-    The rest of the system's price features are untouched, still reflecting the real severity."""
+@lru_cache(maxsize=64)
+def _zone_raw_profile(zone: str, hours_key: tuple[int, ...]):
+    """Capacity- and scenario-independent part of ``sizing_and_profiles``: host-zone validation,
+    wind/PV donor resolution, and the raw (un-rescaled) normalized capacity-factor profiles.
+    Cached because it's invariant across every scenario/trial-point/core-point call within a
+    Benders run for a given zone and representative-hour selection -- only the scenario rescale
+    and the candidate's own MW sizing (applied by the caller) actually vary call to call."""
+    hours = np.array(hours_key, dtype=int)
     start_day = int(hours.min()) // HOURS_PER_DAY + 1
     end_day = int(hours.max()) // HOURS_PER_DAY + 1
-    cfg = _run_config(zone, start_day, end_day, capacities)
+    cfg = _run_config(zone, start_day, end_day, None)
     country = zone[:2]
-    sizing = ed_model._g_investor_sizing(cfg)[country]
     host_zone = ed_model._h2_main_zones(cfg)[country]
     if host_zone != zone:
         raise ValueError(f"{zone} is not {country}'s main H2 zone (that's {host_zone}); "
@@ -209,6 +207,26 @@ def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict | None = 
     pv_cf = np.clip(pv_cf_full[hours], 0.0, None)
     wind_cf_norm = np.clip(wind_cf / wind_max, 0.0, 1.0)
     pv_cf_norm = np.clip(pv_cf / pv_max, 0.0, 1.0)
+    return host_zone, wind_donor, pv_donor, wind_cf_norm, pv_cf_norm
+
+
+def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict | None = None,
+                        scenario: str | None = None):
+    """Resolve this country's Investor sizing plus wind/PV availability upper bounds for the
+    given year-hour positions. If ``scenario`` is given, the candidate's OWN wind/PV capacity
+    factor (and hence its own available-capacity bound and its own contribution to the price
+    feature row) is derated by that scenario's country-level capacity_scale, rescaled so the
+    worst case across all scenarios/countries corresponds to RESCALE_TARGET_MAX_PCT error --
+    NOT the real, larger error baked into the training data (see ``_rescaled_capacity_scale``).
+    The rest of the system's price features are untouched, still reflecting the real severity."""
+    start_day = int(hours.min()) // HOURS_PER_DAY + 1
+    end_day = int(hours.max()) // HOURS_PER_DAY + 1
+    cfg = _run_config(zone, start_day, end_day, capacities)
+    country = zone[:2]
+    sizing = ed_model._g_investor_sizing(cfg)[country]
+
+    hours_key = tuple(int(h) for h in hours)
+    host_zone, wind_donor, pv_donor, wind_cf_norm, pv_cf_norm = _zone_raw_profile(zone, hours_key)
 
     wind_scale, pv_scale = _rescaled_capacity_scale(scenario, country)
     wind_cf_norm = wind_cf_norm * wind_scale
