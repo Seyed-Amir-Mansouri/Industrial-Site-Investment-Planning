@@ -1,4 +1,4 @@
-# Price Models & General Investor Capacity Planning
+# Machine-Learning-Surrogate-Assisted Investment Planning of Coupled European Electricity and Hydrogen Systems
 
 Two pieces of work, both built on an upstream LP economic-dispatch engine's output for
 the 20-zone Central-European CORE region (NT2030 scenario):
