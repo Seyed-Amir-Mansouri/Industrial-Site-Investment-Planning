@@ -1,0 +1,134 @@
+{% extends "planner/base.html" %}
+{% load planner_extras %}
+{% block title %}{{ run.display_name }} · Capacity Planner{% endblock %}
+{% block head %}
+{% if run.status == "running" %}<meta http-equiv="refresh" content="10">{% endif %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ run.display_name }}</h1>
+    <p class="lede">
+      <span class="badge {{ run.status }}">{{ run.get_status_display }}</span>
+      &nbsp;Started {{ run.created_at|date:"d M Y, H:i" }}{% if run.finished_at %} · finished {{ run.finished_at|date:"H:i" }}{% endif %}
+    </p>
+  </div>
+  <div style="display:flex;gap:10px">
+    <a class="btn ghost" href="{% url 'index' %}">All runs</a>
+    <a class="btn" href="{% url 'new_run' %}">Duplicate setup</a>
+  </div>
+</div>
+
+{% if run.status == "running" %}
+<div class="alert info">Solving… this page refreshes automatically every 10 seconds.</div>
+{% endif %}
+{% if run.status == "failed" %}
+<div class="alert error">The run failed. Details below.</div>
+<div class="card"><pre class="log">{{ run.error }}</pre></div>
+{% endif %}
+
+{% if run.status == "done" %}
+<div class="grid kpis" style="margin-bottom:18px">
+  <div class="kpi"><div class="label">Objective</div><div class="value">€{{ summary.objective_eur|floatformat:0 }}</div><div class="sub">annualized CAPEX + risk cost</div></div>
+  <div class="kpi"><div class="label">Raw CAPEX</div><div class="value">€{{ summary.raw_capex_eur|floatformat:0 }}</div><div class="sub">{% if run.params.budget %}{% widthratio summary.raw_capex_eur run.params.budget 100 %}% of budget{% endif %}</div></div>
+  <div class="kpi"><div class="label">Iterations</div><div class="value">{{ summary.iterations }}</div><div class="sub">{% if summary.converged %}converged{% else %}stopped at limit{% endif %}</div></div>
+  <div class="kpi"><div class="label">Solve time</div><div class="value">{{ summary.elapsed_seconds|floatformat:1 }} s</div><div class="sub">{{ summary.elapsed_seconds|floatformat:0 }} seconds total</div></div>
+  <div class="kpi"><div class="label">Risk measure</div><div class="value">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }}{% else %}Expected{% endif %}</div><div class="sub">{{ run.params.scenarios|length }} scenarios</div></div>
+</div>
+
+<div class="grid" style="grid-template-columns:1.2fr 1fr;gap:18px;align-items:start">
+  <div class="card">
+    <h2>Installed capacity by country (MW)</h2>
+    <p class="lede" style="margin-bottom:12px">Total MW built per country and technology.</p>
+    <table>
+      <thead><tr><th>Country</th>{% for a in assets %}<th class="num">{{ asset_labels|lookup:a }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in summary.capacities %}
+        <tr>
+          <td><strong>{{ row.country }}</strong></td>
+          {% for a in assets %}<td class="num">{{ row|lookup:a|floatformat:1 }}</td>{% endfor %}
+        </tr>
+        {% endfor %}
+        <tr>
+          <td><strong>Total</strong></td>
+          {% for a in assets %}<td class="num"><strong>{{ summary.totals_mw|lookup:a|floatformat:1 }}</strong></td>{% endfor %}
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Product units built</h2>
+    <p class="lede" style="margin-bottom:12px">How many of each product size were selected.</p>
+    {% if summary.units %}
+    <table>
+      <thead><tr><th>Country</th><th>Technology</th><th class="num">Size (MW)</th><th class="num">Units</th></tr></thead>
+      <tbody>
+        {% for u in summary.units %}
+        <tr>
+          <td>{{ u.country }}</td>
+          <td>{{ asset_labels|lookup:u.asset }}</td>
+          <td class="num">{{ u.candidate_mw|floatformat:1 }}</td>
+          <td class="num">{{ u.units }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="lede">No units were built.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card" style="margin-top:18px">
+  <h2>Convergence</h2>
+  <p class="lede" style="margin-bottom:12px">Benders lower bound vs best upper bound, by iteration.</p>
+  <canvas id="conv" height="110"></canvas>
+  {{ convergence|json_script:"conv-data" }}
+</div>
+
+<div class="card">
+  <h2>Inputs used</h2>
+  <table>
+    <tbody>
+      <tr><th style="width:260px">Countries</th><td>{% if run.params.all_countries %}All eligible{% else %}{{ run.params.countries|join:", " }}{% endif %}</td></tr>
+      <tr><th>Budget</th><td>€{{ run.params.budget|floatformat:0 }}</td></tr>
+      <tr><th>Excluded technologies</th><td>{% if run.params.disabled_assets %}{{ run.params.disabled_assets|join:", " }}{% else %}none{% endif %}</td></tr>
+      <tr><th>Max units per product</th><td>{% if run.params.max_units_per_candidate %}{{ run.params.max_units_per_candidate }}{% else %}unbounded{% endif %}</td></tr>
+      <tr><th>Discount rate</th><td>{{ run.params.discount_rate_pct }}%</td></tr>
+      <tr><th>Lifetime override</th><td>{% if run.params.lifetime_years %}{{ run.params.lifetime_years }} years{% else %}per-asset defaults{% endif %}</td></tr>
+      <tr><th>Risk measure</th><td>{% if run.params.risk_measure == "cvar" %}CVaR at α = {{ run.params.cvar_alpha }}{% else %}Expected value{% endif %}</td></tr>
+      <tr><th>Scenarios</th><td>{{ run.params.scenarios|join:", " }}</td></tr>
+      <tr><th>Representative days / month</th><td>{{ run.params.rep_days_per_month }}</td></tr>
+      <tr><th>Gap tolerance · max iterations</th><td>{{ run.params.gap_tol }} · {{ run.params.max_iters }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Solver log</h2>
+  <pre class="log">{{ log_tail }}</pre>
+</div>
+
+<script>
+  (function () {
+    const el = document.getElementById('conv-data');
+    if (!el || typeof Chart === 'undefined') return;
+    const rows = JSON.parse(el.textContent).filter(r => r.iter > 1);
+    new Chart(document.getElementById('conv'), {
+      type: 'line',
+      data: {
+        labels: rows.map(r => 'Iter ' + r.iter),
+        datasets: [
+          { label: 'Lower bound', data: rows.map(r => r.lb), borderColor: '#6366f1', tension: .25 },
+          { label: 'Best upper bound', data: rows.map(r => r.best_ub), borderColor: '#15803d', tension: .25 }
+        ]
+      },
+      options: { plugins: { legend: { position: 'bottom' } },
+                 scales: { y: { ticks: { callback: v => '€' + Number(v).toLocaleString() } } } }
+    });
+  })();
+</script>
+{% endif %}
+{% endblock %}

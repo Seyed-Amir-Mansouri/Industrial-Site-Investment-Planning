@@ -1,0 +1,126 @@
+{% extends "planner/base.html" %}
+{% block title %}New run · Capacity Planner{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>New planning run</h1>
+    <p class="lede">Define the problem, set the economics, and launch. A typical run takes 2–8 minutes.</p>
+  </div>
+</div>
+
+{% if running_now %}
+<div class="alert info">A run is currently in progress. You can prepare this one, but it can only start after the current run finishes.</div>
+{% endif %}
+
+<form method="post" novalidate id="run-form">
+  {% csrf_token %}
+  {% if form.non_field_errors %}<div class="alert error">{{ form.non_field_errors }}</div>{% endif %}
+
+  <div class="card">
+    <h2>1 · Problem definition</h2>
+    <p class="lede" style="margin-bottom:18px">Which countries, how much capital, and which technologies are in scope.</p>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:20px">
+      <div>
+        <label><strong>{{ form.name.label }}</strong></label>
+        {{ form.name }}
+      </div>
+      <div>
+        <label><strong>{{ form.budget.label }}</strong></label>
+        {{ form.budget }}
+        <div class="lede" style="font-size:12px">{{ form.budget.help_text }}</div>
+        {% for e in form.budget.errors %}<div style="color:var(--bad);font-size:12px">{{ e }}</div>{% endfor %}
+      </div>
+      <div>
+        <label style="display:flex;gap:8px;align-items:center">{{ form.all_countries }} <strong>{{ form.all_countries.label }}</strong></label>
+        <div id="country-box" style="margin-top:8px">
+          <label><strong>{{ form.countries.label }}</strong></label>
+          {{ form.countries }}
+          {% for e in form.countries.errors %}<div style="color:var(--bad);font-size:12px">{{ e }}</div>{% endfor %}
+        </div>
+      </div>
+      <div>
+        <label><strong>{{ form.max_units_per_candidate.label }}</strong></label>
+        {{ form.max_units_per_candidate }}
+        <div class="lede" style="font-size:12px">{{ form.max_units_per_candidate.help_text }}</div>
+      </div>
+      <div>
+        <label><strong>{{ form.disabled_assets.label }}</strong></label>
+        <div style="display:flex;flex-wrap:wrap;gap:10px 18px;margin-top:6px">{{ form.disabled_assets }}</div>
+        <div class="lede" style="font-size:12px">Ticked technologies are excluded from every country.</div>
+      </div>
+      <div>
+        <label><strong>{{ form.scenarios.label }}</strong></label>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">{{ form.scenarios }}</div>
+        {% for e in form.scenarios.errors %}<div style="color:var(--bad);font-size:12px">{{ e }}</div>{% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2 · Economics</h2>
+    <p class="lede" style="margin-bottom:18px">How capital is annualized and how uncertainty is penalized.</p>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:20px">
+      <div>
+        <label><strong>{{ form.discount_rate_pct.label }}</strong></label>
+        {{ form.discount_rate_pct }}
+      </div>
+      <div>
+        <label><strong>{{ form.lifetime_years.label }}</strong></label>
+        {{ form.lifetime_years }}
+        <div class="lede" style="font-size:12px">{{ form.lifetime_years.help_text }}</div>
+      </div>
+      <div>
+        <label><strong>{{ form.risk_measure.label }}</strong></label>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">{{ form.risk_measure }}</div>
+      </div>
+      <div id="alpha-box">
+        <label><strong>{{ form.cvar_alpha.label }}</strong></label>
+        {{ form.cvar_alpha }}
+        <div class="lede" style="font-size:12px">{{ form.cvar_alpha.help_text }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>3 · Solver settings</h2>
+    <p class="lede" style="margin-bottom:18px">Defaults are tuned for a good balance of speed and accuracy.</p>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px">
+      <div><label><strong>{{ form.rep_days_per_month.label }}</strong></label>{{ form.rep_days_per_month }}<div class="lede" style="font-size:12px">{{ form.rep_days_per_month.help_text }}</div></div>
+      <div><label><strong>{{ form.gap_tol.label }}</strong></label>{{ form.gap_tol }}</div>
+      <div><label><strong>{{ form.max_iters.label }}</strong></label>{{ form.max_iters }}</div>
+      <div><label><strong>{{ form.master_time_limit.label }}</strong></label>{{ form.master_time_limit }}</div>
+      <div><label><strong>{{ form.workers.label }}</strong></label>{{ form.workers }}<div class="lede" style="font-size:12px">{{ form.workers.help_text }}</div></div>
+    </div>
+  </div>
+
+  <div style="position:sticky;bottom:16px;display:flex;justify-content:flex-end;gap:12px">
+    <a class="btn ghost" href="{% url 'index' %}">Cancel</a>
+    <button class="btn" type="submit" {% if running_now %}disabled{% endif %}>Run plan</button>
+  </div>
+</form>
+
+<script>
+  (function () {
+    const allBox = document.querySelector('input[name="all_countries"]');
+    const countryBox = document.getElementById('country-box');
+    const countrySelect = document.querySelector('select[name="countries"]');
+    const riskRadios = document.querySelectorAll('input[name="risk_measure"]');
+    const alphaBox = document.getElementById('alpha-box');
+
+    function syncCountries() {
+      const on = allBox.checked;
+      countryBox.style.opacity = on ? .4 : 1;
+      countrySelect.disabled = on;
+    }
+    function syncRisk() {
+      const cvar = document.querySelector('input[name="risk_measure"]:checked').value === 'cvar';
+      alphaBox.style.opacity = cvar ? 1 : .4;
+      document.querySelector('input[name="cvar_alpha"]').disabled = !cvar;
+    }
+    allBox.addEventListener('change', syncCountries);
+    riskRadios.forEach(r => r.addEventListener('change', syncRisk));
+    syncCountries();
+    syncRisk();
+  })();
+</script>
+{% endblock %}

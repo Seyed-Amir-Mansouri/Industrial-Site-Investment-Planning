@@ -1,0 +1,56 @@
+{% extends "planner/base.html" %}
+{% block title %}Runs · Capacity Planner{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Planning runs</h1>
+    <p class="lede">Each run solves the General Investor capacity plan for your chosen countries, budget, and economics.</p>
+  </div>
+  {% if running_now %}
+    <button class="btn" disabled title="A run is in progress">New run</button>
+  {% else %}
+    <a class="btn" href="{% url 'new_run' %}">New run</a>
+  {% endif %}
+</div>
+
+{% if running_now %}
+<div class="alert info">A run is in progress. New runs will start once it finishes.</div>
+{% endif %}
+
+<div class="card" style="padding:0">
+  {% if runs %}
+  <table>
+    <thead>
+      <tr>
+        <th>Run</th>
+        <th>Status</th>
+        <th>Scope</th>
+        <th>Risk</th>
+        <th class="num">Budget</th>
+        <th class="num">Objective (EUR)</th>
+        <th class="num">Time</th>
+        <th>Created</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in runs %}
+      <tr>
+        <td><a href="{% url 'run_detail' run.pk %}"><strong>{{ run.display_name }}</strong></a></td>
+        <td><span class="badge {{ run.status }}">{{ run.get_status_display }}</span></td>
+        <td>{% if run.params.all_countries %}All eligible{% else %}{{ run.params.countries|join:", " }}{% endif %}</td>
+        <td>{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }}{% else %}Expected value{% endif %}</td>
+        <td class="num">€{{ run.params.budget|floatformat:0 }}</td>
+        <td class="num">{% if run.summary.objective_eur %}{{ run.summary.objective_eur|floatformat:0 }}{% else %}—{% endif %}</td>
+        <td class="num">{% if run.summary.elapsed_seconds %}{{ run.summary.elapsed_seconds|floatformat:1 }} s{% else %}—{% endif %}</td>
+        <td>{{ run.created_at|date:"d M Y, H:i" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div style="padding:40px;text-align:center;color:var(--muted)">
+    No runs yet. <a href="{% url 'new_run' %}">Start your first plan</a>.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

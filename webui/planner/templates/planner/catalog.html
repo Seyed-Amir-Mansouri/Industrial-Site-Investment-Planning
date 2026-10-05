@@ -1,0 +1,48 @@
+{% extends "planner/base.html" %}
+{% load planner_extras %}
+{% block title %}Catalog · Capacity Planner{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Candidate catalog & assumptions</h1>
+    <p class="lede">The product sizes, costs, and scenarios the optimizer chooses from. Edit these in <code>g_investor_planning/config.py</code> and <code>inputs/uncertainty_scenarios.json</code>.</p>
+  </div>
+</div>
+
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-bottom:18px">
+  <div class="kpi"><div class="label">Default budget</div><div class="value">€{{ defaults.budget|floatformat:0 }}</div></div>
+  <div class="kpi"><div class="label">Discount rate</div><div class="value">{% widthratio defaults.discount_rate 1 100 %}%</div></div>
+</div>
+
+{% for asset in defaults.assets %}
+<div class="card">
+  <h2>{{ asset_labels|lookup:asset }}</h2>
+  <table>
+    <thead><tr><th class="num">Size (MW)</th>{% if asset == "battery_mw" or asset == "tank_mw" %}<th class="num">Energy (MWh)</th>{% endif %}<th class="num">CAPEX (EUR)</th><th class="num">EUR / MW</th><th class="num">Lifetime (yr)</th></tr></thead>
+    <tbody>
+      {% for c in defaults.catalog|lookup:asset %}
+      <tr>
+        <td class="num">{{ c.mw|floatformat:"-2" }}</td>
+        {% if asset == "battery_mw" or asset == "tank_mw" %}<td class="num">{{ c.mwh|floatformat:"-1" }}</td>{% endif %}
+        <td class="num">{{ c.capex_eur|floatformat:0 }}</td>
+        <td class="num">{% widthratio c.capex_eur c.mw 1 %}</td>
+        <td class="num">{{ c.lifetime_years|floatformat:"-1" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endfor %}
+
+<div class="card">
+  <h2>Uncertainty scenarios</h2>
+  <table>
+    <thead><tr><th>Scenario</th><th class="num">Probability</th></tr></thead>
+    <tbody>
+      {% for name, p in scenarios.items %}
+      <tr><td>{{ name }}</td><td class="num">{% widthratio p 1 100 %}%</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

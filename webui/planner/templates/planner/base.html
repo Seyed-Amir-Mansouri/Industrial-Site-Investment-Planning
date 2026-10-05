@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Capacity Planner{% endblock %}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f5f7fb; --surface: #ffffff; --ink: #0f172a; --muted: #64748b; --line: #e2e8f0;
+    --brand: #1d4ed8; --brand-ink: #ffffff; --brand-soft: #e0e7ff;
+    --ok: #15803d; --ok-soft: #dcfce7; --warn: #b45309; --warn-soft: #fef3c7;
+    --bad: #b91c1c; --bad-soft: #fee2e2; --run: #1d4ed8; --run-soft: #dbeafe;
+    --radius: 14px; --shadow: 0 1px 2px rgba(15,23,42,.05), 0 4px 16px rgba(15,23,42,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0b1120; --surface: #111a2e; --ink: #e2e8f0; --muted: #94a3b8; --line: #1e2a44;
+      --brand: #6366f1; --brand-soft: #1e1b4b; --ok-soft: #052e16; --warn-soft: #422006;
+      --bad-soft: #450a0a; --run-soft: #172554;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b1120; --surface: #111a2e; --ink: #e2e8f0; --muted: #94a3b8; --line: #1e2a44;
+    --brand: #6366f1; --brand-soft: #1e1b4b; --ok-soft: #052e16; --warn-soft: #422006;
+    --bad-soft: #450a0a; --run-soft: #172554;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 Inter, system-ui, -apple-system, Segoe UI, sans-serif; }
+  a { color: var(--brand); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .topbar { position: sticky; top: 0; z-index: 10; background: var(--surface);
+            border-bottom: 1px solid var(--line); }
+  .topbar-inner { max-width: 1200px; margin: 0 auto; padding: 14px 24px;
+                  display: flex; align-items: center; gap: 28px; }
+  .brand { font-weight: 700; font-size: 16px; color: var(--ink); display: flex; align-items: center; gap: 10px; }
+  .brand-mark { width: 28px; height: 28px; border-radius: 8px;
+                background: linear-gradient(135deg, #1d4ed8, #7c3aed); }
+  .nav { display: flex; gap: 6px; }
+  .nav a { padding: 7px 12px; border-radius: 8px; color: var(--muted); font-weight: 500; }
+  .nav a.active, .nav a:hover { background: var(--brand-soft); color: var(--brand); text-decoration: none; }
+  .spacer { flex: 1; }
+
+  main { max-width: 1200px; margin: 0 auto; padding: 28px 24px 64px; }
+  .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
+               margin-bottom: 22px; flex-wrap: wrap; }
+  h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -.01em; }
+  h2 { font-size: 16px; margin: 0 0 4px; }
+  .lede { color: var(--muted); margin: 0; max-width: 680px; }
+
+  .btn { display: inline-flex; align-items: center; gap: 8px; border: 0; cursor: pointer;
+         padding: 10px 16px; border-radius: 10px; font: 600 14px Inter, sans-serif;
+         background: var(--brand); color: var(--brand-ink); }
+  .btn:hover { filter: brightness(1.08); text-decoration: none; }
+  .btn.ghost { background: transparent; color: var(--brand); border: 1px solid var(--line); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+          box-shadow: var(--shadow); padding: 22px; margin-bottom: 18px; }
+  .grid { display: grid; gap: 14px; }
+  .grid.kpis { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+         padding: 16px 18px; box-shadow: var(--shadow); }
+  .kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .kpi .value { font-size: 22px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .kpi .sub { color: var(--muted); font-size: 12px; }
+
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.done { background: var(--ok-soft); color: var(--ok); }
+  .badge.running { background: var(--run-soft); color: var(--run); }
+  .badge.failed { background: var(--bad-soft); color: var(--bad); }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  td.num, th.num { text-align: right; }
+  tr:last-child td { border-bottom: 0; }
+
+  .alert { padding: 12px 16px; border-radius: 10px; margin-bottom: 16px; font-weight: 500; }
+  .alert.error { background: var(--bad-soft); color: var(--bad); }
+  .alert.success { background: var(--ok-soft); color: var(--ok); }
+  .alert.info { background: var(--run-soft); color: var(--run); }
+
+  pre.log { background: #0b1120; color: #cbd5e1; padding: 14px; border-radius: 10px; overflow: auto;
+            max-height: 320px; font: 12px/1.5 ui-monospace, Consolas, monospace; }
+
+  @media (max-width: 720px) {
+    .topbar-inner { flex-wrap: wrap; gap: 12px; }
+    main { padding: 20px 16px 48px; }
+  }
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="{% url 'index' %}"><span class="brand-mark"></span>Capacity Planner</a>
+    <nav class="nav">
+      <a href="{% url 'index' %}" class="{% if request.resolver_match.url_name == 'index' or request.resolver_match.url_name == 'run_detail' %}active{% endif %}">Runs</a>
+      <a href="{% url 'new_run' %}" class="{% if request.resolver_match.url_name == 'new_run' %}active{% endif %}">New run</a>
+      <a href="{% url 'compare' %}" class="{% if request.resolver_match.url_name == 'compare' %}active{% endif %}">Compare</a>
+      <a href="{% url 'catalog' %}" class="{% if request.resolver_match.url_name == 'catalog' %}active{% endif %}">Catalog</a>
+    </nav>
+    <div class="spacer"></div>
+  </div>
+</header>
+<main>
+  {% for message in messages %}
+    <div class="alert {{ message.tags }}">{{ message }}</div>
+  {% endfor %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

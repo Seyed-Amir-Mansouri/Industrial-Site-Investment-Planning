@@ -35,6 +35,12 @@ SCENARIO_PROBS = load_scenario_probs()
 SCENARIOS = list(SCENARIO_PROBS)
 
 
+def _cvar_alpha_arg(value: str) -> float | None:
+    if value.lower() in ("off", "none", "expected"):
+        return None
+    return float(value)
+
+
 def eligible_countries() -> list[str]:
     sizing, _ = default_sizing_and_zones()
     return sorted(sizing)
@@ -231,9 +237,9 @@ def main() -> None:
     ap.add_argument("--rep-days-per-month", type=int, default=7,
                     help="solve every joint subproblem on N days/month (1-29, weighted to "
                          "approximate the full year), default 7")
-    ap.add_argument("--cvar-alpha", type=float, default=0.8,
+    ap.add_argument("--cvar-alpha", type=_cvar_alpha_arg, default=0.8,
                     help="risk measure: CVaR at this confidence level (0-1) across "
-                         "capacity-uncertainty scenarios, default 0.8")
+                         "capacity-uncertainty scenarios, default 0.8; 'off' = expected value")
     ap.add_argument("--master-time-limit", type=float, default=180.0,
                     help="wall-time cap (seconds) per master MILP solve, default 180")
     ap.add_argument("--disabled-assets", type=str, default=None,

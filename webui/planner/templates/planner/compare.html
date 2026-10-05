@@ -1,0 +1,56 @@
+{% extends "planner/base.html" %}
+{% load planner_extras %}
+{% block title %}Compare · Capacity Planner{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Compare runs</h1>
+    <p class="lede">Put two completed runs side by side to see how the problem setup changes the plan.</p>
+  </div>
+</div>
+
+<form method="get" class="card" style="display:flex;gap:14px;align-items:end;flex-wrap:wrap">
+  <label style="flex:1;min-width:240px"><strong>Run A</strong>
+    <select name="a" style="width:100%;padding:9px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink)">
+      <option value="">— select —</option>
+      {% for r in done_runs %}<option value="{{ r.pk }}" {% if run_a and run_a.pk == r.pk %}selected{% endif %}>{{ r.display_name }}</option>{% endfor %}
+    </select></label>
+  <label style="flex:1;min-width:240px"><strong>Run B</strong>
+    <select name="b" style="width:100%;padding:9px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink)">
+      <option value="">— select —</option>
+      {% for r in done_runs %}<option value="{{ r.pk }}" {% if run_b and run_b.pk == r.pk %}selected{% endif %}>{{ r.display_name }}</option>{% endfor %}
+    </select></label>
+  <button class="btn" type="submit">Compare</button>
+</form>
+
+{% if run_a and run_b %}
+<div class="grid kpis" style="margin-bottom:18px">
+  <div class="kpi"><div class="label">Objective A → B</div>
+    <div class="value">€{{ run_a.summary.objective_eur|floatformat:0 }}</div>
+    <div class="sub">→ €{{ run_b.summary.objective_eur|floatformat:0 }}</div></div>
+  <div class="kpi"><div class="label">Raw CAPEX A → B</div>
+    <div class="value">€{{ run_a.summary.raw_capex_eur|floatformat:0 }}</div>
+    <div class="sub">→ €{{ run_b.summary.raw_capex_eur|floatformat:0 }}</div></div>
+  <div class="kpi"><div class="label">Solve time A → B</div>
+    <div class="value">{{ run_a.summary.elapsed_seconds|floatformat:1 }} s</div>
+    <div class="sub">→ {{ run_b.summary.elapsed_seconds|floatformat:1 }} s</div></div>
+</div>
+
+<div class="card">
+  <h2>Installed MW by country</h2>
+  <table>
+    <thead><tr><th>Country</th><th class="num">{{ run_a.display_name }}</th><th class="num">{{ run_b.display_name }}</th><th class="num">Δ (B − A)</th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td><strong>{{ row.country }}</strong></td>
+        <td class="num">{{ row.mw_a|floatformat:1 }}</td>
+        <td class="num">{{ row.mw_b|floatformat:1 }}</td>
+        <td class="num" style="color:{% if row.delta > 0 %}var(--ok){% elif row.delta < 0 %}var(--bad){% else %}var(--muted){% endif %}">{{ row.delta|floatformat:1 }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}
