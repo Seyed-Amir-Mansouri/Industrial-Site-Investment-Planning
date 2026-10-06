@@ -176,9 +176,21 @@ pip install -r requirements.txt
 
 ## From scratch to a running app
 
-This section walks through everything you need to go from a fresh copy of the repo to
-the web planner running. Run all commands from the project root unless a step says
-otherwise.
+There are two ways to use this project. Pick the one that matches what you want to do.
+
+**Option A: run the planner with the pretrained models (quick start).** The files the
+planner needs are already in this repo: the `inputs/` data, the trained price models in
+`data_exchange/02_train_output__benders_input/`, and the scenario definitions. The two
+large sample files are downloaded automatically the first time you start the app. So
+you only need Python and the steps under *Install* and *Step 5*. Skip steps 1 to 3.
+
+**Option B: build your own scenarios and train your own models (full rebuild).** Use this
+when you change the scenarios, add new dispatch runs, or want to retrain the price
+models on your own data. It needs the dispatch engine to run, so steps 0 to 4 are
+required in order, and it takes much longer.
+
+This section walks through both. Run all commands from the project root unless a step
+says otherwise.
 
 ### What you need before you start
 
@@ -213,7 +225,7 @@ pip install -r requirements.txt
 `webui\app.bat` also creates `.venv` if it's missing, so this step is only needed for
 the commands below.
 
-### Step 1: run the dispatch scenarios
+### Step 1: run the dispatch scenarios (Option B only)
 
 ```bash
 python run_capacity_scenarios.py
@@ -234,7 +246,7 @@ them, pass a comma-separated list:
 python run_capacity_scenarios.py --scenarios p100,unc01
 ```
 
-### Step 2: build the feature tables
+### Step 2: build the feature tables (Option B only)
 
 ```bash
 python build_dataset.py
@@ -251,7 +263,7 @@ data_exchange/01_dispatch_output__train_input/h2_samples.parquet
 It also rewrites the zone adjacency files in `inputs/`. To pool only some scenarios,
 use `--scenarios p100,unc01`.
 
-### Step 3: train the price models
+### Step 3: train the price models (Option B only)
 
 ```bash
 python train_model.py
