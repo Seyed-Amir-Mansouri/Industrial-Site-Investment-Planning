@@ -274,7 +274,21 @@ use `--all`, and raise `--rep-days-per-month` (see the flags table above).
 
 ### Step 5: start the web planner
 
-Once steps 0–3 are done, start the app from Windows Explorer or a terminal:
+Once steps 0–3 are done, start the app.
+
+**Recommended: double-click `app.bat`.** It's in the `webui` folder inside the project,
+next to `manage.py`. On this machine the full path is:
+
+```
+G:\My Drive\Temp\BSRO\Project 5\webui\app.bat
+```
+
+A console window opens and shows each step as it runs. When the server is up, your
+browser opens `http://localhost:9000/` by itself. The server runs in its own window
+titled **Capacity Planner**. Keep it open while you use the planner. Close that window
+to stop the server.
+
+**From a terminal (optional).** Open a terminal in the project folder and run:
 
 ```bat
 webui\app.bat
