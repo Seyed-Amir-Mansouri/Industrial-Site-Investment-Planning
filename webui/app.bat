@@ -1,6 +1,12 @@
 @echo off
 setlocal
 cd /d "%~dp0.."
+set "DATA_DIR=%CD%\data_exchange\01_dispatch_output__train_input"
+if not exist "%DATA_DIR%" mkdir "%DATA_DIR%"
+call :fetch "%DATA_DIR%\elec_samples.parquet" 1EK45o9fBQUdrSi0rlWZI1HkrAKzZic_s
+if errorlevel 1 goto :fail
+call :fetch "%DATA_DIR%\h2_samples.parquet" 1IsUIwpnYwm10-bS7tCVMrOxcyDaet_uP
+if errorlevel 1 goto :fail
 set "PY_CMD="
 py -3 -c "import sys" >nul 2>&1
 if not errorlevel 1 set "PY_CMD=py -3"
@@ -35,3 +41,12 @@ exit /b 0
 :fail
 pause
 exit /b 1
+:fetch
+if exist "%~1" exit /b 0
+curl -L --fail -o "%~1" "https://drive.usercontent.google.com/download?id=%~2&export=download&confirm=t"
+if errorlevel 1 exit /b 1
+for %%F in ("%~1") do if %%~zF LSS 1000000 (
+    del "%%~F"
+    exit /b 1
+)
+exit /b 0

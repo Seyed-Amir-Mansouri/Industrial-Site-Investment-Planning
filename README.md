@@ -183,14 +183,24 @@ otherwise.
 ### What you need before you start
 
 - **Python 3.12** (64-bit). Check with `py -3 --version` or `python --version`.
-- **Nothing else to copy.** The dispatch engine reads its zones, networks, prices and
-  cross-border data from the parquet files in `inputs/`, which are already in git.
-- **Git LFS is not needed.** The small inputs under `inputs/` and the trained models
-  under `data_exchange/02_train_output__benders_input/` are already in git.
+- **Internet access** for the first run of `webuipp.bat`, which downloads the two
+  large sample files (about 285 MB in total). See the table below.
+- **Git LFS is not needed.** Everything in the table except the two sample files is
+  already in git.
 
-If you already have the two sample files, `elec_samples.parquet` and
-`h2_samples.parquet`, from another copy of the project, you can skip steps 1 and 2.
-Copy them into `data_exchange/01_dispatch_output__train_input/` and go to step 3.
+### Required inputs
+
+| File | Folder | Where it comes from | What uses it |
+|---|---|---|---|
+| `zones_2030.parquet`, `networks_2030.parquet`, `marginal_price_electricity_2030.parquet`, `marginal_price_hydrogen_2030.parquet`, `crossborder_electricity_2030.parquet`, `crossborder_hydrogen_2030.parquet`, `hydro_*_2030.parquet`, `smr_production_2030.parquet` | `inputs/` | In git | Dispatch engine and planner |
+| `uncertainty_scenarios.json` | `inputs/` | In git | Planner (scenario probabilities and country error factors) |
+| `elec_adjacency.json`, `h2_adjacency.json` | `inputs/` | In git (rewritten by `build_dataset.py`) | Price models |
+| `electricity_model.joblib`, `hydrogen_model.joblib` and the `*_metrics.csv` files | `data_exchange/02_train_output__benders_input/` | In git (written by `train_model.py`) | Planner |
+| `elec_samples.parquet`, `h2_samples.parquet` | `data_exchange/01_dispatch_output__train_input/` | Downloaded automatically by `webuipp.bat` from the project's Google Drive. You can also build them with steps 1 and 2. | Planner (`optimize_g_investor.py`) and `train_model.py` |
+
+The `scenarios/` folder inside `data_exchange/01_dispatch_output__train_input/` is
+only needed if you rebuild the sample files with steps 1 and 2. You don't need it to
+run the app.
 
 ### Step 0: create the virtual environment
 
@@ -270,14 +280,22 @@ Once steps 0–3 are done, start the app from Windows Explorer or a terminal:
 webui\app.bat
 ```
 
-The script does the rest. It finds Python (`py -3`, then `python`), creates `.venv` if
-it's missing, installs anything missing from `requirements.txt`, applies the Django
-migrations, starts the server on port 9000, and opens `http://localhost:9000/` once the
-server answers. You don't need to run `manage.py` yourself.
+The script does the rest, in this order:
 
-If the browser doesn't open, go to `http://localhost:9000/` by hand. If you see a
-`FileNotFoundError` for `elec_samples.parquet`, step 2 hasn't run yet, or the file is in
-a different folder than the one the code expects.
+1. **Downloads the sample files.** If `elec_samples.parquet` or `h2_samples.parquet` is
+   missing from `data_exchange/01_dispatch_output__train_input/`, the script downloads it
+   from the project's Google Drive. The links are in `webuipp.bat`. The first run takes
+   a while because of the file sizes. Files that already exist are left alone. A download
+   under 1 MB is treated as a failed download: the script deletes it and stops.
+2. **Finds Python** (`py -3`, then `python`), creates `.venv` if it's missing, and installs
+   anything missing from `requirements.txt`.
+3. **Applies the Django migrations.**
+4. **Starts the server** on port 9000 and opens `http://localhost:9000/` once the server
+   answers. You don't need to run `manage.py` yourself.
+
+If the browser doesn't open, go to `http://localhost:9000/` by hand. If the download step
+fails, check your internet connection, or download the two files by hand into the folder
+above and run the script again.
 
 ### Troubleshooting
 
