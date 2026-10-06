@@ -168,11 +168,53 @@ inputs/                   zone/network DBs, adjacency and scenario definitions
 outputs/                  plan CSVs (git-ignored)
 ```
 
+## User interface
+
+The web planner is a small Django app in `webui/`. You start it with `webui\app.bat`
+(see [From scratch to a running app](#from-scratch-to-a-running-app)), and it opens at
+`http://localhost:9000/`. The top bar has four pages.
+
+- **Runs** is the home page. It lists the 100 most recent planning runs with their
+  status (running, completed or failed), the countries and technologies in scope, the
+  risk measure, the budget, the objective and the time taken. Click a run to open it.
+- **New run** is where you set up a planning run. The form has four numbered sections:
+  1. **Problem definition:** run name, total CAPEX budget, countries, excluded
+     technologies and the cap on units per product. Countries are shown as pills you
+     can click to select. *Select all* and *Clear* sit above them. Ticking *All eligible
+     countries* turns the country pills off.
+  2. **Uncertainty scenarios:** one card per scenario. Each card has an include tick box,
+     the scenario's probability in percent and a short description. Open a card to see
+     the wind and solar error % for every country. Error % is the share of nominal output
+     that is lost, so 0% means no loss. The probabilities of all scenarios must add up to
+     100%. A badge at the top shows the current total in green when it's right and red
+     when it isn't. Changes apply to this run only. The defaults come from
+     `inputs/uncertainty_scenarios.json`.
+  3. **Economics:** discount rate, optional lifetime override, the risk measure (CVaR or
+     expected value, shown as a switch) and the CVaR confidence level.
+  4. **Solver settings:** representative days per month, optimality gap, maximum
+     Benders iterations, master time limit and parallel workers.
+
+  Each section has its own **Reset this section** button. Each scenario card has a
+  **Reset scenario** button. **Reset all settings** at the bottom returns the whole form
+  to its defaults. **Run plan** starts the run, and the page opens the run's details.
+- **Run detail** shows one finished run. It has the headline numbers (objective, raw
+  CAPEX, risk measure), installed capacity by country in MW, the product units built,
+  the convergence chart of the Benders iterations, the inputs the run used and the solver
+  log.
+- **Compare** puts two completed runs side by side. Pick them from the lists at the top.
+  It shows the installed MW by country for each run and the difference between them.
+- **Catalog** shows the candidate products and their CAPEX and lifetime assumptions, the
+  discount rate and budget defaults, and the uncertainty scenarios with their default
+  probabilities.
+
+Only one run can be in progress at a time. While one is running, the **Run plan** button
+on the New run page is disabled and a notice explains why. You can still fill in the form
+for the next run.
+
 ## Install
 
-```bash
-pip install -r requirements.txt
-```
+You don't need to install anything by hand. `webui\app.bat` creates `.venv` in the
+project root and installs everything in `requirements.txt` the first time it runs.
 
 ## From scratch to a running app
 
@@ -182,7 +224,7 @@ There are two ways to use this project. Pick the one that matches what you want 
 planner needs are already in this repo: the `inputs/` data, the trained price models in
 `data_exchange/02_train_output__benders_input/`, and the scenario definitions. The two
 large sample files are downloaded automatically the first time you start the app. So
-you only need Python and the steps under *Install* and *Step 5*. Skip steps 1 to 3.
+you only need Python and *Step 5*. Skip steps 0 to 4, which are for Option B.
 
 **Option B: build your own scenarios and train your own models (full rebuild).** Use this
 when you change the scenarios, add new dispatch runs, or want to retrain the price
@@ -195,7 +237,7 @@ says otherwise.
 ### What you need before you start
 
 - **Python 3.12** (64-bit). Check with `py -3 --version` or `python --version`.
-- **Internet access** for the first run of `webuipp.bat`, which downloads the two
+- **Internet access** for the first run of `webui\app.bat`, which downloads the two
   large sample files (about 285 MB in total). See the table below.
 - **Git LFS is not needed.** Everything in the table except the two sample files is
   already in git.
@@ -208,22 +250,25 @@ says otherwise.
 | `uncertainty_scenarios.json` | `inputs/` | In git | Planner (scenario probabilities and country error factors) |
 | `elec_adjacency.json`, `h2_adjacency.json` | `inputs/` | In git (rewritten by `build_dataset.py`) | Price models |
 | `electricity_model.joblib`, `hydrogen_model.joblib` and the `*_metrics.csv` files | `data_exchange/02_train_output__benders_input/` | In git (written by `train_model.py`) | Planner |
-| `elec_samples.parquet`, `h2_samples.parquet` | `data_exchange/01_dispatch_output__train_input/` | Downloaded automatically by `webuipp.bat` from the project's Google Drive. You can also build them with steps 1 and 2. | Planner (`optimize_g_investor.py`) and `train_model.py` |
+| `elec_samples.parquet`, `h2_samples.parquet` | `data_exchange/01_dispatch_output__train_input/` | Downloaded automatically by `webui\app.bat` from the project's Google Drive. You can also build them with steps 1 and 2. | Planner (`optimize_g_investor.py`) and `train_model.py` |
 
 The `scenarios/` folder inside `data_exchange/01_dispatch_output__train_input/` is
 only needed if you rebuild the sample files with steps 1 and 2. You don't need it to
 run the app.
 
-### Step 0: create the virtual environment
+### Step 0: set up the environment
 
-```bash
-python -m venv .venv
+Nothing to install by hand. `webui\app.bat` creates `.venv` and installs
+`requirements.txt` the first time it runs. For Option B, run `webui\app.bat` once so the
+environment exists, then close the **Capacity Planner** window.
+
+After that, activate the environment from the project root in a terminal:
+
+```bat
 .venv\Scripts\activate
-pip install -r requirements.txt
 ```
 
-`webui\app.bat` also creates `.venv` if it's missing, so this step is only needed for
-the commands below.
+The commands in steps 1 to 4 use this environment.
 
 ### Step 1: run the dispatch scenarios (Option B only)
 
@@ -310,7 +355,7 @@ The script does the rest, in this order:
 
 1. **Downloads the sample files.** If `elec_samples.parquet` or `h2_samples.parquet` is
    missing from `data_exchange/01_dispatch_output__train_input/`, the script downloads it
-   from the project's Google Drive. The links are in `webuipp.bat`. The first run takes
+   from the project's Google Drive. The links are in `webui\app.bat`. The first run takes
    a while because of the file sizes. Files that already exist are left alone. A download
    under 1 MB is treated as a failed download: the script deletes it and stops.
 2. **Finds Python** (`py -3`, then `python`), creates `.venv` if it's missing, and installs
