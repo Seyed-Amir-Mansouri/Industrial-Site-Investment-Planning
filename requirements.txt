@@ -7,3 +7,4 @@ pyarrow>=14
 linopy>=0.8
 highspy>=1.7
 django>=5.0
+polars[rtcompat]
