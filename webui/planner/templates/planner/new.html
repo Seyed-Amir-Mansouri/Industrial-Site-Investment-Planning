@@ -1,5 +1,73 @@
 {% extends "planner/base.html" %}
 {% block title %}New run · Capacity Planner{% endblock %}
+{% block head %}
+<style>
+  #run-form .step { display: inline-grid; place-items: center; width: 26px; height: 26px; margin-right: 10px;
+                    border-radius: 50%; background: var(--brand-soft); color: var(--brand); font-size: 13px; font-weight: 700; }
+  #run-form .section-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+  #run-form .section-head h2 { display: flex; align-items: center; font-size: 17px; }
+  #run-form .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px 24px; }
+  #run-form .four-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 20px 24px; }
+  #run-form .field > label:not(.inline) { display: block; font-weight: 600; margin-bottom: 6px; }
+  #run-form .field .help { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  #run-form .field .error { color: var(--bad); font-size: 12px; margin-top: 6px; }
+
+  #run-form input[type="text"], #run-form input[type="number"], #run-form select {
+    width: 100%; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--surface); color: var(--ink); font: inherit;
+    transition: border-color .15s, box-shadow .15s, background .15s; }
+  #run-form input[type="text"]:hover:not(:disabled), #run-form input[type="number"]:hover:not(:disabled), #run-form select:hover:not(:disabled) {
+    border-color: var(--muted); }
+  #run-form input[type="text"]:focus, #run-form input[type="number"]:focus, #run-form select:focus {
+    outline: none; border-color: var(--brand); box-shadow: 0 0 0 4px rgba(29,78,216,.16); }
+  #run-form input:disabled { opacity: .45; cursor: not-allowed; }
+  #run-form input[type="number"]::-webkit-inner-spin-button { opacity: .4; }
+
+  #run-form .pills ul, #run-form .segmented ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+  #run-form .pills li, #run-form .segmented li { list-style: none; }
+  #run-form .pills li > label, #run-form .segmented li > label {
+    position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px;
+    border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink);
+    font-weight: 500; cursor: pointer; user-select: none; transition: all .15s; }
+  #run-form .pills li > label:hover, #run-form .segmented li > label:hover { border-color: var(--brand); transform: translateY(-1px); }
+  #run-form .pills li > label:has(input:checked), #run-form .segmented li > label:has(input:checked) {
+    background: var(--brand); border-color: var(--brand); color: var(--brand-ink); box-shadow: 0 4px 12px rgba(29,78,216,.25); }
+  #run-form .pills li > label:has(input:disabled), #run-form .segmented li > label:has(input:disabled) { opacity: .45; cursor: not-allowed; transform: none; }
+  #run-form .pills li > label input, #run-form .segmented li > label input { position: absolute; opacity: 0; pointer-events: none; }
+  #run-form .pills li > label:focus-within, #run-form .segmented li > label:focus-within { box-shadow: 0 0 0 4px rgba(29,78,216,.16); }
+
+  #run-form .switch-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  #run-form .switch-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--brand); cursor: pointer; }
+
+  #run-form .scenario-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; background: var(--surface);
+                             transition: border-color .15s, box-shadow .15s, opacity .15s; }
+  #run-form .scenario-card:hover { border-color: var(--brand); box-shadow: 0 6px 20px rgba(15,23,42,.08); }
+  #run-form .scenario-card:has(input[name^="scenario_include__"]:not(:checked)) { opacity: .55; }
+  #run-form .scenario-card .scenario-title { display: flex; align-items: center; gap: 10px; font-weight: 600; }
+  #run-form .scenario-card input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--brand); cursor: pointer; }
+  #run-form .scenario-card .prob-field { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+  #run-form .scenario-card .prob-field input[type="number"] { width: 110px; text-align: right; }
+  #run-form .scenario-card details summary { cursor: pointer; color: var(--brand); font-weight: 600; margin-top: 12px; }
+  #run-form .scenario-card table input[type="number"] { width: 110px; padding: 6px 10px; }
+  #run-form .scenario-card table td, #run-form .scenario-card table th { padding: 8px 10px; }
+
+  #run-form .total { padding: 6px 12px; border-radius: 999px; font-weight: 600; font-size: 13px; }
+  #run-form .total.ok { background: var(--ok-soft); color: var(--ok); }
+  #run-form .total.bad { background: var(--bad-soft); color: var(--bad); }
+
+  #run-form .toolbar { display: flex; gap: 8px; margin: 8px 0 12px; flex-wrap: wrap; }
+  #run-form .btn.small { padding: 7px 12px; font-size: 13px; border-radius: 999px; }
+
+  #run-form .footer-bar { position: sticky; bottom: 16px; display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap;
+                          background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+                          box-shadow: 0 10px 30px rgba(15,23,42,.12); padding: 12px 14px; margin-top: 8px; }
+
+  @media (max-width: 720px) {
+    #run-form .two-col { grid-template-columns: 1fr; }
+    #run-form .scenario-card .scenario-title, #run-form .scenario-card .prob-field { flex-wrap: wrap; }
+  }
+</style>
+{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
@@ -17,74 +85,82 @@
   {% if form.non_field_errors %}<div class="alert error">{{ form.non_field_errors }}</div>{% endif %}
 
   <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+    <div class="section-head">
       <div>
-        <h2>1 · Problem definition</h2>
-        <p class="lede" style="margin-bottom:18px">Which countries, how much capital, and which technologies are in scope.</p>
+        <h2><span class="step">1</span>Problem definition</h2>
+        <p class="lede">Which countries, how much capital, and which technologies are in scope.</p>
       </div>
-      <button type="button" class="btn ghost" data-reset="section">Reset this section</button>
+      <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
     </div>
-    <div class="grid" style="grid-template-columns:1fr 1fr;gap:20px">
-      <div>
-        <label><strong>{{ form.name.label }}</strong></label>
+    <div class="two-col">
+      <div class="field">
+        <label>{{ form.name.label }}</label>
         {{ form.name }}
       </div>
-      <div>
-        <label><strong>{{ form.budget.label }}</strong></label>
+      <div class="field">
+        <label>{{ form.budget.label }}</label>
         {{ form.budget }}
-        <div class="lede" style="font-size:12px">{{ form.budget.help_text }}</div>
-        {% for e in form.budget.errors %}<div style="color:var(--bad);font-size:12px">{{ e }}</div>{% endfor %}
+        <div class="help">{{ form.budget.help_text }}</div>
+        {% for e in form.budget.errors %}<div class="error">{{ e }}</div>{% endfor %}
       </div>
-      <div>
-        <label style="display:flex;gap:8px;align-items:center">{{ form.all_countries }} <strong>{{ form.all_countries.label }}</strong></label>
-        <div id="country-box" style="margin-top:8px">
-          <label><strong>{{ form.countries.label }}</strong></label>
-          <div style="display:flex;gap:8px;margin:6px 0">
-            <button type="button" class="btn ghost" data-country="all">Select all</button>
-            <button type="button" class="btn ghost" data-country="none">Clear</button>
+      <div class="field" style="grid-column: 1 / -1;">
+        <div class="switch-row">
+          {{ form.all_countries }}
+          <label class="inline" style="font-weight:600;">{{ form.all_countries.label }}</label>
+        </div>
+        <div id="country-box" class="field pills">
+          <label>{{ form.countries.label }}</label>
+          <div class="toolbar">
+            <button type="button" class="btn ghost small" data-country="all">Select all</button>
+            <button type="button" class="btn ghost small" data-country="none">Clear</button>
           </div>
-          <div style="display:flex;flex-direction:column;gap:6px">{{ form.countries }}</div>
-          {% for e in form.countries.errors %}<div style="color:var(--bad);font-size:12px">{{ e }}</div>{% endfor %}
+          {{ form.countries }}
+          {% for e in form.countries.errors %}<div class="error">{{ e }}</div>{% endfor %}
         </div>
       </div>
-      <div>
-        <label><strong>{{ form.max_units_per_candidate.label }}</strong></label>
+      <div class="field">
+        <label>{{ form.max_units_per_candidate.label }}</label>
         {{ form.max_units_per_candidate }}
-        <div class="lede" style="font-size:12px">{{ form.max_units_per_candidate.help_text }}</div>
+        <div class="help">{{ form.max_units_per_candidate.help_text }}</div>
       </div>
-      <div>
-        <label><strong>{{ form.disabled_assets.label }}</strong></label>
-        <div style="display:flex;flex-wrap:wrap;gap:10px 18px;margin-top:6px">{{ form.disabled_assets }}</div>
-        <div class="lede" style="font-size:12px">Ticked technologies are excluded from every country.</div>
+      <div class="field pills">
+        <label>{{ form.disabled_assets.label }}</label>
+        {{ form.disabled_assets }}
+        <div class="help">Ticked technologies are excluded from every country.</div>
       </div>
     </div>
   </div>
 
   <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+    <div class="section-head">
       <div>
-        <h2>2 · Uncertainty scenarios</h2>
-        <p class="lede" style="margin-bottom:18px">Tick the scenarios to include, set their probabilities (they must add up to 100%), and change the wind and solar error for each country. Error % = how much of the nominal output is lost. Changes apply to this run only; the defaults come from <code>inputs/uncertainty_scenarios.json</code>.</p>
+        <h2><span class="step">2</span>Uncertainty scenarios</h2>
+        <p class="lede">Tick the scenarios to include, set their probabilities (they must add up to 100%), and change the wind and solar error for each country. Error % = how much of the nominal output is lost. Changes apply to this run only; the defaults come from <code>inputs/uncertainty_scenarios.json</code>.</p>
       </div>
-      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
-        <div id="prob-total" class="lede"></div>
-        <button type="button" class="btn ghost" data-reset="section">Reset this section</button>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+        <span id="prob-total" class="total ok"></span>
+        <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
       </div>
     </div>
-    <div style="display:flex;flex-direction:column;gap:12px">
+    <div style="display:flex;flex-direction:column;gap:12px;">
       {% for row in form.scenario_rows %}
-      <div class="scenario-card" style="border:1px solid rgba(0,0,0,.12);border-radius:10px;padding:14px">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-          <label style="display:flex;gap:8px;align-items:center"><strong>{{ row.include }} {{ row.name }}</strong></label>
-          <span class="lede" style="font-size:12px">
-            {{ row.band }}{% if row.protected %} · protected country {{ row.protected }}{% endif %}{% if row.sys_wind is not None %} · systemic wind −{{ row.sys_wind }}%, solar −{{ row.sys_solar }}%{% endif %}
-          </span>
-          <label style="display:flex;gap:6px;align-items:center">Probability {{ row.prob }} %</label>
-          <button type="button" class="btn ghost" data-reset="scenario">Reset scenario</button>
+      <div class="scenario-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div class="scenario-title">
+            {{ row.include }}
+            <span>{{ row.name }}</span>
+            <span class="lede" style="font-size:12px;font-weight:400;">
+              {{ row.band }}{% if row.protected %} · protected country {{ row.protected }}{% endif %}{% if row.sys_wind is not None %} · systemic wind −{{ row.sys_wind }}%, solar −{{ row.sys_solar }}%{% endif %}
+            </span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <label class="prob-field">Probability {{ row.prob }} %</label>
+            <button type="button" class="btn ghost small" data-reset="scenario">Reset scenario</button>
+          </div>
         </div>
-        <details style="margin-top:10px">
+        <details>
           <summary>Country error % (wind / solar)</summary>
-          <table style="margin-top:8px">
+          <table style="margin-top:8px;">
             <thead><tr><th>Country</th><th>Wind error %</th><th>Solar error %</th></tr></thead>
             <tbody>
               {% for c in row.countries %}
@@ -103,53 +179,53 @@
   </div>
 
   <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+    <div class="section-head">
       <div>
-        <h2>3 · Economics</h2>
-        <p class="lede" style="margin-bottom:18px">How capital is annualized and how uncertainty is penalized.</p>
+        <h2><span class="step">3</span>Economics</h2>
+        <p class="lede">How capital is annualized and how uncertainty is penalized.</p>
       </div>
-      <button type="button" class="btn ghost" data-reset="section">Reset this section</button>
+      <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
     </div>
-    <div class="grid" style="grid-template-columns:1fr 1fr;gap:20px">
-      <div>
-        <label><strong>{{ form.discount_rate_pct.label }}</strong></label>
+    <div class="two-col">
+      <div class="field">
+        <label>{{ form.discount_rate_pct.label }}</label>
         {{ form.discount_rate_pct }}
       </div>
-      <div>
-        <label><strong>{{ form.lifetime_years.label }}</strong></label>
+      <div class="field">
+        <label>{{ form.lifetime_years.label }}</label>
         {{ form.lifetime_years }}
-        <div class="lede" style="font-size:12px">{{ form.lifetime_years.help_text }}</div>
+        <div class="help">{{ form.lifetime_years.help_text }}</div>
       </div>
-      <div>
-        <label><strong>{{ form.risk_measure.label }}</strong></label>
-        <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">{{ form.risk_measure }}</div>
+      <div class="field segmented">
+        <label>{{ form.risk_measure.label }}</label>
+        {{ form.risk_measure }}
       </div>
-      <div id="alpha-box">
-        <label><strong>{{ form.cvar_alpha.label }}</strong></label>
+      <div class="field" id="alpha-box">
+        <label>{{ form.cvar_alpha.label }}</label>
         {{ form.cvar_alpha }}
-        <div class="lede" style="font-size:12px">{{ form.cvar_alpha.help_text }}</div>
+        <div class="help">{{ form.cvar_alpha.help_text }}</div>
       </div>
     </div>
   </div>
 
   <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+    <div class="section-head">
       <div>
-        <h2>4 · Solver settings</h2>
-        <p class="lede" style="margin-bottom:18px">Defaults are tuned for a good balance of speed and accuracy.</p>
+        <h2><span class="step">4</span>Solver settings</h2>
+        <p class="lede">Defaults are tuned for a good balance of speed and accuracy.</p>
       </div>
-      <button type="button" class="btn ghost" data-reset="section">Reset this section</button>
+      <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
     </div>
-    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px">
-      <div><label><strong>{{ form.rep_days_per_month.label }}</strong></label>{{ form.rep_days_per_month }}<div class="lede" style="font-size:12px">{{ form.rep_days_per_month.help_text }}</div></div>
-      <div><label><strong>{{ form.gap_tol.label }}</strong></label>{{ form.gap_tol }}</div>
-      <div><label><strong>{{ form.max_iters.label }}</strong></label>{{ form.max_iters }}</div>
-      <div><label><strong>{{ form.master_time_limit.label }}</strong></label>{{ form.master_time_limit }}</div>
-      <div><label><strong>{{ form.workers.label }}</strong></label>{{ form.workers }}<div class="lede" style="font-size:12px">{{ form.workers.help_text }}</div></div>
+    <div class="four-col">
+      <div class="field"><label>{{ form.rep_days_per_month.label }}</label>{{ form.rep_days_per_month }}<div class="help">{{ form.rep_days_per_month.help_text }}</div></div>
+      <div class="field"><label>{{ form.gap_tol.label }}</label>{{ form.gap_tol }}</div>
+      <div class="field"><label>{{ form.max_iters.label }}</label>{{ form.max_iters }}</div>
+      <div class="field"><label>{{ form.master_time_limit.label }}</label>{{ form.master_time_limit }}</div>
+      <div class="field"><label>{{ form.workers.label }}</label>{{ form.workers }}<div class="help">{{ form.workers.help_text }}</div></div>
     </div>
   </div>
 
-  <div style="position:sticky;bottom:16px;display:flex;justify-content:flex-end;gap:12px">
+  <div class="footer-bar">
     <button type="reset" class="btn ghost" id="reset-all">Reset all settings</button>
     <a class="btn ghost" href="{% url 'index' %}">Cancel</a>
     <button class="btn" type="submit" {% if running_now %}disabled{% endif %}>Run plan</button>
@@ -181,7 +257,7 @@
       const total = Array.from(probInputs).reduce((sum, el) => sum + (parseFloat(el.value) || 0), 0);
       const ok = Math.abs(total - 100) <= 0.01;
       probTotal.textContent = 'Probabilities total ' + total.toFixed(2) + '% (must be 100%)';
-      probTotal.style.color = ok ? '' : 'var(--bad)';
+      probTotal.className = 'total ' + (ok ? 'ok' : 'bad');
     }
     function resetField(f) {
       if (f.type === 'checkbox' || f.type === 'radio') f.checked = f.defaultChecked;
