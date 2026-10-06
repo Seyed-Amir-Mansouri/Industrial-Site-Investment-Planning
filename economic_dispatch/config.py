@@ -1,7 +1,6 @@
 """Run configuration and tunable assumptions for the dispatch model."""
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -13,7 +12,6 @@ ALL_ZONES = [
 ]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_DIR = PROJECT_ROOT / "XLSXs"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs"
 DEFAULT_EXPORTS_DIR = PROJECT_ROOT / "inputs"
 DEFAULT_ZONES_DB = DEFAULT_EXPORTS_DIR / "zones_2030.parquet"
@@ -25,29 +23,10 @@ HOURS_PER_DAY = 24
 HOURS_PER_YEAR = 8736
 
 
-_ZONE_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{2,3}$")
-_EXCLUDE_ZONES = {"NL6H", "PL00E", "PL00I"}
-
-
-def discover_zones_from_xlsx(data_dir=DEFAULT_DATA_DIR) -> list[str]:
-    """Sorted zone codes = every ``*.xlsx`` in ``data_dir`` matching a zone code."""
-    data_dir = Path(data_dir)
-    if not data_dir.is_dir():
-        return []
-    return sorted(
-        p.stem for p in data_dir.glob("*.xlsx")
-        if _ZONE_RE.match(p.stem) and p.stem not in _EXCLUDE_ZONES
-        and not p.name.startswith("~$")
-    )
-
-
 @lru_cache(maxsize=8)
-def discover_zones(zones_db=DEFAULT_ZONES_DB, data_dir=DEFAULT_DATA_DIR) -> list[str]:
-    zones_db = Path(zones_db)
-    if zones_db.exists():
-        import pandas as pd
-        return sorted(pd.read_parquet(zones_db, columns=["zone"])["zone"].unique().tolist())
-    return discover_zones_from_xlsx(data_dir)
+def discover_zones(zones_db=DEFAULT_ZONES_DB) -> list[str]:
+    import pandas as pd
+    return sorted(pd.read_parquet(Path(zones_db), columns=["zone"])["zone"].unique().tolist())
 
 
 def _expand_to_countries(zones: list[str], zones_db) -> list[str]:
@@ -61,7 +40,6 @@ class RunConfig:
     zones: list[str] = field(default_factory=lambda: list(ALL_ZONES))
     start_day: int = 1
     end_day: int = 1
-    data_dir: Path = DEFAULT_DATA_DIR
     output_dir: Path = DEFAULT_OUTPUT_DIR
     exports_dir: Path = DEFAULT_EXPORTS_DIR
     zones_db: Path = DEFAULT_ZONES_DB

@@ -22,12 +22,15 @@ OUT = ROOT / "outputs"
 def load_scenario_probs(path: Path | None = None) -> dict[str, float]:
     """Read {scenario: probability} from the saved scenario JSON."""
     if path is None:
-        path = ROOT / "inputs" / "uncertainty_scenarios.json"
-    data = json.loads(path.read_text())["scenarios"]
+        data = ohp.load_uncertainty_scenarios()
+        source = ROOT / "inputs" / "uncertainty_scenarios.json"
+    else:
+        data = json.loads(path.read_text())["scenarios"]
+        source = path
     probs = {name: float(sc["probability"]) for name, sc in data.items()}
     total = sum(probs.values())
     if abs(total - 1.0) > 1e-4:
-        raise ValueError(f"{path}'s scenario probabilities sum to {total:.6f}, not 1.0")
+        raise ValueError(f"{source}'s scenario probabilities sum to {total:.6f}, not 1.0")
     return probs
 
 

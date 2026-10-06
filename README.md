@@ -173,3 +173,116 @@ outputs/                  plan CSVs (git-ignored)
 ```bash
 pip install -r requirements.txt
 ```
+
+## From scratch to a running app
+
+This section walks through everything you need to go from a fresh copy of the repo to
+the web planner running. Run all commands from the project root unless a step says
+otherwise.
+
+### What you need before you start
+
+- **Python 3.12** (64-bit). Check with `py -3 --version` or `python --version`.
+- **Nothing else to copy.** The dispatch engine reads its zones, networks, prices and
+  cross-border data from the parquet files in `inputs/`, which are already in git.
+- **Git LFS is not needed.** The small inputs under `inputs/` and the trained models
+  under `data_exchange/02_train_output__benders_input/` are already in git.
+
+If you already have the two sample files, `elec_samples.parquet` and
+`h2_samples.parquet`, from another copy of the project, you can skip steps 1 and 2.
+Copy them into `data_exchange/01_dispatch_output__train_input/` and go to step 3.
+
+### Step 0: create the virtual environment
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+`webui\app.bat` also creates `.venv` if it's missing, so this step is only needed for
+the commands below.
+
+### Step 1: run the dispatch scenarios
+
+```bash
+python run_capacity_scenarios.py
+```
+
+This runs the dispatch engine once for the baseline and for every training capacity
+scenario. Each run writes two files:
+
+```
+data_exchange/01_dispatch_output__train_input/scenarios/<name>/hourly_balance_elec.csv
+data_exchange/01_dispatch_output__train_input/scenarios/<name>/hourly_balance_h2.csv
+```
+
+It takes a long time, because each scenario is a full-year LP. To run only some of
+them, pass a comma-separated list:
+
+```bash
+python run_capacity_scenarios.py --scenarios p100,unc01
+```
+
+### Step 2: build the feature tables
+
+```bash
+python build_dataset.py
+```
+
+This pools every scenario folder from step 1 and writes the two sample tables that the
+price models and the Benders planner read:
+
+```
+data_exchange/01_dispatch_output__train_input/elec_samples.parquet
+data_exchange/01_dispatch_output__train_input/h2_samples.parquet
+```
+
+It also rewrites the zone adjacency files in `inputs/`. To pool only some scenarios,
+use `--scenarios p100,unc01`.
+
+### Step 3: train the price models
+
+```bash
+python train_model.py
+```
+
+This trains one gradient-boosted model per bidding zone, for electricity and for
+hydrogen. The results go to `data_exchange/02_train_output__benders_input/`:
+`electricity_model.joblib`, `hydrogen_model.joblib`, and the matching `*_metrics.csv`
+files. To retrain just one commodity, use `python train_model.py --only electricity`.
+
+### Step 4: a quick planning check (optional)
+
+```bash
+python plan_capacity.py --countries DE,FR --scenarios p100 --rep-days-per-month 1 --max-iters 5
+```
+
+This is a small, fast run that checks the whole chain works before you start a full
+run. The output goes to `outputs/plan_*.csv`. For the full run, drop `--scenarios`,
+use `--all`, and raise `--rep-days-per-month` (see the flags table above).
+
+### Step 5: start the web planner
+
+Once steps 0–3 are done, start the app from Windows Explorer or a terminal:
+
+```bat
+webui\app.bat
+```
+
+The script does the rest. It finds Python (`py -3`, then `python`), creates `.venv` if
+it's missing, installs anything missing from `requirements.txt`, applies the Django
+migrations, starts the server on port 9000, and opens `http://localhost:9000/` once the
+server answers. You don't need to run `manage.py` yourself.
+
+If the browser doesn't open, go to `http://localhost:9000/` by hand. If you see a
+`FileNotFoundError` for `elec_samples.parquet`, step 2 hasn't run yet, or the file is in
+a different folder than the one the code expects.
+
+### Troubleshooting
+
+- **The app exits straight away with an illegal instruction (exit code 132).** Your CPU
+  doesn't support AVX2. `requirements.txt` already asks for `polars[rtcompat]`, which
+  avoids this. If you installed packages by hand, install that version instead.
+- **Port 9000 is in use or reserved.** Stop the other process, or change the port in
+  `webui\app.bat` and in `CSRF_TRUSTED_ORIGINS` in `webui\planner_ui\settings.py`.

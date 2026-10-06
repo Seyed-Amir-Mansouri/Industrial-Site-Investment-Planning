@@ -17,8 +17,13 @@
   {% if form.non_field_errors %}<div class="alert error">{{ form.non_field_errors }}</div>{% endif %}
 
   <div class="card">
-    <h2>1 · Problem definition</h2>
-    <p class="lede" style="margin-bottom:18px">Which countries, how much capital, and which technologies are in scope.</p>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+      <div>
+        <h2>1 · Problem definition</h2>
+        <p class="lede" style="margin-bottom:18px">Which countries, how much capital, and which technologies are in scope.</p>
+      </div>
+      <button type="button" class="btn ghost" data-reset="section">Reset this section</button>
+    </div>
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:20px">
       <div>
         <label><strong>{{ form.name.label }}</strong></label>
@@ -34,7 +39,11 @@
         <label style="display:flex;gap:8px;align-items:center">{{ form.all_countries }} <strong>{{ form.all_countries.label }}</strong></label>
         <div id="country-box" style="margin-top:8px">
           <label><strong>{{ form.countries.label }}</strong></label>
-          {{ form.countries }}
+          <div style="display:flex;gap:8px;margin:6px 0">
+            <button type="button" class="btn ghost" data-country="all">Select all</button>
+            <button type="button" class="btn ghost" data-country="none">Clear</button>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px">{{ form.countries }}</div>
           {% for e in form.countries.errors %}<div style="color:var(--bad);font-size:12px">{{ e }}</div>{% endfor %}
         </div>
       </div>
@@ -48,17 +57,59 @@
         <div style="display:flex;flex-wrap:wrap;gap:10px 18px;margin-top:6px">{{ form.disabled_assets }}</div>
         <div class="lede" style="font-size:12px">Ticked technologies are excluded from every country.</div>
       </div>
-      <div>
-        <label><strong>{{ form.scenarios.label }}</strong></label>
-        <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">{{ form.scenarios }}</div>
-        {% for e in form.scenarios.errors %}<div style="color:var(--bad);font-size:12px">{{ e }}</div>{% endfor %}
-      </div>
     </div>
   </div>
 
   <div class="card">
-    <h2>2 · Economics</h2>
-    <p class="lede" style="margin-bottom:18px">How capital is annualized and how uncertainty is penalized.</p>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+      <div>
+        <h2>2 · Uncertainty scenarios</h2>
+        <p class="lede" style="margin-bottom:18px">Tick the scenarios to include, set their probabilities (they must add up to 100%), and change the wind and solar error for each country. Error % = how much of the nominal output is lost. Changes apply to this run only; the defaults come from <code>inputs/uncertainty_scenarios.json</code>.</p>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
+        <div id="prob-total" class="lede"></div>
+        <button type="button" class="btn ghost" data-reset="section">Reset this section</button>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      {% for row in form.scenario_rows %}
+      <div class="scenario-card" style="border:1px solid rgba(0,0,0,.12);border-radius:10px;padding:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <label style="display:flex;gap:8px;align-items:center"><strong>{{ row.include }} {{ row.name }}</strong></label>
+          <span class="lede" style="font-size:12px">
+            {{ row.band }}{% if row.protected %} · protected country {{ row.protected }}{% endif %}{% if row.sys_wind is not None %} · systemic wind −{{ row.sys_wind }}%, solar −{{ row.sys_solar }}%{% endif %}
+          </span>
+          <label style="display:flex;gap:6px;align-items:center">Probability {{ row.prob }} %</label>
+          <button type="button" class="btn ghost" data-reset="scenario">Reset scenario</button>
+        </div>
+        <details style="margin-top:10px">
+          <summary>Country error % (wind / solar)</summary>
+          <table style="margin-top:8px">
+            <thead><tr><th>Country</th><th>Wind error %</th><th>Solar error %</th></tr></thead>
+            <tbody>
+              {% for c in row.countries %}
+              <tr>
+                <td>{{ c.code }}</td>
+                <td>{{ c.wind }}</td>
+                <td>{{ c.solar }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </details>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+      <div>
+        <h2>3 · Economics</h2>
+        <p class="lede" style="margin-bottom:18px">How capital is annualized and how uncertainty is penalized.</p>
+      </div>
+      <button type="button" class="btn ghost" data-reset="section">Reset this section</button>
+    </div>
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:20px">
       <div>
         <label><strong>{{ form.discount_rate_pct.label }}</strong></label>
@@ -82,8 +133,13 @@
   </div>
 
   <div class="card">
-    <h2>3 · Solver settings</h2>
-    <p class="lede" style="margin-bottom:18px">Defaults are tuned for a good balance of speed and accuracy.</p>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+      <div>
+        <h2>4 · Solver settings</h2>
+        <p class="lede" style="margin-bottom:18px">Defaults are tuned for a good balance of speed and accuracy.</p>
+      </div>
+      <button type="button" class="btn ghost" data-reset="section">Reset this section</button>
+    </div>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px">
       <div><label><strong>{{ form.rep_days_per_month.label }}</strong></label>{{ form.rep_days_per_month }}<div class="lede" style="font-size:12px">{{ form.rep_days_per_month.help_text }}</div></div>
       <div><label><strong>{{ form.gap_tol.label }}</strong></label>{{ form.gap_tol }}</div>
@@ -94,6 +150,7 @@
   </div>
 
   <div style="position:sticky;bottom:16px;display:flex;justify-content:flex-end;gap:12px">
+    <button type="reset" class="btn ghost" id="reset-all">Reset all settings</button>
     <a class="btn ghost" href="{% url 'index' %}">Cancel</a>
     <button class="btn" type="submit" {% if running_now %}disabled{% endif %}>Run plan</button>
   </div>
@@ -101,26 +158,64 @@
 
 <script>
   (function () {
+    const form = document.getElementById('run-form');
     const allBox = document.querySelector('input[name="all_countries"]');
     const countryBox = document.getElementById('country-box');
-    const countrySelect = document.querySelector('select[name="countries"]');
+    const countryInputs = countryBox.querySelectorAll('input[type="checkbox"]');
     const riskRadios = document.querySelectorAll('input[name="risk_measure"]');
     const alphaBox = document.getElementById('alpha-box');
+    const probInputs = document.querySelectorAll('input[name^="scenario_prob__"]');
+    const probTotal = document.getElementById('prob-total');
 
     function syncCountries() {
       const on = allBox.checked;
       countryBox.style.opacity = on ? .4 : 1;
-      countrySelect.disabled = on;
+      countryInputs.forEach(c => c.disabled = on);
     }
     function syncRisk() {
       const cvar = document.querySelector('input[name="risk_measure"]:checked').value === 'cvar';
       alphaBox.style.opacity = cvar ? 1 : .4;
       document.querySelector('input[name="cvar_alpha"]').disabled = !cvar;
     }
+    function syncProbTotal() {
+      const total = Array.from(probInputs).reduce((sum, el) => sum + (parseFloat(el.value) || 0), 0);
+      const ok = Math.abs(total - 100) <= 0.01;
+      probTotal.textContent = 'Probabilities total ' + total.toFixed(2) + '% (must be 100%)';
+      probTotal.style.color = ok ? '' : 'var(--bad)';
+    }
+    function resetField(f) {
+      if (f.type === 'checkbox' || f.type === 'radio') f.checked = f.defaultChecked;
+      else if (f.tagName === 'SELECT') Array.from(f.options).forEach(o => o.selected = o.defaultSelected);
+      else if (f.type !== 'submit' && f.type !== 'button') f.value = f.defaultValue;
+    }
+    function resetWithin(scope) {
+      scope.querySelectorAll('input, select, textarea').forEach(resetField);
+      syncAll();
+    }
+    function syncAll() {
+      syncCountries();
+      syncRisk();
+      syncProbTotal();
+    }
+
+    document.addEventListener('click', function (e) {
+      const reset = e.target.closest('[data-reset]');
+      if (reset) {
+        const scope = reset.closest(reset.dataset.reset === 'scenario' ? '.scenario-card' : '.card');
+        resetWithin(scope);
+        return;
+      }
+      const country = e.target.closest('[data-country]');
+      if (country) {
+        countryInputs.forEach(c => c.checked = country.dataset.country === 'all');
+      }
+    });
+    form.addEventListener('reset', function () { setTimeout(syncAll, 0); });
+
     allBox.addEventListener('change', syncCountries);
     riskRadios.forEach(r => r.addEventListener('change', syncRisk));
-    syncCountries();
-    syncRisk();
+    probInputs.forEach(p => p.addEventListener('input', syncProbTotal));
+    syncAll();
   })();
 </script>
 {% endblock %}

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from functools import lru_cache
@@ -33,16 +34,25 @@ UNCERTAINTY_SCENARIOS_PATH = ROOT / "inputs" / "uncertainty_scenarios.json"
 RESCALE_TARGET_MAX_PCT = 50.0
 
 
+SCENARIO_OVERRIDES_ENV = "PLANNER_SCENARIO_OVERRIDES"
+
+
 @lru_cache(maxsize=1)
-def _load_uncertainty_scenarios() -> dict:
-    return json.loads(UNCERTAINTY_SCENARIOS_PATH.read_text())["scenarios"]
+def load_uncertainty_scenarios() -> dict:
+    scenarios = json.loads(UNCERTAINTY_SCENARIOS_PATH.read_text())["scenarios"]
+    override_path = os.environ.get(SCENARIO_OVERRIDES_ENV)
+    if override_path:
+        for name, edit in json.loads(Path(override_path).read_text())["scenarios"].items():
+            if name in scenarios:
+                scenarios[name].update(edit)
+    return scenarios
 
 
 @lru_cache(maxsize=1)
 def _global_max_error_pct() -> float:
     """Largest wind/solar capacity_scale error (%) across every unc scenario/country, used
     as the rescale reference point so RESCALE_TARGET_MAX_PCT corresponds to that worst case."""
-    scenarios = _load_uncertainty_scenarios()
+    scenarios = load_uncertainty_scenarios()
     max_err = 0.0
     for name, sc in scenarios.items():
         if name == "p100":
@@ -65,7 +75,7 @@ def _rescaled_capacity_scale(scenario: str | None, country: str) -> tuple[float,
     those come straight from edf/hdf's real per-scenario dispatch data."""
     if not scenario:
         return 1.0, 1.0
-    sc = _load_uncertainty_scenarios().get(scenario)
+    sc = load_uncertainty_scenarios().get(scenario)
     if sc is None:
         return 1.0, 1.0
     factor = RESCALE_TARGET_MAX_PCT / _global_max_error_pct()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import re
 import sys
 from functools import lru_cache
@@ -14,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 RUNS_DIR = PROJECT_ROOT / "outputs" / "webui"
+SCENARIO_OVERRIDES_ENV = "PLANNER_SCENARIO_OVERRIDES"
 
 
 @lru_cache(maxsize=1)
@@ -45,6 +47,12 @@ def eligible_countries() -> list[str]:
 @lru_cache(maxsize=1)
 def scenario_probabilities() -> dict[str, float]:
     return dict(planner_module().SCENARIO_PROBS)
+
+
+@lru_cache(maxsize=1)
+def scenario_defaults() -> dict[str, dict]:
+    path = PROJECT_ROOT / "inputs" / "uncertainty_scenarios.json"
+    return json.loads(path.read_text(encoding="utf-8"))["scenarios"]
 
 
 def build_command(params: dict, output_prefix: Path) -> list[str]:

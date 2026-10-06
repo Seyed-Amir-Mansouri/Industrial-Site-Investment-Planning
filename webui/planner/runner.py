@@ -1,6 +1,8 @@
 """Runs plan_capacity.py in a background thread so the web request returns immediately."""
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import threading
 from django.conf import settings
@@ -21,9 +23,15 @@ def _execute(run_pk: int) -> None:
     prefix = services.output_prefix_for(run_pk)
     prefix.parent.mkdir(parents=True, exist_ok=True)
     cmd = services.build_command(run.params, prefix)
+    env = os.environ.copy()
+    overrides = run.params.get("scenario_overrides")
+    if overrides:
+        override_path = prefix.parent / "scenario_overrides.json"
+        override_path.write_text(json.dumps({"scenarios": overrides}, indent=2), encoding="utf-8")
+        env[services.SCENARIO_OVERRIDES_ENV] = str(override_path)
     try:
         proc = subprocess.run(cmd, cwd=settings.PROJECT_ROOT, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace")
+                              encoding="utf-8", errors="replace", env=env)
         log = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
         run.log = log
         run.command = " ".join(cmd)
