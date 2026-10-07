@@ -1,6 +1,9 @@
 {% extends "planner/base.html" %}
 {% load planner_extras %}
 {% block title %}Compare · Capacity Planner{% endblock %}
+{% block head %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
@@ -52,5 +55,36 @@
     </tbody>
   </table>
 </div>
+
+{% if rows %}
+<div class="card" style="margin-top:18px">
+  <h2>Installed capacity by country</h2>
+  <p class="lede" style="margin-bottom:12px">{{ run_a.display_name }} vs {{ run_b.display_name }}, total MW per country.</p>
+  <canvas id="capchart" height="110"></canvas>
+  {{ rows|json_script:"cap-rows" }}
+</div>
 {% endif %}
+{% endif %}
+
+<script>
+  (function () {
+    const el = document.getElementById('cap-rows');
+    if (!el || typeof Chart === 'undefined') return;
+    const rows = JSON.parse(el.textContent);
+    new Chart(document.getElementById('capchart'), {
+      type: 'bar',
+      data: {
+        labels: rows.map(r => r.country),
+        datasets: [
+          { label: '{{ run_a.display_name|escapejs }}', data: rows.map(r => r.mw_a), backgroundColor: '#1d4ed8' },
+          { label: '{{ run_b.display_name|escapejs }}', data: rows.map(r => r.mw_b), backgroundColor: '#15803d' },
+        ],
+      },
+      options: {
+        plugins: { legend: { position: 'bottom' } },
+        scales: { y: { title: { display: true, text: 'MW' } } },
+      },
+    });
+  })();
+</script>
 {% endblock %}
