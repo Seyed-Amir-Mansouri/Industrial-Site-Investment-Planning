@@ -4,7 +4,7 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
-from . import runner, services
+from . import geo, runner, services
 from .forms import ASSET_LABELS, PlanRunForm
 from .models import PlanRun
 
@@ -50,6 +50,10 @@ def run_detail(request, pk: int):
         "convergence": summary.get("convergence", []),
         "asset_labels": ASSET_LABELS,
         "assets": list(ASSET_LABELS),
+        "map_markers": services.country_map_markers(run.params, summary) if summary else [],
+        "asset_tokens": services.ASSET_MAP_TOKENS,
+        "map_center": geo.DEFAULT_CENTER,
+        "map_zoom": geo.DEFAULT_ZOOM,
         "log_tail": "\n".join(run.log.strip().splitlines()[-60:]) if run.log else "",
     })
 

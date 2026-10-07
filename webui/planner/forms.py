@@ -95,7 +95,7 @@ class PlanRunForm(forms.Form):
         included = [s for s in self.defaults if data.get(f"scenario_include__{s}")]
         if not included:
             self.add_error(None, "Select at least one uncertainty scenario.")
-        probs = [data.get(f"scenario_prob__{s}") for s in self.defaults]
+        probs = [data.get(f"scenario_prob__{s}") for s in included]
         if all(p is not None for p in probs):
             total = sum(probs)
             if abs(total - 100) > 0.01:
@@ -107,11 +107,12 @@ class PlanRunForm(forms.Form):
     def params(self) -> dict:
         d = self.cleaned_data
         included = [s for s in self.defaults if d.get(f"scenario_include__{s}")]
-        total = sum(d[f"scenario_prob__{s}"] for s in self.defaults)
+        total = sum(d[f"scenario_prob__{s}"] for s in included)
         overrides = {}
         for s in self.defaults:
+            probability = (d[f"scenario_prob__{s}"] / total) if s in included else 0.0
             overrides[s] = {
-                "probability": d[f"scenario_prob__{s}"] / total,
+                "probability": probability,
                 "wind": {c: round(1 - d[f"err_wind__{s}__{c}"] / 100, 6) for c in self.scenario_countries},
                 "solar": {c: round(1 - d[f"err_solar__{s}__{c}"] / 100, 6) for c in self.scenario_countries},
             }

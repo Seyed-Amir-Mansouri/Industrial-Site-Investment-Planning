@@ -44,6 +44,68 @@ def eligible_countries() -> list[str]:
     return planner_module().eligible_countries()
 
 
+ASSET_MAP_TOKENS = {
+    "electrolyser_mw": "--asset-electrolyser",
+    "wind_mw": "--asset-wind",
+    "pv_mw": "--asset-pv",
+    "battery_mw": "--asset-battery",
+    "tank_mw": "--asset-tank",
+}
+MARKER_MIN_DIAMETER = 18
+MARKER_MAX_DIAMETER = 56
+
+
+def _marker_diameter(total: float, max_total: float) -> float:
+    if max_total <= 0:
+        return MARKER_MIN_DIAMETER
+    scale = (total / max_total) ** 0.5
+    return round(MARKER_MIN_DIAMETER + (MARKER_MAX_DIAMETER - MARKER_MIN_DIAMETER) * scale, 1)
+
+
+def _marker_gradient(values: dict[str, float], total: float, assets: list[str]) -> str:
+    if total <= 0:
+        return ""
+    stops = []
+    acc = 0.0
+    for asset in assets:
+        share = values.get(asset, 0.0)
+        if share <= 0:
+            continue
+        pct = share / total * 100
+        stops.append(f"var({ASSET_MAP_TOKENS[asset]}) {acc:.2f}% {acc + pct:.2f}%")
+        acc += pct
+    return "conic-gradient(" + ", ".join(stops) + ")"
+
+
+def country_map_markers(params: dict, summary: dict) -> list[dict]:
+    from . import geo
+
+    assets = capex_assumptions_defaults()["assets"]
+    by_country = {row["country"]: row for row in summary.get("capacities", [])}
+    codes = eligible_countries() if params.get("all_countries") else params.get("countries", [])
+
+    rows = []
+    for code in codes:
+        centroid = geo.COUNTRY_CENTROIDS.get(code)
+        if centroid is None:
+            continue
+        row = by_country.get(code, {})
+        values = {a: float(row.get(a, 0) or 0) for a in assets}
+        rows.append({
+            "code": code,
+            "lat": centroid[0],
+            "lon": centroid[1],
+            "total": sum(values.values()),
+            "values": values,
+        })
+
+    max_total = max((r["total"] for r in rows), default=0.0)
+    for r in rows:
+        r["diameter"] = _marker_diameter(r["total"], max_total)
+        r["gradient"] = _marker_gradient(r["values"], r["total"], assets)
+    return rows
+
+
 @lru_cache(maxsize=1)
 def scenario_probabilities() -> dict[str, float]:
     return dict(planner_module().SCENARIO_PROBS)

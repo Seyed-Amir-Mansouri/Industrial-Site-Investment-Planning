@@ -3,7 +3,39 @@
 {% block title %}{{ run.display_name }} · Capacity Planner{% endblock %}
 {% block head %}
 {% if run.status == "running" %}<meta http-equiv="refresh" content="10">{% endif %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --asset-electrolyser: #2a78d6; --asset-wind: #eb6834; --asset-pv: #1baf7a;
+    --asset-battery: #eda100; --asset-tank: #e87ba4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --asset-electrolyser: #3987e5; --asset-wind: #d95926; --asset-pv: #199e70;
+      --asset-battery: #c98500; --asset-tank: #d55181;
+    }
+  }
+  :root[data-theme="dark"] {
+    --asset-electrolyser: #3987e5; --asset-wind: #d95926; --asset-pv: #199e70;
+    --asset-battery: #c98500; --asset-tank: #d55181;
+  }
+  #country-map { height: 420px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
+  .leaflet-container { font: inherit; background: var(--bg); }
+  .cp-marker { border-radius: 50%; border: 2px solid var(--surface); box-shadow: 0 1px 3px rgba(15,23,42,.35);
+               display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  .cp-marker.empty { background: var(--line) !important; border-style: dashed; border-color: var(--muted); }
+  .cp-marker-label { font-size: 10px; font-weight: 700; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.45);
+                      pointer-events: none; }
+  .cp-marker.empty .cp-marker-label { color: var(--muted); text-shadow: none; }
+  .cp-tooltip { position: fixed; z-index: 9999; pointer-events: none; background: var(--surface);
+                border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; box-shadow: var(--shadow);
+                font-size: 12px; max-width: 240px; }
+  .map-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 14px; }
+  .map-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+  .map-legend .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+</style>
 {% endblock %}
 {% block content %}
 <div class="page-head">
@@ -82,6 +114,29 @@
 </div>
 
 <div class="card" style="margin-top:18px">
+  <h2>Countries</h2>
+  <p class="lede" style="margin-bottom:12px">Marker size tracks total installed MW; the colors show the technology mix. Hover a country for the breakdown. A hollow marker means it's in scope but nothing was built there.</p>
+  {% if map_markers %}
+  <div id="country-map"></div>
+  <div class="map-legend">
+    {% for a in assets %}
+    <span class="map-legend-item"><span class="swatch" style="background:var({{ asset_tokens|lookup:a }})"></span>{{ asset_labels|lookup:a }}</span>
+    {% endfor %}
+  </div>
+  {% for m in map_markers %}
+  <template id="cp-tip-{{ m.code }}">
+    <strong>{{ m.code }} — {{ m.total|floatformat:1 }} MW</strong>
+    {% for a in assets %}{% with v=m.values|lookup:a %}{% if v > 0 %}<div>{{ asset_labels|lookup:a }}: {{ v|floatformat:1 }} MW</div>{% endif %}{% endwith %}{% endfor %}
+  </template>
+  {% endfor %}
+  {{ map_markers|json_script:"map-data" }}
+  <div id="cp-tooltip" class="cp-tooltip" hidden></div>
+  {% else %}
+  <p class="lede">No countries to show.</p>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-top:18px">
   <h2>Convergence</h2>
   <p class="lede" style="margin-bottom:12px">Benders lower bound vs best upper bound, by iteration.</p>
   <canvas id="conv" height="110"></canvas>
@@ -111,6 +166,55 @@
   <pre class="log">{{ log_tail }}</pre>
 </div>
 
+<script>
+  (function () {
+    const mapEl = document.getElementById('country-map');
+    const dataEl = document.getElementById('map-data');
+    if (!mapEl || !dataEl || typeof L === 'undefined') return;
+    const markers = JSON.parse(dataEl.textContent);
+    const tooltip = document.getElementById('cp-tooltip');
+
+    const map = L.map(mapEl, { scrollWheelZoom: false, minZoom: 3, maxZoom: 10 })
+      .setView([{{ map_center.0 }}, {{ map_center.1 }}], {{ map_zoom }});
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(map);
+
+    function showTooltip(code) {
+      const tip = document.getElementById('cp-tip-' + code);
+      if (!tip) return;
+      tooltip.innerHTML = tip.innerHTML;
+      tooltip.hidden = false;
+    }
+    function positionNear(x, y) {
+      tooltip.style.left = Math.min(x + 14, window.innerWidth - tooltip.offsetWidth - 10) + 'px';
+      tooltip.style.top = Math.min(y + 14, window.innerHeight - tooltip.offsetHeight - 10) + 'px';
+    }
+    function hideTooltip() { tooltip.hidden = true; }
+
+    markers.forEach(function (m) {
+      const icon = L.divIcon({
+        className: 'cp-marker' + (m.total <= 0 ? ' empty' : ''),
+        html: '<span class="cp-marker-label">' + m.code + '</span>',
+        iconSize: [m.diameter, m.diameter],
+      });
+      const marker = L.marker([m.lat, m.lon], { icon: icon }).addTo(map);
+      const node = marker.getElement();
+      if (node && m.gradient) node.style.background = m.gradient;
+      if (node) {
+        node.addEventListener('mouseenter', e => { showTooltip(m.code); positionNear(e.clientX, e.clientY); });
+        node.addEventListener('mousemove', e => positionNear(e.clientX, e.clientY));
+        node.addEventListener('mouseleave', hideTooltip);
+        node.addEventListener('focus', () => {
+          showTooltip(m.code);
+          const r = node.getBoundingClientRect();
+          positionNear(r.left, r.top);
+        });
+        node.addEventListener('blur', hideTooltip);
+      }
+    });
+  })();
+</script>
 <script>
   (function () {
     const el = document.getElementById('conv-data');

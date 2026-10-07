@@ -241,7 +241,12 @@
     const riskRadios = document.querySelectorAll('input[name="risk_measure"]');
     const alphaBox = document.getElementById('alpha-box');
     const probInputs = document.querySelectorAll('input[name^="scenario_prob__"]');
+    const includeInputs = document.querySelectorAll('input[name^="scenario_include__"]');
     const probTotal = document.getElementById('prob-total');
+    const scenarioCards = Array.from(document.querySelectorAll('.scenario-card')).map(card => ({
+      include: card.querySelector('input[name^="scenario_include__"]'),
+      prob: card.querySelector('input[name^="scenario_prob__"]'),
+    }));
 
     function syncCountries() {
       const on = allBox.checked;
@@ -254,7 +259,7 @@
       document.querySelector('input[name="cvar_alpha"]').disabled = !cvar;
     }
     function syncProbTotal() {
-      const total = Array.from(probInputs).reduce((sum, el) => sum + (parseFloat(el.value) || 0), 0);
+      const total = scenarioCards.reduce((sum, c) => sum + (c.include.checked ? (parseFloat(c.prob.value) || 0) : 0), 0);
       const ok = Math.abs(total - 100) <= 0.01;
       probTotal.textContent = 'Probabilities total ' + total.toFixed(2) + '% (must be 100%)';
       probTotal.className = 'total ' + (ok ? 'ok' : 'bad');
@@ -291,6 +296,7 @@
     allBox.addEventListener('change', syncCountries);
     riskRadios.forEach(r => r.addEventListener('change', syncRisk));
     probInputs.forEach(p => p.addEventListener('input', syncProbTotal));
+    includeInputs.forEach(c => c.addEventListener('change', syncProbTotal));
     syncAll();
   })();
 </script>
