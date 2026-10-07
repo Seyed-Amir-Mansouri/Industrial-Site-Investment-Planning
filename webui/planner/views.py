@@ -54,6 +54,7 @@ def run_detail(request, pk: int):
         "asset_tokens": services.ASSET_MAP_TOKENS,
         "map_center": geo.DEFAULT_CENTER,
         "map_zoom": geo.DEFAULT_ZOOM,
+        "economics": services.economics(run.params, summary) if summary else {},
         "log_tail": "\n".join(run.log.strip().splitlines()[-60:]) if run.log else "",
     })
 
@@ -65,6 +66,7 @@ def compare(request):
     run_b = done.filter(pk=b_id).first() if b_id else None
 
     rows = []
+    econ_a, econ_b, econ_rows = {}, {}, []
     if run_a and run_b:
         caps_a = {r["country"]: r for r in run_a.summary.get("capacities", [])}
         caps_b = {r["country"]: r for r in run_b.summary.get("capacities", [])}
@@ -74,12 +76,26 @@ def compare(request):
             mw_b = sum(float(rb.get(a, 0) or 0) for a in ASSET_LABELS)
             rows.append({"country": country, "mw_a": mw_a, "mw_b": mw_b, "delta": mw_b - mw_a})
 
+        econ_a = services.economics(run_a.params, run_a.summary)
+        econ_b = services.economics(run_b.params, run_b.summary)
+        for a in ASSET_LABELS:
+            ea, eb = econ_a["by_asset"][a], econ_b["by_asset"][a]
+            econ_rows.append({
+                "asset": a,
+                "annualized_a": ea["annualized_eur"],
+                "annualized_b": eb["annualized_eur"],
+                "delta": eb["annualized_eur"] - ea["annualized_eur"],
+            })
+
     return render(request, "planner/compare.html", {
         "done_runs": done[:100],
         "run_a": run_a,
         "run_b": run_b,
         "rows": rows,
         "asset_labels": ASSET_LABELS,
+        "econ_a": econ_a,
+        "econ_b": econ_b,
+        "econ_rows": econ_rows,
     })
 
 

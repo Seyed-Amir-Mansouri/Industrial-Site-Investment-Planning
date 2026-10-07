@@ -37,6 +37,15 @@
   <div class="kpi"><div class="label">Solve time A → B</div>
     <div class="value">{{ run_a.summary.elapsed_seconds|floatformat:1 }} s</div>
     <div class="sub">→ {{ run_b.summary.elapsed_seconds|floatformat:1 }} s</div></div>
+  <div class="kpi"><div class="label">Annualized CAPEX A → B</div>
+    <div class="value">€{{ econ_a.annualized_capex_eur|floatformat:0 }}</div>
+    <div class="sub">→ €{{ econ_b.annualized_capex_eur|floatformat:0 }}</div></div>
+  <div class="kpi"><div class="label">Operating cost A → B</div>
+    <div class="value">€{{ econ_a.operating_cost_eur|floatformat:0 }}</div>
+    <div class="sub">→ €{{ econ_b.operating_cost_eur|floatformat:0 }}</div></div>
+  <div class="kpi"><div class="label">CAPEX per MW A → B</div>
+    <div class="value">€{{ econ_a.capex_per_mw_eur|floatformat:0 }}</div>
+    <div class="sub">→ €{{ econ_b.capex_per_mw_eur|floatformat:0 }}</div></div>
 </div>
 
 <div class="card">
@@ -50,6 +59,23 @@
         <td class="num">{{ row.mw_a|floatformat:1 }}</td>
         <td class="num">{{ row.mw_b|floatformat:1 }}</td>
         <td class="num" style="color:{% if row.delta > 0 %}var(--ok){% elif row.delta < 0 %}var(--bad){% else %}var(--muted){% endif %}">{{ row.delta|floatformat:1 }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card" style="margin-top:18px">
+  <h2>Annualized CAPEX by technology</h2>
+  <table>
+    <thead><tr><th>Technology</th><th class="num">{{ run_a.display_name }}</th><th class="num">{{ run_b.display_name }}</th><th class="num">Δ (B − A)</th></tr></thead>
+    <tbody>
+      {% for row in econ_rows %}
+      <tr>
+        <td>{{ asset_labels|lookup:row.asset }}</td>
+        <td class="num">€{{ row.annualized_a|floatformat:0 }}</td>
+        <td class="num">€{{ row.annualized_b|floatformat:0 }}</td>
+        <td class="num" style="color:{% if row.delta > 0 %}var(--ok){% elif row.delta < 0 %}var(--bad){% else %}var(--muted){% endif %}">€{{ row.delta|floatformat:0 }}</td>
       </tr>
       {% endfor %}
     </tbody>

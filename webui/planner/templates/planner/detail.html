@@ -69,6 +69,29 @@
   <div class="kpi"><div class="label">Risk measure</div><div class="value">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }}{% else %}Expected{% endif %}</div><div class="sub">{{ run.params.scenarios|length }} scenarios</div></div>
 </div>
 
+<div class="card" style="margin-bottom:18px">
+  <h2>Economics</h2>
+  <p class="lede" style="margin-bottom:12px">Capital cost annualized at {{ run.params.discount_rate_pct }}% over each technology's own lifetime, versus the risk-adjusted operating cost.</p>
+  <div class="grid kpis" style="margin-bottom:16px">
+    <div class="kpi"><div class="label">Annualized CAPEX</div><div class="value">€{{ economics.annualized_capex_eur|floatformat:0 }}</div><div class="sub">per year, over asset lifetimes</div></div>
+    <div class="kpi"><div class="label">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }} operating cost{% else %}Expected operating cost{% endif %}</div><div class="value">€{{ economics.operating_cost_eur|floatformat:0 }}</div><div class="sub">objective − annualized CAPEX</div></div>
+    <div class="kpi"><div class="label">CAPEX per MW</div><div class="value">€{{ economics.capex_per_mw_eur|floatformat:0 }}</div><div class="sub">raw CAPEX ÷ total MW built</div></div>
+  </div>
+  <table>
+    <thead><tr><th>Technology</th><th class="num">Raw CAPEX</th><th class="num">Annualized CAPEX</th><th class="num">CRF</th></tr></thead>
+    <tbody>
+      {% for a in assets %}
+      <tr>
+        <td>{{ asset_labels|lookup:a }}</td>
+        <td class="num">€{{ economics.by_asset|lookup:a|lookup:"capex_eur"|floatformat:0 }}</td>
+        <td class="num">€{{ economics.by_asset|lookup:a|lookup:"annualized_eur"|floatformat:0 }}</td>
+        <td class="num">{{ economics.by_asset|lookup:a|lookup:"crf"|floatformat:4 }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
 <div class="grid" style="grid-template-columns:1.2fr 1fr;gap:18px;align-items:start">
   <div class="card">
     <h2>Installed capacity by country (MW)</h2>

@@ -106,6 +106,42 @@ def country_map_markers(params: dict, summary: dict) -> list[dict]:
     return rows
 
 
+def economics(params: dict, summary: dict) -> dict:
+    import g_investor_planning as hp
+
+    cfg = hp.CapexAssumptions(discount_rate=params.get("discount_rate_pct", 5) / 100)
+    if params.get("lifetime_years"):
+        cfg.lifetime_years = {a: params["lifetime_years"] for a in hp.ASSETS}
+    crfs = cfg.capital_recovery_factors()
+
+    capex_by_asset = {a: 0.0 for a in hp.ASSETS}
+    for row in summary.get("units", []):
+        asset = row.get("asset")
+        if asset not in capex_by_asset:
+            continue
+        candidate = cfg.catalog[asset][int(row["candidate"])]
+        capex_by_asset[asset] += candidate.capex_eur * float(row["units"])
+
+    annualized_by_asset = {a: capex_by_asset[a] * crfs[a] for a in hp.ASSETS}
+    annualized_total = sum(annualized_by_asset.values())
+    raw_capex = summary.get("raw_capex_eur")
+    if raw_capex is None:
+        raw_capex = sum(capex_by_asset.values())
+    objective = summary.get("objective_eur")
+    total_mw = sum(summary.get("totals_mw", {}).values())
+
+    return {
+        "raw_capex_eur": raw_capex,
+        "annualized_capex_eur": annualized_total,
+        "operating_cost_eur": (objective - annualized_total) if objective is not None else None,
+        "capex_per_mw_eur": (raw_capex / total_mw) if total_mw else None,
+        "by_asset": {
+            a: {"capex_eur": capex_by_asset[a], "annualized_eur": annualized_by_asset[a], "crf": crfs[a]}
+            for a in hp.ASSETS
+        },
+    }
+
+
 @lru_cache(maxsize=1)
 def scenario_probabilities() -> dict[str, float]:
     return dict(planner_module().SCENARIO_PROBS)
