@@ -180,6 +180,8 @@
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, '
                  + 'style by <a href="https://wikimediafoundation.org/">Wikimedia</a>',
     }).addTo(map);
+    setTimeout(() => map.invalidateSize(), 0);
+    window.addEventListener('load', () => map.invalidateSize());
 
     function showTooltip(code) {
       const tip = document.getElementById('cp-tip-' + code);
