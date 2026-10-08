@@ -43,6 +43,11 @@ def site_assumptions():
         "legacy_chiller_cop": tech.legacy_chiller_cop,
         "grid_import_fee": tech.grid_import_fee_eur_per_mwh,
         "h2_import_fee": tech.h2_import_fee_eur_per_mwh,
+        "green_share": hp.GREEN_H2.green_share,
+        "go_buy_price": hp.GREEN_H2.go_buy_price_eur_per_mwh,
+        "go_sell_price": hp.GREEN_H2.go_sell_price_eur_per_mwh,
+        "green_h2_premium": hp.GREEN_H2.green_h2_premium_eur_per_mwh,
+        "flex": [{"service": svc, "pct": frac * 100} for svc, frac in hp.SITE_DEMAND.flex_fraction.items()],
     }
 
 
@@ -192,6 +197,10 @@ def build_command(params: dict, output_prefix: Path) -> list[str]:
         cmd.append("--all")
     else:
         cmd += ["--countries", ",".join(params["countries"])]
+    if params.get("green_h2_share_pct") is not None:
+        cmd += ["--green-h2-share-pct", str(params["green_h2_share_pct"])]
+    if params.get("demand_flex_pct") is not None:
+        cmd += ["--demand-flex-pct", str(params["demand_flex_pct"])]
     cmd += ["--n-sites", str(params.get("n_sites", 1)),
             "--budget", f"{params['budget']:.0f}",
             "--max-units-per-candidate", str(params["max_units_per_candidate"]),
@@ -240,6 +249,7 @@ def _num(text: str) -> float:
 def parse_summary(output_prefix: Path, log: str) -> dict:
     capacities = _read_csv(Path(f"{output_prefix}_capacities.csv"))
     units = _read_csv(Path(f"{output_prefix}_units.csv"))
+    green = [{k: _maybe_float(v) for k, v in row.items()} for row in _read_csv(Path(f"{output_prefix}_green_h2.csv"))]
     convergence = _read_csv(Path(f"{output_prefix}_convergence.csv"))
 
     assets = list(capex_assumptions_defaults()["assets"])
@@ -263,9 +273,23 @@ def parse_summary(output_prefix: Path, log: str) -> dict:
         "raw_capex_eur": _num(capex.group(1)) if capex else None,
         "capacities": capacities,
         "units": units,
+        "green_h2": green,
+        "green_h2_expected": _expected_green(green),
         "convergence": [{k: _maybe_float(v) for k, v in row.items()} for row in convergence],
         "totals_mw": totals,
     }
+
+
+def _expected_green(rows: list[dict]) -> list[dict]:
+    """Probability-weighted green hydrogen totals per chosen site."""
+    keys = ["h2_demand_mwh", "green_h2_produced_mwh", "green_h2_bought_mwh", "green_share",
+            "go_bought_mwh", "go_sold_mwh"]
+    out = {}
+    for row in rows:
+        acc = out.setdefault(row["country"], {"country": row["country"], **{k: 0.0 for k in keys}})
+        for k in keys:
+            acc[k] += float(row[k]) * float(row["probability"])
+    return list(out.values())
 
 
 def _maybe_float(value: str):

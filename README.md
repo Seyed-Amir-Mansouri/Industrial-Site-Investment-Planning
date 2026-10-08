@@ -178,7 +178,7 @@ without a site has no demand and no capacity, so it costs nothing.
 | `--max-iters N` | 30 | Benders iteration cap |
 | `--gap-tol G` | 0.01 (1%) | Relative Benders convergence gap |
 | `--master-time-limit S` | 180 | Wall-time cap (seconds) per master MILP solve. The master gets genuinely hard to solve to proven optimality as cuts accumulate at large scale, so this bounds it instead; the Benders lower bound is still read from HiGHS's own proven dual bound, so the result stays mathematically rigorous even when the search is cut off early. |
-| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (with a `site` column, 1 = chosen)/`_units.csv`/`_convergence.csv`/(with `--export-schedules`) `_schedule_<country>_<scenario>.csv` |
+| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (with a `site` column, 1 = chosen)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each chosen site's green hydrogen and GO totals per scenario)/(with `--export-schedules`) `_schedule_<country>_<scenario>.csv` |
 | `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each chosen site's representative-day schedule: every demand, asset output, grid and H2 import/export, and backup use |
 
 Each iteration adds two optimality cuts per scenario: one from the subproblem solved at the
@@ -249,7 +249,8 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   the risk measure, the budget, the objective and the time taken. Click a run to open it.
 - **New run** is where you set up a planning run. The form has four numbered sections:
   1. **Problem definition:** run name, total CAPEX budget, candidate site countries, the
-     number of sites to build, excluded technologies and the cap on units per product.
+     number of sites to build, the minimum green hydrogen share, the demand flexibility,
+     excluded technologies and the cap on units per product.
      Countries are shown as pills you can click to select. *Select all* and *Clear* sit above them. Ticking *All eligible
      countries* turns the country pills off.
   2. **Uncertainty scenarios:** one card per scenario. Each card has an include tick box,
@@ -269,13 +270,14 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   to its defaults. **Run plan** starts the run, and the page opens the run's details.
 - **Run detail** shows one finished run. It has the chosen site(s) and headline numbers
   (objective, raw CAPEX, risk measure), installed capacity at each site in MW, the product
-  units built, a map of the candidate countries (colored by which demand the capacity
-  serves), the convergence chart of the Benders iterations, the inputs the run used and the
+  units built, the green hydrogen results (green share reached, green hydrogen produced and
+  bought, GOs bought and sold, per scenario and probability-weighted), a map of the candidate
+  countries (colored by which demand the capacity serves), the convergence chart of the Benders iterations, the inputs the run used and the
   solver log.
 - **Compare** puts two completed runs side by side. Pick them from the lists at the top.
   It shows the installed MW by country for each run and the difference between them.
 - **Catalog** shows the site demand, the operating assumptions (COPs, backup costs, import
-  fees), the candidate products and their CAPEX and lifetime assumptions, the discount rate
+  fees), the green hydrogen and certificate settings, the demand flexibility, the candidate products and their CAPEX and lifetime assumptions, the discount rate
   and budget defaults, and the uncertainty scenarios with their default probabilities.
 
 Only one run can be in progress at a time. While one is running, the **Run plan** button
