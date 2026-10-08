@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}Capacity Planner{% endblock %}</title>
+<title>{% block title %}Site Investment Planner{% endblock %}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -98,7 +98,7 @@
 <body>
 <header class="topbar">
   <div class="topbar-inner">
-    <a class="brand" href="{% url 'index' %}"><span class="brand-mark"></span>Capacity Planner</a>
+    <a class="brand" href="{% url 'index' %}"><span class="brand-mark"></span>Site Investment Planner</a>
     <nav class="nav">
       <a href="{% url 'index' %}" class="{% if request.resolver_match.url_name == 'index' or request.resolver_match.url_name == 'run_detail' %}active{% endif %}">Runs</a>
       <a href="{% url 'new_run' %}" class="{% if request.resolver_match.url_name == 'new_run' %}active{% endif %}">New run</a>

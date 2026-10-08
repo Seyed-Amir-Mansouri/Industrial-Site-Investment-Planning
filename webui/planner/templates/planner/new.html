@@ -1,5 +1,5 @@
 {% extends "planner/base.html" %}
-{% block title %}New run · Capacity Planner{% endblock %}
+{% block title %}New run · Site Investment Planner{% endblock %}
 {% block head %}
 <style>
   #run-form .step { display: inline-grid; place-items: center; width: 26px; height: 26px; margin-right: 10px;
@@ -88,7 +88,7 @@
     <div class="section-head">
       <div>
         <h2><span class="step">1</span>Problem definition</h2>
-        <p class="lede">Which countries, how much capital, and which technologies are in scope.</p>
+        <p class="lede">Where a site may go, how many to build, how much capital, and which technologies are in scope.</p>
       </div>
       <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
     </div>
@@ -119,6 +119,12 @@
         </div>
       </div>
       <div class="field">
+        <label>{{ form.n_sites.label }}</label>
+        {{ form.n_sites }}
+        <div class="help">{{ form.n_sites.help_text }}</div>
+        {% for e in form.n_sites.errors %}<div class="error">{{ e }}</div>{% endfor %}
+      </div>
+      <div class="field">
         <label>{{ form.max_units_per_candidate.label }}</label>
         {{ form.max_units_per_candidate }}
         <div class="help">{{ form.max_units_per_candidate.help_text }}</div>
@@ -126,7 +132,7 @@
       <div class="field pills">
         <label>{{ form.disabled_assets.label }}</label>
         {{ form.disabled_assets }}
-        <div class="help">Ticked technologies are excluded from every country.</div>
+        <div class="help">Ticked technologies are excluded at every site.</div>
       </div>
     </div>
   </div>

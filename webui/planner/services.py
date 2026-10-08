@@ -26,8 +26,28 @@ def planner_module():
 
 
 @lru_cache(maxsize=1)
+def site_assumptions():
+    import site_investor_planning as hp
+
+    tech = hp.SITE_TECH
+    return {
+        "demand_mwh": dict(hp.SITE_DEMAND.annual_mwh),
+        "comfort_cooling_mwh": hp.SITE_DEMAND.comfort_cooling_mwh,
+        "cop": [{"asset": a, "service": svc, "cop": tech.cop(a, svc)}
+                for a, services in hp.THERMAL_ASSET_SERVICES.items() for svc in services],
+        "electrolyser_efficiency": 0.68,
+        "gas_heat_cost": tech.gas_heat_cost_eur_per_mwh_th,
+        "gas_price": tech.gas_price_eur_per_mwh,
+        "co2_price": tech.co2_price_eur_per_t,
+        "legacy_chiller_cop": tech.legacy_chiller_cop,
+        "grid_import_fee": tech.grid_import_fee_eur_per_mwh,
+        "h2_import_fee": tech.h2_import_fee_eur_per_mwh,
+    }
+
+
+@lru_cache(maxsize=1)
 def capex_assumptions_defaults():
-    import g_investor_planning as hp
+    import site_investor_planning as hp
 
     cfg = hp.CapexAssumptions()
     return {
@@ -44,12 +64,24 @@ def eligible_countries() -> list[str]:
     return planner_module().eligible_countries()
 
 
-ASSET_MAP_TOKENS = {
-    "electrolyser_mw": "--asset-electrolyser",
-    "wind_mw": "--asset-wind",
-    "pv_mw": "--asset-pv",
-    "battery_mw": "--asset-battery",
-    "tank_mw": "--asset-tank",
+ASSET_GROUPS = {
+    "electricity": ["wind_mw", "pv_mw", "battery_mw"],
+    "space_heat": ["heat_pump_mw"],
+    "process_heat": ["lt_heat_pump_mw", "mt_heat_pump_mw"],
+    "steam": ["electric_heater_mw", "electric_boiler_mw"],
+    "cooling": ["electric_chiller_mw"],
+    "hydrogen": ["electrolyser_mw", "tank_mw"],
+}
+GROUP_LABELS = {
+    "electricity": "Electricity", "space_heat": "Space heating", "process_heat": "Low/medium-temp process heat",
+    "steam": "High-temp heat and steam", "cooling": "Cooling", "hydrogen": "Hydrogen",
+}
+GROUP_MAP_TOKENS = {g: f"--group-{g.replace('_', '-')}" for g in ASSET_GROUPS}
+SERVICE_LABELS = {
+    "electricity": "Electricity", "space_heat": "Space heating",
+    "lt_process_heat": "Low-temperature process heat", "mt_process_heat": "Medium-temperature process heat",
+    "ht_heat": "High-temperature heat", "steam": "High-temperature steam",
+    "cooling": "Cooling", "hydrogen": "Hydrogen",
 }
 MARKER_MIN_DIAMETER = 18
 MARKER_MAX_DIAMETER = 56
@@ -62,17 +94,17 @@ def _marker_diameter(total: float, max_total: float) -> float:
     return round(MARKER_MIN_DIAMETER + (MARKER_MAX_DIAMETER - MARKER_MIN_DIAMETER) * scale, 1)
 
 
-def _marker_gradient(values: dict[str, float], total: float, assets: list[str]) -> str:
+def _marker_gradient(values: dict[str, float], total: float) -> str:
     if total <= 0:
         return ""
     stops = []
     acc = 0.0
-    for asset in assets:
-        share = values.get(asset, 0.0)
+    for group, members in ASSET_GROUPS.items():
+        share = sum(values.get(a, 0.0) for a in members)
         if share <= 0:
             continue
         pct = share / total * 100
-        stops.append(f"var({ASSET_MAP_TOKENS[asset]}) {acc:.2f}% {acc + pct:.2f}%")
+        stops.append(f"var({GROUP_MAP_TOKENS[group]}) {acc:.2f}% {acc + pct:.2f}%")
         acc += pct
     return "conic-gradient(" + ", ".join(stops) + ")"
 
@@ -97,17 +129,18 @@ def country_map_markers(params: dict, summary: dict) -> list[dict]:
             "lon": centroid[1],
             "total": sum(values.values()),
             "values": values,
+            "site": bool(int(float(row.get("site", 0) or 0))),
         })
 
     max_total = max((r["total"] for r in rows), default=0.0)
     for r in rows:
         r["diameter"] = _marker_diameter(r["total"], max_total)
-        r["gradient"] = _marker_gradient(r["values"], r["total"], assets)
+        r["gradient"] = _marker_gradient(r["values"], r["total"])
     return rows
 
 
 def economics(params: dict, summary: dict) -> dict:
-    import g_investor_planning as hp
+    import site_investor_planning as hp
 
     cfg = hp.CapexAssumptions(discount_rate=params.get("discount_rate_pct", 5) / 100)
     if params.get("lifetime_years"):
@@ -159,7 +192,8 @@ def build_command(params: dict, output_prefix: Path) -> list[str]:
         cmd.append("--all")
     else:
         cmd += ["--countries", ",".join(params["countries"])]
-    cmd += ["--budget", f"{params['budget']:.0f}",
+    cmd += ["--n-sites", str(params.get("n_sites", 1)),
+            "--budget", f"{params['budget']:.0f}",
             "--max-units-per-candidate", str(params["max_units_per_candidate"]),
             "--discount-rate", f"{params['discount_rate_pct'] / 100:.6f}",
             "--rep-days-per-month", str(params["rep_days_per_month"]),
@@ -187,6 +221,7 @@ def output_prefix_for(run_pk: int) -> Path:
 
 
 _DONE_RE = re.compile(r"Done in ([\d.]+)s")
+_SITES_RE = re.compile(r"Chosen site\(s\): (.*)$", re.MULTILINE)
 _CAPEX_RE = re.compile(r"Total raw CAPEX: ([\d,]+) EUR")
 _OBJ_RE = re.compile(r"Best objective.*?: (-?[\d,]+)\s*$", re.MULTILINE)
 
@@ -216,7 +251,11 @@ def parse_summary(output_prefix: Path, log: str) -> dict:
     done = _DONE_RE.search(log)
     capex = _CAPEX_RE.search(log)
     objective = _OBJ_RE.search(log)
+    sites = [r["country"] for r in capacities if float(r.get("site", 0) or 0) > 0.5]
+    if not sites and (m := _SITES_RE.search(log)):
+        sites = [c.strip() for c in m.group(1).split(",") if c.strip()]
     return {
+        "sites": sites,
         "elapsed_seconds": float(done.group(1)) if done else None,
         "iterations": len(convergence),
         "converged": bool(re.search(r"converged \(gap", log)),
