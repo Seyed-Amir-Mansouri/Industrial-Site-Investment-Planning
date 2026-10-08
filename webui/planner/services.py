@@ -31,8 +31,9 @@ def site_assumptions():
 
     tech = hp.SITE_TECH
     return {
-        "demand_mwh": dict(hp.SITE_DEMAND.annual_mwh),
-        "comfort_cooling_mwh": hp.SITE_DEMAND.comfort_cooling_mwh,
+        "services": list(hp.SERVICES),
+        "demand_rows": [{"country": c, "values": list(hp.annual_demand_mwh(c).values())}
+                        for c in eligible_countries()],
         "cop": [{"asset": a, "service": svc, "cop": tech.cop(a, svc)}
                 for a, services in hp.THERMAL_ASSET_SERVICES.items() for svc in services],
         "electrolyser_efficiency": 0.68,

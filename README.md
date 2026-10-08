@@ -70,17 +70,24 @@ too, since `solve_joint` has no contiguous-range mode.
 
 ### Site demand
 
-`site_investor_planning/demand.py` builds each demand's hourly profile from an annual total
-(`SiteDemandAssumptions`, by default 50 GWh electricity, 8 GWh space heat, 20 GWh
-low-temperature and 20 GWh medium-temperature process heat, 12 GWh high-temperature heat,
-18 GWh steam, 12 GWh process cooling + 3 GWh comfort cooling and 10 GWh hydrogen per year):
+The site's hourly demand profiles are read from `inputs/site_demand.csv`. It has one row per
+candidate country and model-year hour (8736 per country) and these columns, all in MW (MW of
+heat or cooling for the thermal demands, MW_LHV for hydrogen):
 
-- Process loads (electricity, the four process heat demands, process cooling, hydrogen) follow a
-  two-shift weekday pattern, with a lower night and weekend load.
-- Space heating peaks in mid-January and scales with the country's heating degree days.
-- Comfort cooling peaks on July afternoons and scales with the country's cooling degree days.
+```
+country,hour,electricity,space_heat,lt_process_heat,mt_process_heat,ht_heat,steam,cooling,hydrogen
+```
 
-So the same site has a different heating and cooling demand depending on where it's built.
+A site built in a country gets that country's profiles. If you drop the `country` column, one
+8736-row profile applies in every country. Edit the file to change the demand; the planner
+prints each candidate country's annual totals at the start of a run, and the web Catalog page
+shows them too.
+
+The shipped profiles are synthetic: 50 GWh electricity, 20 GWh each of low- and
+medium-temperature process heat, 12 GWh high-temperature heat, 18 GWh steam and 10 GWh hydrogen
+per year on a two-shift weekday pattern; space heating (8 GWh at 3000 heating degree days)
+scaled by each country's heating degree days; and 12 GWh process cooling plus comfort cooling
+scaled by each country's cooling degree days.
 
 Every demand is also **flexible**: each hour it may move up or down by up to a share of its
 original value (`SiteDemandAssumptions.flex_fraction`, 10% for each demand by default), as long
@@ -88,9 +95,6 @@ as the shifts net to zero over each day, so the day's total energy is unchanged.
 this to move load into cheap or high-renewable hours. Pass `--demand-flex-pct P` to set the same
 share for all eight demands (`0` makes demand rigid). The exported schedules include each
 demand's hourly shift.
-These profiles are synthetic. To use real data, put an hourly `inputs/site_demand.csv` in
-place (8736 rows; columns `hour,electricity,space_heat,lt_process_heat,mt_process_heat,ht_heat,steam,cooling,hydrogen`,
-all in MW). It then applies unchanged in every country.
 
 ### Green hydrogen and the certificate market
 
@@ -318,6 +322,7 @@ says otherwise.
 |---|---|---|---|
 | `zones_2030.parquet`, `networks_2030.parquet`, `marginal_price_electricity_2030.parquet`, `marginal_price_hydrogen_2030.parquet`, `crossborder_electricity_2030.parquet`, `crossborder_hydrogen_2030.parquet`, `hydro_*_2030.parquet`, `smr_production_2030.parquet` | `inputs/` | In git | Dispatch engine and planner |
 | `uncertainty_scenarios.json` | `inputs/` | In git | Planner (scenario probabilities and country error factors) |
+| `site_demand.csv` | `inputs/` | In git | Planner (hourly site demand profiles per country) |
 | `elec_adjacency.json`, `h2_adjacency.json` | `inputs/` | In git (rewritten by `build_dataset.py`) | Price models |
 | `electricity_model.joblib`, `hydrogen_model.joblib` and the `*_metrics.csv` files | `data_exchange/02_train_output__benders_input/` | In git (written by `train_model.py`) | Planner |
 | `elec_samples.parquet`, `h2_samples.parquet` | `data_exchange/01_dispatch_output__train_input/` | Downloaded automatically by `webui\app.bat` from the project's Google Drive. You can also build them with steps 1 and 2. | Planner (`optimize_site_investor.py`) and `train_model.py` |
