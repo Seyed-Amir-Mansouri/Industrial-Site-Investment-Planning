@@ -1,4 +1,9 @@
-# Machine-Learning-Surrogate-Assisted Investment Planning of Coupled European Electricity and Hydrogen Systems
+# Machine-Learning-Surrogate-Assisted Industrial Site Investment Planning
+
+A strategic industrial site investment planning framework for optimizing site locations,
+technology selection, and capacity sizing across Europe's Core Capacity Calculation Region.
+It embeds machine-learning price surrogates into a decomposition-based optimization model to
+support scalable, data-driven investment decisions for industrial energy systems.
 
 Two pieces of work, both built on an upstream LP economic-dispatch engine's output for
 the 20-zone Central-European CORE region (NT2030 scenario):
@@ -20,40 +25,111 @@ hydrogen_price("AT00", 500)        # H2 price at 500 MWH2 demand
 
 Retrain with `python train_model.py`.
 
-## 2. General Investor capacity planning (`g_investor_planning/`, `optimize_g_investor.py`)
+## 2. Industrial Site Investor planning (`site_investor_planning/`, `optimize_site_investor.py`)
 
-Sizes each country's General Investor (electrolyser, wind, PV, battery, H2 tank)
-using the price models above as a price-taker market signal, instead of the full
-network coupling the upstream dispatch engine solves.
+An industrial site has its own internal demand for electricity, heat, cooling and hydrogen.
+The planner decides **where** to build the site (which candidate country), **which
+technologies** to install there, and **how big** each one should be, using the price models
+above as a price-taker market signal.
 
-- `optimize_g_investor.py` — a merchant LP: each asset buys or sells electricity
-  and hydrogen at the modeled market price, bounded only by its own installed
-  capacity, with no downstream demand obligation. `solve` runs one country on its
-  own, either over a contiguous day range or a representative-day sample.
-  `solve_joint` runs every requested country's LP together in a single model
-  (still independent problems, just solved in one call) and is the only mode
-  `plan_capacity.py` uses.
-- `g_investor_planning/` + `plan_capacity.py` — turns the five asset sizes into a
-  discrete/binary choice under a CAPEX budget, solved via Benders decomposition
-  (MILP master + one joint LP subproblem covering every included country together,
-  `solve_joint` — not independent per-country subproblems).
+| Demand | Main asset(s) | Backup when the new assets don't cover it |
+|---|---|---|
+| Electricity | Solar PV, wind, battery | Grid import |
+| Space heating | Heat pump | Existing gas boiler |
+| Low-temperature process heat | Low-temperature industrial heat pump | Existing gas boiler |
+| Medium-temperature process heat | Medium-temperature industrial heat pump | Existing gas boiler |
+| High-temperature heat | Electric heater | Existing gas boiler |
+| High-temperature steam | Electric steam boiler | Existing gas boiler |
+| Cooling | Electric chiller | Existing legacy chiller (on site electricity) |
+| Hydrogen | Electrolyser, hydrogen storage | Hydrogen market import |
+
+- `optimize_site_investor.py` is the site's operating LP. Every hour, eight separate balances
+  must hold, one per demand, each served by its own asset(s). The heat pumps, boiler and chiller draw electricity at their COP.
+  The site buys any electricity or hydrogen deficit at the modeled market price plus an
+  import fee, and sells any surplus at the market price. Gas boilers and a legacy chiller
+  are already on site (no CAPEX, unlimited capacity), so every demand is always met, whatever
+  the new assets are. `solve` runs one site on its own, either over a contiguous day range or
+  a representative-day sample. `solve_joint` runs every candidate country's site LP
+  together in one model (still independent problems, just solved in one call). It's the only
+  mode `plan_capacity.py` uses.
+- `site_investor_planning/` + `plan_capacity.py` turn the site choice and the eleven asset
+  sizes into discrete/binary choices under a CAPEX budget, solved via Benders decomposition
+  (MILP master + one joint LP subproblem covering every candidate country together).
 
 ```bash
-python optimize_g_investor.py --zone DE00 --day 5
-python plan_capacity.py --countries DE,FR,PL --rep-days-per-month 1
+python optimize_site_investor.py --zone DE00 --day 5
+python plan_capacity.py --countries DE,FR,PL --n-sites 1 --rep-days-per-month 1
 ```
 
-`optimize_g_investor.py`'s standalone `--day`/`--start-day`/`--end-day` CLI also
-accepts `--rep-days-per-month N`, to solve on N representative days/month (weighted
-to approximate the full year) instead of a contiguous day range. `plan_capacity.py`
-always solves every included country together (`solve_joint`) on representative days,
-so `--rep-days-per-month` is effectively required there too — `solve_joint` has no
-contiguous-range mode.
+`optimize_site_investor.py`'s standalone `--day`/`--start-day`/`--end-day` CLI also
+accepts `--rep-days-per-month N`, to solve on N representative days/month (weighted to
+approximate the full year) instead of a contiguous day range. It sizes the site with
+`DEFAULT_SITE_CAPACITIES`. `plan_capacity.py` always solves every candidate country together
+(`solve_joint`) on representative days, so `--rep-days-per-month` is effectively required there
+too, since `solve_joint` has no contiguous-range mode.
 
-CAPEX/lifetime figures in `g_investor_planning/config.py::CANDIDATE_CATALOG` come from
-`Help/Candidates (Edited).docx`'s 2030 candidate-product table, trimmed down to the
-single smallest real-world MW size per asset (electrolyser/wind/PV/battery/tank), each
-with its own absolute CAPEX and lifetime — a real cited source, not a vendor quote.
+### Site demand
+
+`site_investor_planning/demand.py` builds each demand's hourly profile from an annual total
+(`SiteDemandAssumptions`, by default 50 GWh electricity, 8 GWh space heat, 20 GWh
+low-temperature and 20 GWh medium-temperature process heat, 12 GWh high-temperature heat,
+18 GWh steam, 12 GWh process cooling + 3 GWh comfort cooling and 10 GWh hydrogen per year):
+
+- Process loads (electricity, the four process heat demands, process cooling, hydrogen) follow a
+  two-shift weekday pattern, with a lower night and weekend load.
+- Space heating peaks in mid-January and scales with the country's heating degree days.
+- Comfort cooling peaks on July afternoons and scales with the country's cooling degree days.
+
+So the same site has a different heating and cooling demand depending on where it's built.
+
+Every demand is also **flexible**: each hour it may move up or down by up to a share of its
+original value (`SiteDemandAssumptions.flex_fraction`, 10% for each demand by default), as long
+as the shifts net to zero over each day, so the day's total energy is unchanged. The site uses
+this to move load into cheap or high-renewable hours. Pass `--demand-flex-pct P` to set the same
+share for all eight demands (`0` makes demand rigid). The exported schedules include each
+demand's hourly shift.
+These profiles are synthetic. To use real data, put an hourly `inputs/site_demand.csv` in
+place (8736 rows; columns `hour,electricity,space_heat,lt_process_heat,mt_process_heat,ht_heat,steam,cooling,hydrogen`,
+all in MW). It then applies unchanged in every country.
+
+### Green hydrogen and the certificate market
+
+At least a share of each site's annual hydrogen demand must be green (RFNBO), by default 42%
+(the RED III 2030 target for hydrogen used in industry). Green hydrogen comes from two sources:
+
+- **The site's electrolyser, under the EU RFNBO rules.** Its green electricity must be
+  *additional* and *matched every hour* (the temporal-correlation rule that applies from 2030).
+  Additional electricity is the site's own new wind/PV, or Guarantees of Origin (GOs) bought from
+  additional plants (8 EUR/MWh by default).
+- **Certified green hydrogen bought on the market**, at a premium over the hydrogen price
+  (120 EUR/MWh, about EUR 4/kg, by default). This keeps the requirement reachable whatever the
+  master proposes.
+
+The site also sells GOs (6 EUR/MWh by default) for the wind/PV it exports, except for output it
+has already claimed for green hydrogen. The defaults live in `GreenH2Params` in
+`site_investor_planning/config.py`. Pass `--green-h2-share-pct P` to change the share (`0`
+removes the requirement; GO sales stay on). The exported schedules include the electrolyser's
+green load, the wind/PV claimed for it, GOs bought and sold, and green hydrogen bought.
+
+### Technology and cost assumptions
+
+`site_investor_planning/config.py` holds:
+
+- `CANDIDATE_CATALOG`: five real-world product sizes per asset, each with its own absolute
+  CAPEX and lifetime. Wind, PV, battery, electrolyser and H2 tank come from
+  `Help/Candidates (Edited).docx`'s 2030 candidate-product table. The heat pump, the two
+  industrial heat pumps, electric heater, electric steam boiler and electric chiller entries are
+  indicative 2030 costs in the
+  range of public technology catalogues (e.g. the Danish Energy Agency's). Replace them with
+  vendor quotes for a real site. Thermal assets are sized in MW of heat or cooling output.
+- `SiteTechParams`: COPs and efficiencies (heat pump 3.0, low-temperature industrial heat
+  pump 3.0, medium-temperature industrial heat pump 2.0, electric heater 0.98, electric steam
+  boiler 0.99, chiller 4.5), the backup gas boiler's cost (gas 35 EUR/MWh + CO2 90 EUR/t at 90%
+  efficiency, about 59 EUR/MWh of heat), the legacy chiller's COP (3.0) and the grid and
+  hydrogen import fees (15 and 0 EUR/MWh).
+- `CapexAssumptions.site_max_mw`: the most MW of wind, PV, battery, electrolyser and H2 tank
+  one site may host. Heat pumps, heaters, boilers and chillers are instead capped at 1.25 times the
+  site's own peak demand for their service, since their output can't be sold.
 
 ### `plan_capacity.py` flags
 
@@ -62,44 +138,38 @@ Full, current list also always available via `python plan_capacity.py --help`.
 **Scope**
 | Flag | Default | What it does |
 |---|---|---|
-| `--countries CC,CC,...` | — | Comma-separated 2-letter country codes, e.g. `DE,FR,PL` (mutually exclusive with `--all`) |
-| `--all` | — | Plan every eligible country |
+| `--countries CC,CC,...` | — | Candidate site countries, comma-separated 2-letter codes, e.g. `DE,FR,PL` (mutually exclusive with `--all`) |
+| `--all` | — | Every eligible country is a candidate |
+| `--n-sites N` | 1 | How many sites to build, each in a different candidate country. The optimizer picks which. |
+| `--green-h2-share-pct P` | 42 | Minimum green (RFNBO) share of each site's annual hydrogen demand, in %. `0` = no requirement. |
+| `--demand-flex-pct P` | 10 for each demand | Hourly demand flexibility in % of each hour's demand, for all eight demands; shifts net to zero over each day. `0` = rigid demand. |
 
 **Budget / CAPEX**
 | Flag | Default | What it does |
 |---|---|---|
-| `--budget EUR` | 500,000,000 | System-wide raw/unannualized CAPEX budget, shared across every included country. It's the only constraint the master applies beyond picking one candidate size per asset per country. |
+| `--budget EUR` | 500,000,000 | Raw/unannualized CAPEX budget, shared across every site. |
 | `--discount-rate R` | 0.05 | Discount rate for the capital recovery factor |
-| `--lifetime-years N` | catalog's own (25/30/40/20/30yr for electrolyser/wind/PV/battery/tank) | Overrides every asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
+| `--lifetime-years N` | catalog's own (30/40/20yr wind/PV/battery, 20/25/25/20/25/20yr heat pump/LT heat pump/MT heat pump/electric heater/steam boiler/chiller, 25/30yr electrolyser/tank) | Overrides every asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
 
-Every asset choice is independent, coupled to the others only through the shared
-budget — there's no minimum-electrolyser requirement, no per-country demand floor,
-and no separate cap on how many assets a country can build.
+The master builds exactly `--n-sites` sites. Only a chosen site may host capacity, up to its
+per-site cap for each asset (see *Technology and cost assumptions*). Assets are otherwise
+coupled through the site's energy balances in the subproblem and the shared budget.
 
 **Capacity-uncertainty scenarios / risk measure**
 | Flag | Default | What it does |
 |---|---|---|
 | `--cvar-alpha A` | 0.8 | Risk measure: CVaR at confidence level `A` (0–1) across the 11 capacity-uncertainty scenarios in `inputs/uncertainty_scenarios.json` (`p100` + `unc01`–`unc10`, non-uniform probabilities — 6 scenarios at ~3.33% each summing to 20%, 5 at 16% each, so the α=0.8 tail lands exactly on those 6). |
 | `--scenarios S,S,...` | all 11 | Restrict to a subset of scenarios (probabilities renormalized to sum to 1), e.g. `--scenarios p100` for a single deterministic baseline run ("on-plan"). |
-| `--disabled-assets A,A,...` | none | Exclude asset keys from every country's candidate selection (max MW = 0), e.g. `battery_mw,tank_mw`. |
+| `--disabled-assets A,A,...` | none | Exclude asset keys at every site (max MW = 0), e.g. `battery_mw,tank_mw`. Keys: `wind_mw`, `pv_mw`, `battery_mw`, `heat_pump_mw`, `lt_heat_pump_mw`, `mt_heat_pump_mw`, `electric_heater_mw`, `electric_boiler_mw`, `electric_chiller_mw`, `electrolyser_mw`, `tank_mw`. |
 
 **Subproblem**
 | Flag | Default | What it does |
 |---|---|---|
 | `--rep-days-per-month N` | 7 | Solves the joint subproblem on N representative days/month (1–29, weighted to approximate the full year) — `solve_joint` has no contiguous-range mode |
 
-Every country's subproblem is solved together, in one joint linopy model
-(`optimize_g_investor.solve_joint`); there's no independent-per-country mode.
-No downstream hydrogen demand is modeled anywhere in this pipeline — each asset is a
-merchant participant, trading purely at the modeled market prices. PV and wind each
-sell independently into the electricity market; the electrolyser buys electricity and
-sells hydrogen; the battery buys/sells electricity; the H2 tank buys/sells hydrogen —
-each bounded only by its own installed capacity, more like five separate one-asset
-investments than one co-located microgrid with a shared site balance or a shared
-grid/pipeline connection limit. A country can freely build wind/PV/battery/tank with
-zero electrolyser (a standalone merchant power-and-storage plant), or the reverse.
-`optimize_g_investor.solve`, the standalone single-country CLI, follows the same
-merchant model.
+Every candidate country's site LP is solved together, in one joint linopy model
+(`optimize_site_investor.solve_joint`); there's no independent-per-country mode. A country
+without a site has no demand and no capacity, so it costs nothing.
 
 **Solve control / output**
 | Flag | Default | What it does |
@@ -107,57 +177,56 @@ merchant model.
 | `--max-iters N` | 30 | Benders iteration cap |
 | `--gap-tol G` | 0.01 (1%) | Relative Benders convergence gap |
 | `--master-time-limit S` | 180 | Wall-time cap (seconds) per master MILP solve. The master gets genuinely hard to solve to proven optimality as cuts accumulate at large scale, so this bounds it instead; the Benders lower bound is still read from HiGHS's own proven dual bound, so the result stays mathematically rigorous even when the search is cut off early. |
-| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv`/`_convergence.csv`/(with `--export-schedules`) `_schedule_<country>.csv` |
-| `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each included country's representative-day schedule |
+| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (with a `site` column, 1 = chosen)/`_units.csv`/`_convergence.csv`/(with `--export-schedules`) `_schedule_<country>_<scenario>.csv` |
+| `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each chosen site's representative-day schedule: every demand, asset output, grid and H2 import/export, and backup use |
 
-Every optimality cut is built from a subproblem solve at a moving core point
-(Papadakos-style Pareto-optimal cuts) rather than the raw trial point — this isn't
-configurable; a plain trial-point cut converges far slower (LP dual degeneracy at the
-all-zero starting point gives valid but misleading cuts) and was removed entirely once
-Pareto-optimal cuts proved reliably fast.
+Each iteration adds two optimality cuts per scenario: one from the subproblem solved at the
+master's proposed plan (tight there, so the master can't propose the same plan again without
+paying its true cost), and one from a solve at a moving core point (Papadakos-style
+Pareto-optimal cuts), which carry information about the rest of the plan space. This isn't
+configurable. Core-point values that decay below 1e-3 are set to zero, which keeps the
+subproblem numerically stable. If HiGHS fails on the master or a subproblem, it's re-solved once
+with presolve off.
 
 ### How the Benders solve works
 
-Sizing all five assets (electrolyser, wind, PV, battery, H2 tank) for every country at
-once, as one MILP with a full year of hourly LP dispatch variables per country, doesn't
-scale — so `plan_capacity.py` splits it into a master problem and one joint
-subproblem (covering every included country together), iterating between them:
+Choosing site locations and sizing all eleven assets at once, as one MILP with a full year of
+hourly LP dispatch variables per candidate country, doesn't scale. So `plan_capacity.py`
+splits it into a master problem and one joint subproblem (covering every candidate country
+together), iterating between them:
 
-1. **Master (MILP, `g_investor_planning/master.py`)** — picks one candidate MW value per
-   asset per country (a binary one-hot choice over `CANDIDATE_CATALOG`'s single
-   real-world candidate per asset, with its own absolute CAPEX and lifetime, unbounded
-   above — no per-candidate unit cap), subject to the annualized, system-wide CAPEX
-   budget. Its objective is annualized CAPEX plus a recourse stand-in (`theta`) that
-   starts unconstrained and gets tightened every round by the cuts below. There's one
-   `theta_s` per capacity-uncertainty scenario, combined via CVaR at `--cvar-alpha`
-   (default 0.8) rather than a single shared scalar.
-2. **Joint subproblem (LP, every country in one linopy model, `optimize_g_investor.
-   solve_joint`)** — for the master's chosen capacities, solves the merchant
-   representative-day dispatch (`--rep-days-per-month`), once per capacity-uncertainty
-   scenario, and returns each country's own realized operating profit (buying and
-   selling electricity and hydrogen at market prices) plus the dual values (shadow
-   prices) on its own capacity constraints.
-3. **Cut generation** — each scenario's per-country profits and duals are combined
-   into one Benders optimality cut covering every included country together: a linear
-   upper bound on that scenario's `theta_s`, expressed in the master's binary
-   capacity-choice variables, with the duals as the cut's coefficients, evaluated at a
-   moving Pareto-optimal core point rather than the raw trial point (see above). One
-   such combined cut is added per scenario per iteration.
-4. **Loop** — resolve the master with the new cuts, resolve the joint subproblem at the
-   updated capacities, and repeat until the master's lower bound (HiGHS's own proven
-   dual bound) and the best-found upper bound converge, or the iteration cap is hit.
+1. **Master (MILP, `site_investor_planning/master.py`)** picks which `--n-sites` countries get
+   a site (one binary per country) and how many units of each catalog product each site
+   builds, subject to the CAPEX budget and the per-site caps. Its objective is annualized
+   CAPEX plus a recourse stand-in (`theta`) that starts unconstrained and gets tightened every
+   round by the cuts below. There's one `theta_s` per capacity-uncertainty scenario, combined
+   via CVaR at `--cvar-alpha` (default 0.8) rather than a single shared scalar.
+2. **Joint subproblem (LP, every country in one linopy model, `optimize_site_investor.
+   solve_joint`)** takes the master's site choice and capacities and solves the
+   representative-day site operation (`--rep-days-per-month`), once per capacity-uncertainty
+   scenario. It returns each country's operating cost (electricity and hydrogen purchases
+   minus sales, backup gas, GOs bought minus sold, green hydrogen premium) and the dual values
+   (shadow prices) on its capacity constraints, demand balances and green hydrogen requirement.
+3. **Cut generation.** Each scenario's per-country costs and duals become a Benders
+   optimality cut: a linear lower bound on that scenario's `theta_s` in the master's capacity
+   and site variables. Capacity duals give each asset's coefficient. The duals on everything
+   that scales with the site (demand balances, flexibility bands, green hydrogen requirement)
+   give the site's coefficient: what switching that site on costs.
+4. **Loop.** Re-solve the master with the new cuts, re-solve the subproblem at the updated
+   plan, and repeat until the master's lower bound (HiGHS's own proven dual bound) and the
+   best-found upper bound converge, or the iteration cap is hit.
 
-This avoids ever building one giant MILP over every country's asset choices and every
-hour of the model year at once — each iteration is a small MILP plus one joint,
-representative-day LP, which is what makes the discrete/binary capacity search
-tractable.
+This avoids ever building one giant MILP over every country's site and asset choices and
+every hour of the model year at once. Each iteration is a small MILP plus one joint,
+representative-day LP, which is what makes the discrete/binary search tractable.
 
 ## Structure
 
 ```
 price_model/              demand -> price models
-g_investor_planning/      Benders master + candidate grids + CAPEX assumptions
-optimize_g_investor.py    standalone / joint General Investor LP
+site_investor_planning/   Benders master, candidate sites and grids, site demand,
+                          technology and CAPEX assumptions
+optimize_site_investor.py standalone / joint site operating LP
 plan_capacity.py          Benders CLI driver
 economic_dispatch/        LP dispatch engine, vendored locally
 data_exchange/            hand-off directory between pipeline stages: dispatch
@@ -175,12 +244,12 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
 `http://localhost:9000/`. The top bar has four pages.
 
 - **Runs** is the home page. It lists the 100 most recent planning runs with their
-  status (running, completed or failed), the countries and technologies in scope, the
-  risk measure, the budget, the objective and the time taken. Click a run to open it.
+  status (running, completed or failed), the candidate countries and technologies in scope,
+  the risk measure, the budget, the objective and the time taken. Click a run to open it.
 - **New run** is where you set up a planning run. The form has four numbered sections:
-  1. **Problem definition:** run name, total CAPEX budget, countries, excluded
-     technologies and the cap on units per product. Countries are shown as pills you
-     can click to select. *Select all* and *Clear* sit above them. Ticking *All eligible
+  1. **Problem definition:** run name, total CAPEX budget, candidate site countries, the
+     number of sites to build, excluded technologies and the cap on units per product.
+     Countries are shown as pills you can click to select. *Select all* and *Clear* sit above them. Ticking *All eligible
      countries* turns the country pills off.
   2. **Uncertainty scenarios:** one card per scenario. Each card has an include tick box,
      the scenario's probability in percent and a short description. Open a card to see
@@ -197,15 +266,16 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   Each section has its own **Reset this section** button. Each scenario card has a
   **Reset scenario** button. **Reset all settings** at the bottom returns the whole form
   to its defaults. **Run plan** starts the run, and the page opens the run's details.
-- **Run detail** shows one finished run. It has the headline numbers (objective, raw
-  CAPEX, risk measure), installed capacity by country in MW, the product units built,
-  the convergence chart of the Benders iterations, the inputs the run used and the solver
-  log.
+- **Run detail** shows one finished run. It has the chosen site(s) and headline numbers
+  (objective, raw CAPEX, risk measure), installed capacity at each site in MW, the product
+  units built, a map of the candidate countries (colored by which demand the capacity
+  serves), the convergence chart of the Benders iterations, the inputs the run used and the
+  solver log.
 - **Compare** puts two completed runs side by side. Pick them from the lists at the top.
   It shows the installed MW by country for each run and the difference between them.
-- **Catalog** shows the candidate products and their CAPEX and lifetime assumptions, the
-  discount rate and budget defaults, and the uncertainty scenarios with their default
-  probabilities.
+- **Catalog** shows the site demand, the operating assumptions (COPs, backup costs, import
+  fees), the candidate products and their CAPEX and lifetime assumptions, the discount rate
+  and budget defaults, and the uncertainty scenarios with their default probabilities.
 
 Only one run can be in progress at a time. While one is running, the **Run plan** button
 on the New run page is disabled and a notice explains why. You can still fill in the form
@@ -250,7 +320,7 @@ says otherwise.
 | `uncertainty_scenarios.json` | `inputs/` | In git | Planner (scenario probabilities and country error factors) |
 | `elec_adjacency.json`, `h2_adjacency.json` | `inputs/` | In git (rewritten by `build_dataset.py`) | Price models |
 | `electricity_model.joblib`, `hydrogen_model.joblib` and the `*_metrics.csv` files | `data_exchange/02_train_output__benders_input/` | In git (written by `train_model.py`) | Planner |
-| `elec_samples.parquet`, `h2_samples.parquet` | `data_exchange/01_dispatch_output__train_input/` | Downloaded automatically by `webui\app.bat` from the project's Google Drive. You can also build them with steps 1 and 2. | Planner (`optimize_g_investor.py`) and `train_model.py` |
+| `elec_samples.parquet`, `h2_samples.parquet` | `data_exchange/01_dispatch_output__train_input/` | Downloaded automatically by `webui\app.bat` from the project's Google Drive. You can also build them with steps 1 and 2. | Planner (`optimize_site_investor.py`) and `train_model.py` |
 
 The `scenarios/` folder inside `data_exchange/01_dispatch_output__train_input/` is
 only needed if you rebuild the sample files with steps 1 and 2. You don't need it to
@@ -260,7 +330,7 @@ run the app.
 
 Nothing to install by hand. `webui\app.bat` creates `.venv` and installs
 `requirements.txt` the first time it runs. For Option B, run `webui\app.bat` once so the
-environment exists, then close the **Capacity Planner** window.
+environment exists, then close the **Site Investment Planner** window.
 
 After that, activate the environment from the project root in a terminal:
 
@@ -322,7 +392,7 @@ files. To retrain just one commodity, use `python train_model.py --only electric
 ### Step 4: a quick planning check (optional)
 
 ```bash
-python plan_capacity.py --countries DE,FR --scenarios p100 --rep-days-per-month 1 --max-iters 5
+python plan_capacity.py --countries DE,FR --scenarios p100 --rep-days-per-month 1 --max-iters 10
 ```
 
 This is a small, fast run that checks the whole chain works before you start a full
@@ -342,7 +412,7 @@ G:\My Drive\Temp\BSRO\Project 5\webui\app.bat
 
 A console window opens and shows each step as it runs. When the server is up, your
 browser opens `http://localhost:9000/` by itself. The server runs in its own window
-titled **Capacity Planner**. Keep it open while you use the planner. Close that window
+titled **Site Investment Planner**. Keep it open while you use the planner. Close that window
 to stop the server.
 
 **From a terminal (optional).** Open a terminal in the project folder and run:

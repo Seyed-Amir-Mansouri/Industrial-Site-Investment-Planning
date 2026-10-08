@@ -51,7 +51,8 @@ def run_detail(request, pk: int):
         "asset_labels": ASSET_LABELS,
         "assets": list(ASSET_LABELS),
         "map_markers": services.country_map_markers(run.params, summary) if summary else [],
-        "asset_tokens": services.ASSET_MAP_TOKENS,
+        "groups": [{"key": g, "label": services.GROUP_LABELS[g], "token": services.GROUP_MAP_TOKENS[g]}
+                   for g in services.ASSET_GROUPS],
         "map_center": geo.DEFAULT_CENTER,
         "map_zoom": geo.DEFAULT_ZOOM,
         "economics": services.economics(run.params, summary) if summary else {},
@@ -102,6 +103,8 @@ def compare(request):
 def catalog(request):
     return render(request, "planner/catalog.html", {
         "defaults": services.capex_assumptions_defaults(),
+        "site": services.site_assumptions(),
+        "service_labels": services.SERVICE_LABELS,
         "asset_labels": ASSET_LABELS,
         "scenarios": services.scenario_probabilities(),
     })

@@ -26,7 +26,7 @@ cd /d "%~dp0"
 if errorlevel 1 "%VENV_PY%" manage.py migrate --noinput
 if errorlevel 1 goto :fail
 curl -s -o nul http://localhost:9000/
-if errorlevel 1 start "Capacity Planner" "%VENV_PY%" manage.py runserver 0.0.0.0:9000 --noreload
+if errorlevel 1 start "Site Investment Planner" "%VENV_PY%" manage.py runserver 0.0.0.0:9000 --noreload
 set "TRIES=0"
 :wait
 curl -s -o nul http://localhost:9000/
