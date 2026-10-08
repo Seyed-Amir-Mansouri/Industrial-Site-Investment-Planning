@@ -3,23 +3,30 @@ from django import forms
 from . import services
 
 ASSET_LABELS = {
-    "electrolyser_mw": "Electrolyser",
     "wind_mw": "Wind",
     "pv_mw": "Solar PV",
     "battery_mw": "Battery",
-    "tank_mw": "H2 tank",
+    "heat_pump_mw": "Heat pump",
+    "lt_heat_pump_mw": "LT industrial heat pump",
+    "mt_heat_pump_mw": "MT industrial heat pump",
+    "electric_heater_mw": "Electric heater",
+    "electric_boiler_mw": "Electric steam boiler",
+    "electric_chiller_mw": "Electric chiller",
+    "electrolyser_mw": "Electrolyser",
+    "tank_mw": "H2 storage",
 }
 
 
 class PlanRunForm(forms.Form):
-    # Problem definition
     name = forms.CharField(max_length=120, required=False, label="Run name",
                            widget=forms.TextInput(attrs={"placeholder": "e.g. Baseline 500M, PV only"}))
     all_countries = forms.BooleanField(required=False, initial=True, label="All eligible countries")
-    countries = forms.MultipleChoiceField(required=False, label="Countries",
+    countries = forms.MultipleChoiceField(required=False, label="Candidate site countries",
                                           widget=forms.CheckboxSelectMultiple)
+    n_sites = forms.IntegerField(min_value=1, max_value=13, initial=1, label="Sites to build",
+                                 help_text="The optimizer picks this many countries to build a site in.")
     budget = forms.FloatField(min_value=1e6, initial=500_000_000, label="Total CAPEX budget (EUR)",
-                              help_text="Raw, unannualized budget across all countries.")
+                              help_text="Raw, unannualized budget across all sites.")
     disabled_assets = forms.MultipleChoiceField(
         required=False, label="Excluded asset types",
         choices=[(a, label) for a, label in ASSET_LABELS.items()],
@@ -29,7 +36,6 @@ class PlanRunForm(forms.Form):
         min_value=0, initial=0, label="Max units per product",
         help_text="Cap on how many units of any single product size can be built. 0 = no cap.")
 
-    # Economics
     discount_rate_pct = forms.FloatField(min_value=0, max_value=30, initial=5, label="Discount rate (%)")
     lifetime_years = forms.FloatField(required=False, min_value=1, max_value=100,
                                       label="Lifetime override (years)",
@@ -41,7 +47,6 @@ class PlanRunForm(forms.Form):
                                   label="CVaR confidence level α",
                                   help_text="Higher α focuses on the worst tail of scenarios.")
 
-    # Solver
     rep_days_per_month = forms.IntegerField(min_value=1, max_value=29, initial=7,
                                             label="Representative days per month",
                                             help_text="More days = more accurate but slower.")
@@ -92,6 +97,10 @@ class PlanRunForm(forms.Form):
         data = super().clean()
         if not data.get("all_countries") and not data.get("countries"):
             self.add_error("countries", "Select at least one country or choose all countries.")
+        n_candidates = (len(services.eligible_countries()) if data.get("all_countries")
+                        else len(data.get("countries") or []))
+        if data.get("n_sites") and n_candidates and data["n_sites"] > n_candidates:
+            self.add_error("n_sites", f"Only {n_candidates} candidate countries are selected.")
         included = [s for s in self.defaults if data.get(f"scenario_include__{s}")]
         if not included:
             self.add_error(None, "Select at least one uncertainty scenario.")
@@ -119,6 +128,7 @@ class PlanRunForm(forms.Form):
         return {
             "all_countries": d["all_countries"],
             "countries": sorted(d["countries"]),
+            "n_sites": d["n_sites"],
             "budget": d["budget"],
             "disabled_assets": list(d["disabled_assets"]),
             "max_units_per_candidate": d["max_units_per_candidate"],

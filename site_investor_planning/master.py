@@ -1,4 +1,4 @@
-"""Benders master MILP for General Investor capacity planning."""
+"""Benders master MILP for Industrial Site Investor planning: site locations plus discrete asset sizes."""
 from __future__ import annotations
 
 import linopy
@@ -14,9 +14,14 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
                  crf: dict[str, float], theta_lower: float,
                  scenario_probs: dict[str, float] | None = None,
                  cvar_alpha: float | None = None,
-                 max_mw: dict[str, dict[str, float]] | None = None,
-                 max_units_per_candidate: int | None = None) -> linopy.Model:
-    """Build a fresh Benders master MILP (candidate selection, budget, and optional CVaR/scenario objective) with no cuts yet."""
+                 site_max_mw: dict[str, dict[str, float]] | None = None,
+                 max_units_per_candidate: int | None = None,
+                 n_sites: int = 1) -> linopy.Model:
+    """Build a fresh Benders master MILP (site selection, candidate selection, budget, and optional
+    CVaR/scenario objective) with no cuts yet. Exactly ``n_sites`` of ``countries`` get a site, and
+    only a chosen site may host capacity, up to ``site_max_mw`` of each asset."""
+    if not 1 <= n_sites <= len(countries):
+        raise ValueError(f"n_sites must be between 1 and the {len(countries)} candidate countries, got {n_sites}")
     m = linopy.Model()
     country_idx = pd.Index(countries, name="country")
     asset_idx = pd.Index(ASSETS, name="asset")
@@ -25,6 +30,8 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
 
     units_upper = np.inf if max_units_per_candidate is None else max_units_per_candidate
     y = m.add_variables(lower=0, upper=units_upper, integer=True, coords=[country_idx, asset_idx, k_idx], name="y")
+    site = m.add_variables(binary=True, coords=[country_idx], name="site")
+    m.add_constraints(site.sum() == n_sites, name="n_sites")
     if cvar_alpha is not None and scenario_probs is None:
         raise ValueError("cvar_alpha requires scenario_probs")
     if scenario_probs is None:
@@ -56,18 +63,14 @@ def build_master(countries: list[str], cand_mw: dict[str, dict[str, np.ndarray]]
         capex_expr = (value_cost * y).sum()
         m.add_constraints(capex_expr <= budget, name="budget")
 
-    if max_mw is not None:
+    if site_max_mw is not None:
         cand_mw_da = xr.DataArray(
             np.array([[cand_mw[c][a] for a in ASSETS] for c in countries]),
             coords=[country_idx, asset_idx, k_idx],
         )
-        total_mw_by_ca = (cand_mw_da * y).sum("k")
-        for c in countries:
-            for a in ASSETS:
-                cap = max_mw.get(c, {}).get(a)
-                if cap is not None:
-                    m.add_constraints(total_mw_by_ca.sel(country=c, asset=a) <= cap,
-                                      name=f"max_mw_{c}_{a}")
+        cap_da = xr.DataArray(np.array([[site_max_mw[c][a] for a in ASSETS] for c in countries]),
+                              coords=[country_idx, asset_idx])
+        m.add_constraints((cand_mw_da * y).sum("k") - cap_da * site <= 0, name="site_max_mw")
 
     m.add_objective(annualized_capex_expr + theta_term)
     return m
@@ -77,9 +80,14 @@ def add_optimality_cut(m: linopy.Model, countries: list[str], iteration: int,
                        Q: dict[str, float], mu: dict[str, dict[str, float]],
                        cap_star: dict[str, dict[str, float]],
                        cand_mw: dict[str, dict[str, np.ndarray]],
-                       scenario: str | None = None) -> None:
-    """Add one combined Benders optimality cut (across all countries, or for one scenario) to the master."""
+                       scenario: str | None = None,
+                       lam: dict[str, float] | None = None,
+                       site_star: dict[str, float] | None = None, tag: str = "core") -> None:
+    """Add one combined Benders optimality cut (across all countries, or for one scenario) to the master.
+    ``mu`` are the recourse cost's sensitivities to each asset's MW, ``lam`` its sensitivity to each
+    site's on/off (its internal demand switching on), both taken at ``cap_star``/``site_star``."""
     y = m.variables["y"]
+    site = m.variables["site"]
     theta = m.variables["theta"]
     theta_var = theta.sel(scenario=scenario) if scenario is not None else theta
     k_idx = y.coords["k"]
@@ -88,7 +96,10 @@ def add_optimality_cut(m: linopy.Model, countries: list[str], iteration: int,
         for c in countries for a in ASSETS
     )
     rhs = sum(Q[c] - sum(mu[c][a] * cap_star[c][a] for a in ASSETS) for c in countries)
-    cut_name = f"cut_{scenario}_{iteration}" if scenario is not None else f"cut_{iteration}"
+    if lam is not None:
+        cap_expr = cap_expr + sum(lam[c] * site.sel(country=c) for c in countries)
+        rhs -= sum(lam[c] * site_star[c] for c in countries)
+    cut_name = f"cut_{tag}_{scenario}_{iteration}" if scenario is not None else f"cut_{tag}_{iteration}"
     m.add_constraints(theta_var - cap_expr >= rhs, name=cut_name)
 
 
@@ -117,6 +128,12 @@ def extract_capacities(m: linopy.Model, countries: list[str],
             counts = np.rint(y_sol.sel(country=c, asset=a).to_numpy())
             out[c][a] = float(np.sum(counts * cand_mw[c][a]))
     return out
+
+
+def extract_sites(m: linopy.Model, countries: list[str]) -> dict[str, float]:
+    """1.0 for every country the master's current solution builds a site in, else 0.0."""
+    site_sol = m.variables["site"].solution
+    return {c: float(np.rint(site_sol.sel(country=c))) for c in countries}
 
 
 def extract_units(m: linopy.Model, countries: list[str]) -> dict[str, dict[str, np.ndarray]]:

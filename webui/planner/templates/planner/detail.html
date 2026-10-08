@@ -1,6 +1,6 @@
 {% extends "planner/base.html" %}
 {% load planner_extras %}
-{% block title %}{{ run.display_name }} · Capacity Planner{% endblock %}
+{% block title %}{{ run.display_name }} · Site Investment Planner{% endblock %}
 {% block head %}
 {% if run.status == "running" %}<meta http-equiv="refresh" content="10">{% endif %}
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
@@ -8,18 +8,18 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   :root {
-    --asset-electrolyser: #2a78d6; --asset-wind: #eb6834; --asset-pv: #1baf7a;
-    --asset-battery: #eda100; --asset-tank: #e87ba4;
+    --group-electricity: #2a78d6; --group-space-heat: #eb6834; --group-process-heat: #1baf7a;
+    --group-steam: #eda100; --group-cooling: #e87ba4; --group-hydrogen: #008300;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --asset-electrolyser: #3987e5; --asset-wind: #d95926; --asset-pv: #199e70;
-      --asset-battery: #c98500; --asset-tank: #d55181;
+      --group-electricity: #3987e5; --group-space-heat: #d95926; --group-process-heat: #199e70;
+      --group-steam: #c98500; --group-cooling: #d55181; --group-hydrogen: #008300;
     }
   }
   :root[data-theme="dark"] {
-    --asset-electrolyser: #3987e5; --asset-wind: #d95926; --asset-pv: #199e70;
-    --asset-battery: #c98500; --asset-tank: #d55181;
+    --group-electricity: #3987e5; --group-space-heat: #d95926; --group-process-heat: #199e70;
+    --group-steam: #c98500; --group-cooling: #d55181; --group-hydrogen: #008300;
   }
   #country-map { height: 420px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
   .leaflet-container { font: inherit; background: var(--bg); }
@@ -62,7 +62,8 @@
 
 {% if run.status == "done" %}
 <div class="grid kpis" style="margin-bottom:18px">
-  <div class="kpi"><div class="label">Objective</div><div class="value">€{{ summary.objective_eur|floatformat:0 }}</div><div class="sub">annualized CAPEX + risk cost</div></div>
+  <div class="kpi"><div class="label">Chosen site{{ summary.sites|length|pluralize }}</div><div class="value">{% if summary.sites %}{{ summary.sites|join:", " }}{% else %}—{% endif %}</div><div class="sub">{{ run.params.n_sites|default:1 }} of {% if run.params.all_countries %}all eligible{% else %}{{ run.params.countries|length }}{% endif %} candidate countries</div></div>
+  <div class="kpi"><div class="label">Objective</div><div class="value">€{{ summary.objective_eur|floatformat:0 }}</div><div class="sub">annualized CAPEX + risk-adjusted energy cost</div></div>
   <div class="kpi"><div class="label">Raw CAPEX</div><div class="value">€{{ summary.raw_capex_eur|floatformat:0 }}</div><div class="sub">{% if run.params.budget %}{% widthratio summary.raw_capex_eur run.params.budget 100 %}% of budget{% endif %}</div></div>
   <div class="kpi"><div class="label">Iterations</div><div class="value">{{ summary.iterations }}</div><div class="sub">{% if summary.converged %}converged{% else %}stopped at limit{% endif %}</div></div>
   <div class="kpi"><div class="label">Solve time</div><div class="value">{{ summary.elapsed_seconds|floatformat:1 }} s</div><div class="sub">{{ summary.elapsed_seconds|floatformat:0 }} seconds total</div></div>
@@ -94,23 +95,25 @@
 
 <div class="grid" style="grid-template-columns:1.2fr 1fr;gap:18px;align-items:start">
   <div class="card">
-    <h2>Installed capacity by country (MW)</h2>
-    <p class="lede" style="margin-bottom:12px">Total MW built per country and technology.</p>
+    <h2>Installed capacity by site (MW)</h2>
+    <p class="lede" style="margin-bottom:12px">MW built at each chosen site, per technology. Heat pumps, boilers and chillers are in MW of heat or cooling output.</p>
+    <div style="overflow-x:auto">
     <table>
-      <thead><tr><th>Country</th>{% for a in assets %}<th class="num">{{ asset_labels|lookup:a }}</th>{% endfor %}</tr></thead>
+      <thead><tr><th>Site</th>{% for a in assets %}<th class="num">{{ asset_labels|lookup:a }}</th>{% endfor %}</tr></thead>
       <tbody>
-        {% for row in summary.capacities %}
+        {% for row in summary.capacities %}{% if row.site == "1" or not row.site %}
         <tr>
           <td><strong>{{ row.country }}</strong></td>
           {% for a in assets %}<td class="num">{{ row|lookup:a|floatformat:1 }}</td>{% endfor %}
         </tr>
-        {% endfor %}
+        {% endif %}{% endfor %}
         <tr>
           <td><strong>Total</strong></td>
           {% for a in assets %}<td class="num"><strong>{{ summary.totals_mw|lookup:a|floatformat:1 }}</strong></td>{% endfor %}
         </tr>
       </tbody>
     </table>
+    </div>
   </div>
 
   <div class="card">
@@ -137,18 +140,18 @@
 </div>
 
 <div class="card" style="margin-top:18px">
-  <h2>Countries</h2>
-  <p class="lede" style="margin-bottom:12px">Marker size tracks total installed MW; the colors show the technology mix. Hover a country for the breakdown. A hollow marker means it's in scope but nothing was built there.</p>
+  <h2>Site locations</h2>
+  <p class="lede" style="margin-bottom:12px">Marker size tracks total installed MW at a site; the colors show which demand that capacity serves. Hover a site for the technology breakdown. A hollow marker is a candidate country the optimizer didn't pick.</p>
   {% if map_markers %}
   <div id="country-map"></div>
   <div class="map-legend">
-    {% for a in assets %}
-    <span class="map-legend-item"><span class="swatch" style="background:var({{ asset_tokens|lookup:a }})"></span>{{ asset_labels|lookup:a }}</span>
+    {% for g in groups %}
+    <span class="map-legend-item"><span class="swatch" style="background:var({{ g.token }})"></span>{{ g.label }}</span>
     {% endfor %}
   </div>
   {% for m in map_markers %}
   <template id="cp-tip-{{ m.code }}">
-    <strong>{{ m.code }} — {{ m.total|floatformat:1 }} MW</strong>
+    <strong>{{ m.code }} — {% if m.site %}site, {{ m.total|floatformat:1 }} MW{% else %}not chosen{% endif %}</strong>
     {% for a in assets %}{% with v=m.values|lookup:a %}{% if v > 0 %}<div>{{ asset_labels|lookup:a }}: {{ v|floatformat:1 }} MW</div>{% endif %}{% endwith %}{% endfor %}
   </template>
   {% endfor %}
@@ -170,7 +173,8 @@
   <h2>Inputs used</h2>
   <table>
     <tbody>
-      <tr><th style="width:260px">Countries</th><td>{% if run.params.all_countries %}All eligible{% else %}{{ run.params.countries|join:", " }}{% endif %}</td></tr>
+      <tr><th style="width:260px">Candidate countries</th><td>{% if run.params.all_countries %}All eligible{% else %}{{ run.params.countries|join:", " }}{% endif %}</td></tr>
+      <tr><th>Sites to build</th><td>{{ run.params.n_sites|default:1 }}</td></tr>
       <tr><th>Budget</th><td>€{{ run.params.budget|floatformat:0 }}</td></tr>
       <tr><th>Excluded technologies</th><td>{% if run.params.disabled_assets %}{{ run.params.disabled_assets|join:", " }}{% else %}none{% endif %}</td></tr>
       <tr><th>Max units per product</th><td>{% if run.params.max_units_per_candidate %}{{ run.params.max_units_per_candidate }}{% else %}unbounded{% endif %}</td></tr>
