@@ -2,8 +2,8 @@
 
 The CSV holds one row per candidate country and model-year hour (8736 per country) with columns
 ``country``, ``hour`` and one column per service in MW: ``electricity``, ``space_heat``,
-``lt_process_heat``, ``mt_process_heat``, ``ht_heat``, ``steam``, ``cooling`` and ``hydrogen``
-(MW_th for heat and cooling, MW_LHV for hydrogen). A site built in a country gets that country's
+``process_heat`` (low/medium-temperature), ``steam`` (high-temperature heat / steam), ``cooling``
+and ``hydrogen`` (MW_th for heat and cooling, MW_LHV for hydrogen). A site built in a country gets that country's
 profiles. Without a ``country`` column, the same profiles apply in every country.
 """
 from __future__ import annotations
@@ -34,8 +34,8 @@ class SiteDemandAssumptions:
     """
 
     flex_fraction: dict[str, float] = field(default_factory=lambda: {
-        "electricity": 0.10, "space_heat": 0.10, "lt_process_heat": 0.10, "mt_process_heat": 0.10,
-        "ht_heat": 0.10, "steam": 0.10, "cooling": 0.10, "hydrogen": 0.10,
+        "electricity": 0.10, "space_heat": 0.10, "process_heat": 0.10, "steam": 0.10,
+        "cooling": 0.10, "hydrogen": 0.10,
     })
 
 

@@ -143,8 +143,8 @@ _ELEC_ZONE_OVERRIDES = {"BE": "BE00", "NL": "NL00"}
 TANK_EFFICIENCY = 0.99
 
 DEFAULT_SITE_CAPACITIES = {"wind_mw": 10.0, "pv_mw": 10.0, "battery_mw": 5.0,
-                           "heat_pump_mw": 2.0, "lt_heat_pump_mw": 2.5, "mt_heat_pump_mw": 2.5,
-                           "electric_heater_mw": 1.0, "electric_boiler_mw": 2.0, "electric_chiller_mw": 2.0,
+                           "heat_pump_mw": 2.0, "industrial_heat_pump_mw": 5.0,
+                           "electric_boiler_mw": 5.0, "electric_chiller_mw": 2.0,
                            "electrolyser_mw": 5.0, "tank_mw": 1.0}
 
 
@@ -382,11 +382,10 @@ def _capacity_bounded(m: linopy.Model, name: str, coords: list[pd.Index], upper_
     return v
 
 
-_THERMAL_VARS = {"heat_pump_mw": "hp", "lt_heat_pump_mw": "lthp", "mt_heat_pump_mw": "mthp",
-                 "electric_heater_mw": "eh", "electric_boiler_mw": "eb", "electric_chiller_mw": "ch"}
-_THERMAL_LABELS = {"heat_pump_mw": "heat pump", "lt_heat_pump_mw": "LT industrial heat pump",
-                   "mt_heat_pump_mw": "MT industrial heat pump", "electric_heater_mw": "electric heater",
-                   "electric_boiler_mw": "electric steam boiler", "electric_chiller_mw": "electric chiller"}
+_THERMAL_VARS = {"heat_pump_mw": "hp", "industrial_heat_pump_mw": "ihp",
+                 "electric_boiler_mw": "eb", "electric_chiller_mw": "ch"}
+_THERMAL_LABELS = {"heat_pump_mw": "heat pump", "industrial_heat_pump_mw": "industrial heat pump",
+                   "electric_boiler_mw": "electric boiler", "electric_chiller_mw": "electric chiller"}
 _BACKUP_VARS = {**{svc: f"gas_{svc}" for svc in HEAT_SERVICES}, "cooling": "legacy_cold"}
 _BALANCES = {svc: f"{svc}_balance" for svc in SERVICES}
 

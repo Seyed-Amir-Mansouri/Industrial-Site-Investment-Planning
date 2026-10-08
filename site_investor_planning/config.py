@@ -4,10 +4,8 @@ Assets and the internal demand each one serves:
 
 - electricity: wind, PV, battery
 - space heating: heat pump
-- low-temperature process heat (< ~100 C): low-temperature industrial heat pump
-- medium-temperature process heat (~100-150 C): medium-temperature industrial heat pump
-- high-temperature heat (> ~150 C, non-steam): electric (resistance / induction) heater
-- high-temperature steam: electric (electrode) steam boiler
+- low/medium-temperature process heat (up to ~150 C): industrial heat pump
+- high-temperature process heat / steam: electric (electrode / resistance) boiler
 - cooling: electric chiller
 - hydrogen: electrolyser, H2 tank
 
@@ -17,9 +15,8 @@ electrical input. ``HEAT_SERVICES`` are the demands the existing gas boiler back
 Catalog sources: wind (real turbine classes: Vestas V100-2.0, GE 2.75-120, Vestas V150-4.2,
 Siemens Gamesa SG 5.8-170), PV (fixed-tilt, 40yr), battery (Li-ion, 2h, 20yr), electrolyser (PEM,
 25yr) and H2 tank (compressed, ~16.7h, 30yr) follow the 2030 candidate-product table in
-``Help/Candidates (Edited).docx``. Heat pump (20yr), low/medium-temperature industrial heat pumps
-(25yr), electric heater (20yr), electric steam boiler (25yr) and electric chiller (20yr) are
-indicative 2030 installed costs in the range of public technology catalogues (e.g. the Danish
+``Help/Candidates (Edited).docx``. Heat pump (20yr), industrial heat pump (25yr), electric boiler
+(25yr) and electric chiller (20yr) are indicative 2030 installed costs in the range of public technology catalogues (e.g. the Danish
 Energy Agency's); replace them with vendor quotes for a real site.
 """
 from __future__ import annotations
@@ -28,18 +25,15 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 ASSETS = ["wind_mw", "pv_mw", "battery_mw",
-          "heat_pump_mw", "lt_heat_pump_mw", "mt_heat_pump_mw", "electric_heater_mw", "electric_boiler_mw",
-          "electric_chiller_mw", "electrolyser_mw", "tank_mw"]
+          "heat_pump_mw", "industrial_heat_pump_mw", "electric_boiler_mw", "electric_chiller_mw",
+          "electrolyser_mw", "tank_mw"]
 
-SERVICES = ["electricity", "space_heat", "lt_process_heat", "mt_process_heat", "ht_heat", "steam",
-            "cooling", "hydrogen"]
-HEAT_SERVICES = ["space_heat", "lt_process_heat", "mt_process_heat", "ht_heat", "steam"]
+SERVICES = ["electricity", "space_heat", "process_heat", "steam", "cooling", "hydrogen"]
+HEAT_SERVICES = ["space_heat", "process_heat", "steam"]
 
 THERMAL_ASSET_SERVICES = {
     "heat_pump_mw": ["space_heat"],
-    "lt_heat_pump_mw": ["lt_process_heat"],
-    "mt_heat_pump_mw": ["mt_process_heat"],
-    "electric_heater_mw": ["ht_heat"],
+    "industrial_heat_pump_mw": ["process_heat"],
     "electric_boiler_mw": ["steam"],
     "electric_chiller_mw": ["cooling"],
 }
@@ -82,26 +76,12 @@ CANDIDATE_CATALOG: dict[str, list[AssetCandidate]] = {
         AssetCandidate(mw=5.0, capex_eur=3_500_000.0, lifetime_years=20.0),
         AssetCandidate(mw=10.0, capex_eur=6_500_000.0, lifetime_years=20.0),
     ],
-    "lt_heat_pump_mw": [
-        AssetCandidate(mw=1.0, capex_eur=900_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=2.5, capex_eur=2_000_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=5.0, capex_eur=3_600_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=10.0, capex_eur=6_800_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=20.0, capex_eur=12_500_000.0, lifetime_years=25.0),
-    ],
-    "mt_heat_pump_mw": [
-        AssetCandidate(mw=1.0, capex_eur=1_200_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=2.5, capex_eur=2_750_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=5.0, capex_eur=5_000_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=10.0, capex_eur=9_500_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=20.0, capex_eur=18_000_000.0, lifetime_years=25.0),
-    ],
-    "electric_heater_mw": [
-        AssetCandidate(mw=1.0, capex_eur=250_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=5.0, capex_eur=1_000_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=10.0, capex_eur=1_800_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=20.0, capex_eur=3_200_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=40.0, capex_eur=6_000_000.0, lifetime_years=20.0),
+    "industrial_heat_pump_mw": [
+        AssetCandidate(mw=1.0, capex_eur=1_000_000.0, lifetime_years=25.0),
+        AssetCandidate(mw=2.5, capex_eur=2_250_000.0, lifetime_years=25.0),
+        AssetCandidate(mw=5.0, capex_eur=4_000_000.0, lifetime_years=25.0),
+        AssetCandidate(mw=10.0, capex_eur=7_500_000.0, lifetime_years=25.0),
+        AssetCandidate(mw=20.0, capex_eur=14_000_000.0, lifetime_years=25.0),
     ],
     "electric_boiler_mw": [
         AssetCandidate(mw=1.0, capex_eur=150_000.0, lifetime_years=25.0),
@@ -146,9 +126,7 @@ class SiteTechParams:
     """
 
     heat_pump_cop: float = 3.0
-    lt_heat_pump_cop: float = 3.0
-    mt_heat_pump_cop: float = 2.0
-    electric_heater_efficiency: float = 0.98
+    industrial_heat_pump_cop: float = 2.5
     electric_boiler_efficiency: float = 0.99
     electric_chiller_cop: float = 4.5
 
@@ -170,9 +148,7 @@ class SiteTechParams:
     def cop(self, asset: str, service: str) -> float:
         """Useful thermal output per MWh of electricity when ``asset`` serves ``service``."""
         return {("heat_pump_mw", "space_heat"): self.heat_pump_cop,
-                ("lt_heat_pump_mw", "lt_process_heat"): self.lt_heat_pump_cop,
-                ("mt_heat_pump_mw", "mt_process_heat"): self.mt_heat_pump_cop,
-                ("electric_heater_mw", "ht_heat"): self.electric_heater_efficiency,
+                ("industrial_heat_pump_mw", "process_heat"): self.industrial_heat_pump_cop,
                 ("electric_boiler_mw", "steam"): self.electric_boiler_efficiency,
                 ("electric_chiller_mw", "cooling"): self.electric_chiller_cop}[(asset, service)]
 
