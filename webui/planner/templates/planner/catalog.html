@@ -16,15 +16,17 @@
 
 <div class="card">
   <h2>Site demand</h2>
-  <p class="lede" style="margin-bottom:12px">Annual internal demand of one site. Space heating scales with each country's heating degree days and comfort cooling ({{ site.comfort_cooling_mwh|floatformat:0 }} MWh at the reference climate) with its cooling degree days. Process loads follow a two-shift weekday pattern. Put an hourly <code>inputs/site_demand.csv</code> in place to use real data.</p>
+  <p class="lede" style="margin-bottom:12px">Annual internal demand (MWh / year) of a site built in each country, summed from the hourly profiles in <code>inputs/site_demand.csv</code>. Edit that file to change the demand.</p>
+  <div style="overflow-x:auto">
   <table>
-    <thead><tr><th>Demand</th><th class="num">MWh / year</th></tr></thead>
+    <thead><tr><th>Country</th>{% for key in site.services %}<th class="num">{{ service_labels|lookup:key }}</th>{% endfor %}</tr></thead>
     <tbody>
-      {% for key, mwh in site.demand_mwh.items %}
-      <tr><td>{{ service_labels|lookup:key }}</td><td class="num">{{ mwh|floatformat:0 }}</td></tr>
+      {% for row in site.demand_rows %}
+      <tr><td><strong>{{ row.country }}</strong></td>{% for v in row.values %}<td class="num">{{ v|floatformat:0 }}</td>{% endfor %}</tr>
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </div>
 
 <div class="card">

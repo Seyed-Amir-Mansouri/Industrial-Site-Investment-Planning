@@ -36,14 +36,12 @@ above as a price-taker market signal.
 |---|---|---|
 | Electricity | Solar PV, wind, battery | Grid import |
 | Space heating | Heat pump | Existing gas boiler |
-| Low-temperature process heat | Low-temperature industrial heat pump | Existing gas boiler |
-| Medium-temperature process heat | Medium-temperature industrial heat pump | Existing gas boiler |
-| High-temperature heat | Electric heater | Existing gas boiler |
-| High-temperature steam | Electric steam boiler | Existing gas boiler |
+| Low/medium-temperature process heat | Industrial heat pump | Existing gas boiler |
+| High-temperature process heat / steam | Electric boiler | Existing gas boiler |
 | Cooling | Electric chiller | Existing legacy chiller (on site electricity) |
 | Hydrogen | Electrolyser, hydrogen storage | Hydrogen market import |
 
-- `optimize_site_investor.py` is the site's operating LP. Every hour, eight separate balances
+- `optimize_site_investor.py` is the site's operating LP. Every hour, six separate balances
   must hold, one per demand, each served by its own asset(s). The heat pumps, boiler and chiller draw electricity at their COP.
   The site buys any electricity or hydrogen deficit at the modeled market price plus an
   import fee, and sells any surplus at the market price. Gas boilers and a legacy chiller
@@ -52,7 +50,7 @@ above as a price-taker market signal.
   a representative-day sample. `solve_joint` runs every candidate country's site LP
   together in one model (still independent problems, just solved in one call). It's the only
   mode `plan_capacity.py` uses.
-- `site_investor_planning/` + `plan_capacity.py` turn the site choice and the eleven asset
+- `site_investor_planning/` + `plan_capacity.py` turn the site choice and the nine asset
   sizes into discrete/binary choices under a CAPEX budget, solved via Benders decomposition
   (MILP master + one joint LP subproblem covering every candidate country together).
 
@@ -70,27 +68,32 @@ too, since `solve_joint` has no contiguous-range mode.
 
 ### Site demand
 
-`site_investor_planning/demand.py` builds each demand's hourly profile from an annual total
-(`SiteDemandAssumptions`, by default 50 GWh electricity, 8 GWh space heat, 20 GWh
-low-temperature and 20 GWh medium-temperature process heat, 12 GWh high-temperature heat,
-18 GWh steam, 12 GWh process cooling + 3 GWh comfort cooling and 10 GWh hydrogen per year):
+The site's hourly demand profiles are read from `inputs/site_demand.csv`. It has one row per
+candidate country and model-year hour (8736 per country) and these columns, all in MW (MW of
+heat or cooling for the thermal demands, MW_LHV for hydrogen):
 
-- Process loads (electricity, the four process heat demands, process cooling, hydrogen) follow a
-  two-shift weekday pattern, with a lower night and weekend load.
-- Space heating peaks in mid-January and scales with the country's heating degree days.
-- Comfort cooling peaks on July afternoons and scales with the country's cooling degree days.
+```
+country,hour,electricity,space_heat,process_heat,steam,cooling,hydrogen
+```
 
-So the same site has a different heating and cooling demand depending on where it's built.
+A site built in a country gets that country's profiles. If you drop the `country` column, one
+8736-row profile applies in every country. Edit the file to change the demand; the planner
+prints each candidate country's annual totals at the start of a run, and the web Catalog page
+shows them too.
+
+`process_heat` is low/medium-temperature process heat and `steam` is high-temperature process
+heat / steam. The shipped profiles are synthetic: 50 GWh electricity, 40 GWh low/medium-temperature
+process heat, 30 GWh high-temperature heat / steam and 10 GWh hydrogen per year on a two-shift
+weekday pattern; space heating (8 GWh at 3000 heating degree days)
+scaled by each country's heating degree days; and 12 GWh process cooling plus comfort cooling
+scaled by each country's cooling degree days.
 
 Every demand is also **flexible**: each hour it may move up or down by up to a share of its
 original value (`SiteDemandAssumptions.flex_fraction`, 10% for each demand by default), as long
 as the shifts net to zero over each day, so the day's total energy is unchanged. The site uses
 this to move load into cheap or high-renewable hours. Pass `--demand-flex-pct P` to set the same
-share for all eight demands (`0` makes demand rigid). The exported schedules include each
+share for all six demands (`0` makes demand rigid). The exported schedules include each
 demand's hourly shift.
-These profiles are synthetic. To use real data, put an hourly `inputs/site_demand.csv` in
-place (8736 rows; columns `hour,electricity,space_heat,lt_process_heat,mt_process_heat,ht_heat,steam,cooling,hydrogen`,
-all in MW). It then applies unchanged in every country.
 
 ### Green hydrogen and the certificate market
 
@@ -117,18 +120,16 @@ green load, the wind/PV claimed for it, GOs bought and sold, and green hydrogen 
 
 - `CANDIDATE_CATALOG`: five real-world product sizes per asset, each with its own absolute
   CAPEX and lifetime. Wind, PV, battery, electrolyser and H2 tank come from
-  `Help/Candidates (Edited).docx`'s 2030 candidate-product table. The heat pump, the two
-  industrial heat pumps, electric heater, electric steam boiler and electric chiller entries are
-  indicative 2030 costs in the
+  `Help/Candidates (Edited).docx`'s 2030 candidate-product table. The heat pump, industrial
+  heat pump, electric boiler and electric chiller entries are indicative 2030 costs in the
   range of public technology catalogues (e.g. the Danish Energy Agency's). Replace them with
   vendor quotes for a real site. Thermal assets are sized in MW of heat or cooling output.
-- `SiteTechParams`: COPs and efficiencies (heat pump 3.0, low-temperature industrial heat
-  pump 3.0, medium-temperature industrial heat pump 2.0, electric heater 0.98, electric steam
+- `SiteTechParams`: COPs and efficiencies (heat pump 3.0, industrial heat pump 2.5, electric
   boiler 0.99, chiller 4.5), the backup gas boiler's cost (gas 35 EUR/MWh + CO2 90 EUR/t at 90%
   efficiency, about 59 EUR/MWh of heat), the legacy chiller's COP (3.0) and the grid and
   hydrogen import fees (15 and 0 EUR/MWh).
 - `CapexAssumptions.site_max_mw`: the most MW of wind, PV, battery, electrolyser and H2 tank
-  one site may host. Heat pumps, heaters, boilers and chillers are instead capped at 1.25 times the
+  one site may host. Heat pumps, boilers and chillers are instead capped at 1.25 times the
   site's own peak demand for their service, since their output can't be sold.
 
 ### `plan_capacity.py` flags
@@ -142,14 +143,14 @@ Full, current list also always available via `python plan_capacity.py --help`.
 | `--all` | — | Every eligible country is a candidate |
 | `--n-sites N` | 1 | How many sites to build, each in a different candidate country. The optimizer picks which. |
 | `--green-h2-share-pct P` | 42 | Minimum green (RFNBO) share of each site's annual hydrogen demand, in %. `0` = no requirement. |
-| `--demand-flex-pct P` | 10 for each demand | Hourly demand flexibility in % of each hour's demand, for all eight demands; shifts net to zero over each day. `0` = rigid demand. |
+| `--demand-flex-pct P` | 10 for each demand | Hourly demand flexibility in % of each hour's demand, for all six demands; shifts net to zero over each day. `0` = rigid demand. |
 
 **Budget / CAPEX**
 | Flag | Default | What it does |
 |---|---|---|
 | `--budget EUR` | 500,000,000 | Raw/unannualized CAPEX budget, shared across every site. |
 | `--discount-rate R` | 0.05 | Discount rate for the capital recovery factor |
-| `--lifetime-years N` | catalog's own (30/40/20yr wind/PV/battery, 20/25/25/20/25/20yr heat pump/LT heat pump/MT heat pump/electric heater/steam boiler/chiller, 25/30yr electrolyser/tank) | Overrides every asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
+| `--lifetime-years N` | catalog's own (30/40/20yr wind/PV/battery, 20/25/25/20yr heat pump/industrial heat pump/electric boiler/chiller, 25/30yr electrolyser/tank) | Overrides every asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
 
 The master builds exactly `--n-sites` sites. Only a chosen site may host capacity, up to its
 per-site cap for each asset (see *Technology and cost assumptions*). Assets are otherwise
@@ -160,7 +161,7 @@ coupled through the site's energy balances in the subproblem and the shared budg
 |---|---|---|
 | `--cvar-alpha A` | 0.8 | Risk measure: CVaR at confidence level `A` (0–1) across the 11 capacity-uncertainty scenarios in `inputs/uncertainty_scenarios.json` (`p100` + `unc01`–`unc10`, non-uniform probabilities — 6 scenarios at ~3.33% each summing to 20%, 5 at 16% each, so the α=0.8 tail lands exactly on those 6). |
 | `--scenarios S,S,...` | all 11 | Restrict to a subset of scenarios (probabilities renormalized to sum to 1), e.g. `--scenarios p100` for a single deterministic baseline run ("on-plan"). |
-| `--disabled-assets A,A,...` | none | Exclude asset keys at every site (max MW = 0), e.g. `battery_mw,tank_mw`. Keys: `wind_mw`, `pv_mw`, `battery_mw`, `heat_pump_mw`, `lt_heat_pump_mw`, `mt_heat_pump_mw`, `electric_heater_mw`, `electric_boiler_mw`, `electric_chiller_mw`, `electrolyser_mw`, `tank_mw`. |
+| `--disabled-assets A,A,...` | none | Exclude asset keys at every site (max MW = 0), e.g. `battery_mw,tank_mw`. Keys: `wind_mw`, `pv_mw`, `battery_mw`, `heat_pump_mw`, `industrial_heat_pump_mw`, `electric_boiler_mw`, `electric_chiller_mw`, `electrolyser_mw`, `tank_mw`. |
 
 **Subproblem**
 | Flag | Default | What it does |
@@ -190,7 +191,7 @@ with presolve off.
 
 ### How the Benders solve works
 
-Choosing site locations and sizing all eleven assets at once, as one MILP with a full year of
+Choosing site locations and sizing all nine assets at once, as one MILP with a full year of
 hourly LP dispatch variables per candidate country, doesn't scale. So `plan_capacity.py`
 splits it into a master problem and one joint subproblem (covering every candidate country
 together), iterating between them:
@@ -318,6 +319,7 @@ says otherwise.
 |---|---|---|---|
 | `zones_2030.parquet`, `networks_2030.parquet`, `marginal_price_electricity_2030.parquet`, `marginal_price_hydrogen_2030.parquet`, `crossborder_electricity_2030.parquet`, `crossborder_hydrogen_2030.parquet`, `hydro_*_2030.parquet`, `smr_production_2030.parquet` | `inputs/` | In git | Dispatch engine and planner |
 | `uncertainty_scenarios.json` | `inputs/` | In git | Planner (scenario probabilities and country error factors) |
+| `site_demand.csv` | `inputs/` | In git | Planner (hourly site demand profiles per country) |
 | `elec_adjacency.json`, `h2_adjacency.json` | `inputs/` | In git (rewritten by `build_dataset.py`) | Price models |
 | `electricity_model.joblib`, `hydrogen_model.joblib` and the `*_metrics.csv` files | `data_exchange/02_train_output__benders_input/` | In git (written by `train_model.py`) | Planner |
 | `elec_samples.parquet`, `h2_samples.parquet` | `data_exchange/01_dispatch_output__train_input/` | Downloaded automatically by `webui\app.bat` from the project's Google Drive. You can also build them with steps 1 and 2. | Planner (`optimize_site_investor.py`) and `train_model.py` |

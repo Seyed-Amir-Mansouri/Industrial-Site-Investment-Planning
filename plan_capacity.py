@@ -370,8 +370,9 @@ def main() -> None:
           f"certified green H2 premium {green.green_h2_premium_eur_per_mwh:g} EUR/MWh")
     print("Demand flexibility (+/- share of each hour's demand, net zero per day): "
           + ", ".join(f"{k}={v:.0%}" for k, v in flex.items()))
-    print("Site demand (MWh/yr, space heat/cooling at reference climate): "
-          + ", ".join(f"{k}={v:,.0f}" for k, v in hp.SITE_DEMAND.annual_mwh.items()))
+    print(f"Site demand (MWh/yr) from {hp.demand.SITE_DEMAND_CSV.relative_to(ROOT)}:")
+    for c in countries:
+        print(f"  {c}: " + ", ".join(f"{k}={v:,.0f}" for k, v in hp.annual_demand_mwh(c).items()))
     print(f"Backup: gas boiler heat {tech.gas_heat_cost_eur_per_mwh_th:.1f} EUR/MWh_th, legacy chiller "
           f"COP {tech.legacy_chiller_cop:g} | grid import fee {tech.grid_import_fee_eur_per_mwh:g} EUR/MWh, "
           f"H2 import fee {tech.h2_import_fee_eur_per_mwh:g} EUR/MWh")
