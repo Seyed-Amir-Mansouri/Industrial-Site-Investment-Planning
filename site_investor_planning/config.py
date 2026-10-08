@@ -190,7 +190,7 @@ class CapexAssumptions:
     own peak demand for their service, since their output can't be sold.
     """
 
-    catalog: dict[str, list[AssetCandidate]] = field(default_factory=lambda: CANDIDATE_CATALOG)
+    catalog: dict[str, list[AssetCandidate]] = field(default_factory=lambda: dict(CANDIDATE_CATALOG))
 
     discount_rate: float = 0.05
     default_budget_eur: float = 500_000_000.0
