@@ -125,6 +125,18 @@
         {% for e in form.n_sites.errors %}<div class="error">{{ e }}</div>{% endfor %}
       </div>
       <div class="field">
+        <label>{{ form.green_h2_share_pct.label }}</label>
+        {{ form.green_h2_share_pct }}
+        <div class="help">{{ form.green_h2_share_pct.help_text }}</div>
+        {% for e in form.green_h2_share_pct.errors %}<div class="error">{{ e }}</div>{% endfor %}
+      </div>
+      <div class="field">
+        <label>{{ form.demand_flex_pct.label }}</label>
+        {{ form.demand_flex_pct }}
+        <div class="help">{{ form.demand_flex_pct.help_text }}</div>
+        {% for e in form.demand_flex_pct.errors %}<div class="error">{{ e }}</div>{% endfor %}
+      </div>
+      <div class="field">
         <label>{{ form.max_units_per_candidate.label }}</label>
         {{ form.max_units_per_candidate }}
         <div class="help">{{ form.max_units_per_candidate.help_text }}</div>

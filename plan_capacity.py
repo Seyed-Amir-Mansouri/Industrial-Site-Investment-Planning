@@ -53,6 +53,21 @@ def _snap(value: float, tol: float = 1e-3) -> float:
     return 0.0 if abs(value) < tol else value
 
 
+def green_h2_summary(schedule: pd.DataFrame) -> dict[str, float]:
+    """Annual green hydrogen and Guarantee of Origin totals (MWh/yr) of one site's representative-day schedule."""
+    w = schedule["day_weight"]
+
+    def annual(col: str) -> float:
+        return float((schedule[col] * w).sum())
+
+    demand = annual("Site hydrogen demand (MW)")
+    produced = annual("Site green H2 produced (MW)")
+    bought = annual("Site green H2 bought (MW)")
+    return {"h2_demand_mwh": demand, "green_h2_produced_mwh": produced, "green_h2_bought_mwh": bought,
+            "green_share": (produced + bought) / demand if demand > 0 else 0.0,
+            "go_bought_mwh": annual("Site GOs bought (MWh/h)"), "go_sold_mwh": annual("Site GOs sold (MWh/h)")}
+
+
 def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_tol: float,
                 capex_cfg: hp.CapexAssumptions, rep_days_per_month: int,
                 quiet_solver: bool = True, on_iteration=None, cvar_alpha: float | None = None,
@@ -102,7 +117,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     core_site = {c: n_sites / len(countries) for c in countries}
 
     best_ub, best_capacities, best_capex, best_capex_by_asset = float("inf"), None, None, None
-    best_units, best_sites = None, None
+    best_units, best_sites, best_green = None, None, None
     log = []
     per_country_log = {c: [] for c in countries}
     gap = float("inf")
@@ -224,6 +239,9 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                 best_ub, best_capacities, best_capex, best_capex_by_asset = ub, cap_star, raw_capex, capex_star
                 best_units = hp.extract_units(m, countries)
                 best_sites = site_star
+                best_green = [{"country": c, "scenario": s, "probability": scenario_probs[s],
+                               **green_h2_summary(results[s]["schedules"][host_zone[c]])}
+                              for c in countries if site_star[c] > 0.5 for s in scenario_probs]
             gap = (best_ub - lb) / max(abs(best_ub), 1e-6)
             log.append({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
                         "master_seconds": round(master_s, 2),
@@ -253,7 +271,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
             executor.shutdown(wait=True)
 
     return (best_capacities, best_capex, best_ub, pd.DataFrame(log), host_zone, price_frames,
-           per_country_log, best_capex_by_asset, best_units, best_sites)
+           per_country_log, best_capex_by_asset, best_units, best_sites, best_green)
 
 
 def main() -> None:
@@ -387,7 +405,7 @@ def main() -> None:
 
     t0 = time.time()
     (best_capacities, best_capex, best_ub, log_df, host_zone, price_frames,
-    per_country_log, best_capex_by_asset, best_units, best_sites) = run_benders(
+    per_country_log, best_capex_by_asset, best_units, best_sites, best_green) = run_benders(
         countries, budget, args.max_iters, args.gap_tol, capex_cfg,
         rep_days_per_month=args.rep_days_per_month,
         cvar_alpha=args.cvar_alpha, master_time_limit=args.master_time_limit,
@@ -424,7 +442,15 @@ def main() -> None:
                     units_rows.append({"country": c, "asset": a, "candidate": k, "candidate_mw": cand.mw,
                                        "units": int(n), "total_mw": cand.mw * int(n)})
     pd.DataFrame(units_rows).to_csv(f"{out_prefix}_units.csv", index=False)
-    print(f"\nwrote {out_prefix}_capacities.csv, {out_prefix}_convergence.csv, {out_prefix}_units.csv")
+    green_df = pd.DataFrame(best_green)
+    green_df.to_csv(f"{out_prefix}_green_h2.csv", index=False)
+    for c, g in green_df.groupby("country"):
+        share = float((g["green_share"] * g["probability"]).sum())
+        print(f"Green H2 at {c}: expected share {share:.1%} of H2 demand (target {green_share:.0%}), "
+              f"GOs bought {float((g['go_bought_mwh'] * g['probability']).sum()):,.0f} / sold "
+              f"{float((g['go_sold_mwh'] * g['probability']).sum()):,.0f} MWh/yr")
+    print(f"\nwrote {out_prefix}_capacities.csv, {out_prefix}_convergence.csv, {out_prefix}_units.csv, "
+          f"{out_prefix}_green_h2.csv")
 
     if args.export_schedules:
         site_countries = [c for c in countries if best_sites[c]]
