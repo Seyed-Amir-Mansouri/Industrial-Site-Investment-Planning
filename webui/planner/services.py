@@ -31,8 +31,9 @@ def site_assumptions():
 
     tech = hp.SITE_TECH
     return {
-        "demand_mwh": dict(hp.SITE_DEMAND.annual_mwh),
-        "comfort_cooling_mwh": hp.SITE_DEMAND.comfort_cooling_mwh,
+        "services": list(hp.SERVICES),
+        "demand_rows": [{"country": c, "values": list(hp.annual_demand_mwh(c).values())}
+                        for c in eligible_countries()],
         "cop": [{"asset": a, "service": svc, "cop": tech.cop(a, svc)}
                 for a, services in hp.THERMAL_ASSET_SERVICES.items() for svc in services],
         "electrolyser_efficiency": 0.68,
@@ -67,8 +68,8 @@ def eligible_countries() -> list[str]:
 ASSET_GROUPS = {
     "electricity": ["wind_mw", "pv_mw", "battery_mw"],
     "space_heat": ["heat_pump_mw"],
-    "process_heat": ["lt_heat_pump_mw", "mt_heat_pump_mw"],
-    "steam": ["electric_heater_mw", "electric_boiler_mw"],
+    "process_heat": ["industrial_heat_pump_mw"],
+    "steam": ["electric_boiler_mw"],
     "cooling": ["electric_chiller_mw"],
     "hydrogen": ["electrolyser_mw", "tank_mw"],
 }
@@ -79,8 +80,7 @@ GROUP_LABELS = {
 GROUP_MAP_TOKENS = {g: f"--group-{g.replace('_', '-')}" for g in ASSET_GROUPS}
 SERVICE_LABELS = {
     "electricity": "Electricity", "space_heat": "Space heating",
-    "lt_process_heat": "Low-temperature process heat", "mt_process_heat": "Medium-temperature process heat",
-    "ht_heat": "High-temperature heat", "steam": "High-temperature steam",
+    "process_heat": "Low/medium-temperature process heat", "steam": "High-temperature heat / steam",
     "cooling": "Cooling", "hydrogen": "Hydrogen",
 }
 MARKER_MIN_DIAMETER = 18
@@ -246,7 +246,7 @@ def parse_summary(output_prefix: Path, log: str) -> dict:
     totals = {a: 0.0 for a in assets}
     for row in capacities:
         for a in assets:
-            totals[a] += float(row[a])
+            totals[a] += float(row.get(a) or 0)
 
     done = _DONE_RE.search(log)
     capex = _CAPEX_RE.search(log)
