@@ -637,6 +637,7 @@ def _solve_sites(zones: list[str], capacities: dict[str, dict], sites: dict[str,
         out["Site H2 import (MW)"] = hb
         out["Site H2 export (-) (MW)"] = -hs
         out["Site electrolyser green load (MW)"] = eg
+        out["Site green H2 produced (MW)"] = ely_eff * eg
         out["Site own wind/PV claimed for green H2 (MW)"] = re
         out["Site GOs bought (MWh/h)"] = gob
         out["Site GOs sold (MWh/h)"] = gos

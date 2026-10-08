@@ -93,6 +93,42 @@
   </table>
 </div>
 
+{% if summary.green_h2 %}
+<div class="card">
+  <h2>Green hydrogen</h2>
+  <p class="lede" style="margin-bottom:12px">How each chosen site meets its green (RFNBO) hydrogen requirement of {{ run.params.green_h2_share_pct|default:42 }}% of annual hydrogen demand, and what it trades on the Guarantee of Origin market. All values in MWh per year.</p>
+  <div style="overflow-x:auto">
+  <table>
+    <thead><tr><th>Site</th><th>Scenario</th><th class="num">Probability</th><th class="num">H2 demand</th><th class="num">Green H2 produced</th><th class="num">Green H2 bought</th><th class="num">Green share</th><th class="num">GOs bought</th><th class="num">GOs sold</th></tr></thead>
+    <tbody>
+      {% for g in summary.green_h2_expected %}
+      <tr>
+        <td><strong>{{ g.country }}</strong></td><td><strong>Expected</strong></td><td class="num">100%</td>
+        <td class="num"><strong>{{ g.h2_demand_mwh|floatformat:0 }}</strong></td>
+        <td class="num"><strong>{{ g.green_h2_produced_mwh|floatformat:0 }}</strong></td>
+        <td class="num"><strong>{{ g.green_h2_bought_mwh|floatformat:0 }}</strong></td>
+        <td class="num"><strong>{% widthratio g.green_share 1 100 %}%</strong></td>
+        <td class="num"><strong>{{ g.go_bought_mwh|floatformat:0 }}</strong></td>
+        <td class="num"><strong>{{ g.go_sold_mwh|floatformat:0 }}</strong></td>
+      </tr>
+      {% endfor %}
+      {% for g in summary.green_h2 %}
+      <tr>
+        <td>{{ g.country }}</td><td>{{ g.scenario }}</td><td class="num">{% widthratio g.probability 1 100 %}%</td>
+        <td class="num">{{ g.h2_demand_mwh|floatformat:0 }}</td>
+        <td class="num">{{ g.green_h2_produced_mwh|floatformat:0 }}</td>
+        <td class="num">{{ g.green_h2_bought_mwh|floatformat:0 }}</td>
+        <td class="num">{% widthratio g.green_share 1 100 %}%</td>
+        <td class="num">{{ g.go_bought_mwh|floatformat:0 }}</td>
+        <td class="num">{{ g.go_sold_mwh|floatformat:0 }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+
 <div class="grid" style="grid-template-columns:1.2fr 1fr;gap:18px;align-items:start">
   <div class="card">
     <h2>Installed capacity by site (MW)</h2>
@@ -178,6 +214,8 @@
       <tr><th>Budget</th><td>€{{ run.params.budget|floatformat:0 }}</td></tr>
       <tr><th>Excluded technologies</th><td>{% if run.params.disabled_assets %}{{ run.params.disabled_assets|join:", " }}{% else %}none{% endif %}</td></tr>
       <tr><th>Max units per product</th><td>{% if run.params.max_units_per_candidate %}{{ run.params.max_units_per_candidate }}{% else %}unbounded{% endif %}</td></tr>
+      <tr><th>Minimum green hydrogen share</th><td>{{ run.params.green_h2_share_pct|default:42 }}%</td></tr>
+      <tr><th>Demand flexibility</th><td>±{{ run.params.demand_flex_pct|default:10 }}% per hour, net zero per day</td></tr>
       <tr><th>Discount rate</th><td>{{ run.params.discount_rate_pct }}%</td></tr>
       <tr><th>Lifetime override</th><td>{% if run.params.lifetime_years %}{{ run.params.lifetime_years }} years{% else %}per-asset defaults{% endif %}</td></tr>
       <tr><th>Risk measure</th><td>{% if run.params.risk_measure == "cvar" %}CVaR at α = {{ run.params.cvar_alpha }}{% else %}Expected value{% endif %}</td></tr>

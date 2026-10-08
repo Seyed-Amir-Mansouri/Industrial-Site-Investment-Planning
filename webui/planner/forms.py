@@ -23,6 +23,12 @@ class PlanRunForm(forms.Form):
                                           widget=forms.CheckboxSelectMultiple)
     n_sites = forms.IntegerField(min_value=1, max_value=13, initial=1, label="Sites to build",
                                  help_text="The optimizer picks this many countries to build a site in.")
+    green_h2_share_pct = forms.FloatField(
+        min_value=0, max_value=100, initial=42, label="Minimum green hydrogen share (%)",
+        help_text="Share of each site's annual hydrogen demand that must be green (RFNBO). 0 = no requirement.")
+    demand_flex_pct = forms.FloatField(
+        min_value=0, max_value=50, initial=10, label="Demand flexibility (%)",
+        help_text="How far each hour's demand may move up or down; shifts net to zero over each day. 0 = rigid.")
     budget = forms.FloatField(min_value=1e6, initial=500_000_000, label="Total CAPEX budget (EUR)",
                               help_text="Raw, unannualized budget across all sites.")
     disabled_assets = forms.MultipleChoiceField(
@@ -127,6 +133,8 @@ class PlanRunForm(forms.Form):
             "all_countries": d["all_countries"],
             "countries": sorted(d["countries"]),
             "n_sites": d["n_sites"],
+            "green_h2_share_pct": d["green_h2_share_pct"],
+            "demand_flex_pct": d["demand_flex_pct"],
             "budget": d["budget"],
             "disabled_assets": list(d["disabled_assets"]),
             "max_units_per_candidate": d["max_units_per_candidate"],

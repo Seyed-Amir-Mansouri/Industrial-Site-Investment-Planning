@@ -44,6 +44,31 @@
   </table>
 </div>
 
+<div class="card">
+  <h2>Green hydrogen and certificates</h2>
+  <p class="lede" style="margin-bottom:12px">Default rules for green (RFNBO) hydrogen. The electrolyser's green electricity must be additional (the site's own new wind/PV, or Guarantees of Origin bought from additional plants) and matched every hour. The share can be changed per run on the New run page.</p>
+  <table>
+    <tbody>
+      <tr><th style="width:320px">Minimum green share of hydrogen demand</th><td class="num">{% widthratio site.green_share 1 100 %}%</td></tr>
+      <tr><th>Guarantee of Origin buy price</th><td class="num">€{{ site.go_buy_price|floatformat:"-1" }} / MWh</td></tr>
+      <tr><th>Guarantee of Origin sell price</th><td class="num">€{{ site.go_sell_price|floatformat:"-1" }} / MWh</td></tr>
+      <tr><th>Certified green hydrogen premium</th><td class="num">€{{ site.green_h2_premium|floatformat:"-1" }} / MWh above the hydrogen price</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Demand flexibility</h2>
+  <p class="lede" style="margin-bottom:12px">How far each hour's demand may move up or down, as a share of itself; the shifts net to zero over each day. The New run page sets one value for all demands.</p>
+  <table>
+    <tbody>
+      {% for f in site.flex %}
+      <tr><th style="width:320px">{{ service_labels|lookup:f.service }}</th><td class="num">±{{ f.pct|floatformat:"-1" }}%</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
 {% for asset in defaults.assets %}
 <div class="card">
   <h2>{{ asset_labels|lookup:asset }}</h2>
