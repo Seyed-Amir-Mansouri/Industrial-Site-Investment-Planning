@@ -51,7 +51,7 @@ def _execute(run_pk: int) -> None:
         else:
             run.status = PlanRun.Status.FAILED
             run.error = "\n".join(log.strip().splitlines()[-25:])
-    except Exception as exc:  # noqa: BLE001 - surface any failure to the user, don't kill the thread silently
+    except Exception as exc:
         run.status = PlanRun.Status.FAILED
         run.error = f"{type(exc).__name__}: {exc}"
     run.finished_at = timezone.now()
