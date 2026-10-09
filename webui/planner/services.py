@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 RUNS_DIR = PROJECT_ROOT / "outputs" / "webui"
 SCENARIO_OVERRIDES_ENV = "PLANNER_SCENARIO_OVERRIDES"
 CATALOG_OVERRIDES_ENV = "PLANNER_CATALOG_OVERRIDES"
+DEMAND_PEAK_OVERRIDES_ENV = "PLANNER_DEMAND_PEAK_OVERRIDES"
 
 
 @lru_cache(maxsize=1)
@@ -24,6 +25,23 @@ def planner_module():
     import plan_capacity
 
     return plan_capacity
+
+
+@lru_cache(maxsize=1)
+def demand_services() -> list[str]:
+    """The site's internal demands, in balance order."""
+    import site_investor_planning as hp
+
+    return list(hp.SERVICES)
+
+
+@lru_cache(maxsize=1)
+def demand_peak_defaults() -> dict[str, dict[str, float]]:
+    """Default peak MW per eligible country and demand, from ``inputs/site_demand_peaks.csv``."""
+    import site_investor_planning as hp
+
+    peaks = hp.default_peaks_mw()
+    return {c: peaks[c] for c in eligible_countries() if c in peaks}
 
 
 @lru_cache(maxsize=1)
@@ -35,6 +53,8 @@ def site_assumptions():
         "services": list(hp.SERVICES),
         "demand_rows": [{"country": c, "values": list(hp.annual_demand_mwh(c).values())}
                         for c in eligible_countries()],
+        "peak_rows": [{"country": c, "values": [v[s] for s in hp.SERVICES]}
+                      for c, v in demand_peak_defaults().items()],
         "cop": [{"asset": a, "service": svc, "cop": tech.cop(a, svc)}
                 for a, services in hp.THERMAL_ASSET_SERVICES.items() for svc in services],
         "electrolyser_efficiency": 0.68,

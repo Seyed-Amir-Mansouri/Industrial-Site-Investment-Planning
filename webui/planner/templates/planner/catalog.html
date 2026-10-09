@@ -16,7 +16,19 @@
 
 <div class="card">
   <h2>Site demand</h2>
-  <p class="lede" style="margin-bottom:12px">Annual internal demand (MWh / year) of a site built in each country, summed from the hourly profiles in <code>inputs/site_demand.csv</code>. Edit that file to change the demand.</p>
+  <p class="lede" style="margin-bottom:12px">Hourly demand = the per-unit profile in <code>inputs/site_demand.csv</code> × the peak in <code>inputs/site_demand_peaks.csv</code>. Peaks can be changed per run on the New run page.</p>
+  <h3 style="margin:8px 0">Peak demand (MW)</h3>
+  <div style="overflow-x:auto;margin-bottom:16px">
+  <table>
+    <thead><tr><th>Country</th>{% for key in site.services %}<th class="num">{{ service_labels|lookup:key }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {% for row in site.peak_rows %}
+      <tr><td><strong>{{ row.country }}</strong></td>{% for v in row.values %}<td class="num">{{ v|floatformat:2 }}</td>{% endfor %}</tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <h3 style="margin:8px 0">Annual demand (MWh / year)</h3>
   <div style="overflow-x:auto">
   <table>
     <thead><tr><th>Country</th>{% for key in site.services %}<th class="num">{{ service_labels|lookup:key }}</th>{% endfor %}</tr></thead>

@@ -68,18 +68,25 @@ too, since `solve_joint` has no contiguous-range mode.
 
 ### Site demand
 
-The site's hourly demand profiles are read from `inputs/site_demand.csv`. It has one row per
-candidate country and model-year hour (8736 per country) and these columns, all in MW (MW of
-heat or cooling for the thermal demands, MW_LHV for hydrogen):
+The site's hourly demand is a per-unit profile times a peak, from two files:
 
-```
-country,hour,electricity,space_heat,process_heat,steam,cooling,hydrogen
-```
+- `inputs/site_demand.csv` holds the **per-unit profiles**: one row per candidate country and
+  model-year hour (8736 per country), each value that hour's demand as a share of the column's
+  annual peak (1.0 = the peak hour):
 
-A site built in a country gets that country's profiles. If you drop the `country` column, one
-8736-row profile applies in every country. Edit the file to change the demand; the planner
-prints each candidate country's annual totals at the start of a run, and the web Catalog page
-shows them too.
+  ```
+  country,hour,electricity,space_heat,process_heat,steam,cooling,hydrogen
+  ```
+
+  If you drop the `country` column, one 8736-row profile applies in every country.
+- `inputs/site_demand_peaks.csv` holds the **peaks** in MW (MW of heat or cooling for the
+  thermal demands, MW_LHV for hydrogen): one row per country with the same demand columns.
+
+A site built in a country gets that country's profile times its peaks. To change how big a
+demand is, edit its peak; to change its shape over the year, edit the profile. The New run page
+can change any peak for a single run (passed to the planner as a JSON file through
+`PLANNER_DEMAND_PEAK_OVERRIDES`). The planner prints each candidate country's annual totals at
+the start of a run, and the web Catalog page shows the peaks and annual totals.
 
 `process_heat` is low/medium-temperature process heat and `steam` is high-temperature process
 heat / steam. The shipped profiles are synthetic: 50 GWh electricity, 40 GWh low/medium-temperature
@@ -150,7 +157,7 @@ Full, current list also always available via `python plan_capacity.py --help`.
 **Budget / CAPEX**
 | Flag | Default | What it does |
 |---|---|---|
-| `--budget EUR` | 500,000,000 | Raw/unannualized CAPEX budget, shared across every site. |
+| `--budget EUR` | 1,500,000,000 | Raw/unannualized CAPEX budget, shared across every site. |
 | `--discount-rate R` | 0.05 | Discount rate for the capital recovery factor |
 | `--lifetime-years N` | catalog's own (30/40/20yr wind/PV/battery, 20/25/25/20yr heat pump/industrial heat pump/electric boiler/chiller, 25/30yr electrolyser/tank) | Overrides every asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
 
@@ -268,7 +275,7 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
 - **Runs** is the home page. It lists the 100 most recent planning runs with their
   status (running, completed or failed), the candidate countries and technologies in scope,
   the risk measure, the budget, the objective and the time taken. Click a run to open it.
-- **New run** is where you set up a planning run. The form has five numbered sections:
+- **New run** is where you set up a planning run. The form has six numbered sections:
   1. **Problem definition:** run name, total CAPEX budget, candidate site countries, the
      number of sites to build, the minimum green hydrogen share, the demand flexibility,
      excluded technologies and the cap on units per product.
@@ -284,7 +291,10 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      folder and passed to the planner through `PLANNER_CATALOG_OVERRIDES`); the defaults in
      `site_investor_planning/config.py` stay as they are. The run page prices its cost
      breakdown with the run's own catalog.
-  3. **Uncertainty scenarios:** one card per scenario. Each card has an include tick box,
+  3. **Site demand peaks:** a table of every candidate country's peak demand (MW) for each
+     of the six demands, filled with the defaults from `inputs/site_demand_peaks.csv`. Edits
+     apply to this run only.
+  4. **Uncertainty scenarios:** one card per scenario. Each card has an include tick box,
      the scenario's probability in percent and a short description. Open a card to see
      the wind and solar error % for every country. Error % is the share of nominal output
      that is lost, so 0% means no loss. The probabilities of all scenarios must add up to
@@ -292,10 +302,10 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      when it isn't. Changes apply to this run only. The defaults come from
      `inputs/uncertainty_scenarios.json`; only the 4 planning scenarios (positive probability)
      are shown.
-  4. **Economics:** discount rate, the risk measure (CVaR or expected value, shown as a
+  5. **Economics:** discount rate, the risk measure (CVaR or expected value, shown as a
      switch) and the CVaR confidence level. Lifetimes are set per technology in the
      candidate catalog.
-  5. **Solver settings:** representative days per month, optimality gap, maximum
+  6. **Solver settings:** representative days per month, optimality gap, maximum
      Benders iterations, master time limit and parallel workers.
 
   Each section has its own **Reset this section** button. Each scenario card has a
@@ -355,7 +365,7 @@ says otherwise.
 |---|---|---|---|
 | `zones_2030.parquet`, `networks_2030.parquet`, `marginal_price_electricity_2030.parquet`, `marginal_price_hydrogen_2030.parquet`, `crossborder_electricity_2030.parquet`, `crossborder_hydrogen_2030.parquet`, `hydro_*_2030.parquet`, `smr_production_2030.parquet` | `inputs/` | In git | Dispatch engine and planner |
 | `uncertainty_scenarios.json` | `inputs/` | In git | Planner (scenario probabilities and country error factors) |
-| `site_demand.csv` | `inputs/` | In git | Planner (hourly site demand profiles per country) |
+| `site_demand.csv`, `site_demand_peaks.csv` | `inputs/` | In git | Planner (per-unit hourly site demand profiles and peak MW per country) |
 | `elec_adjacency.json`, `h2_adjacency.json` | `inputs/` | In git (rewritten by `build_dataset.py`) | Price models |
 | `electricity_model.joblib`, `hydrogen_model.joblib` and the `*_metrics.csv` files | `data_exchange/02_train_output__benders_input/` | In git (written by `train_model.py`) | Planner |
 | `elec_samples.parquet`, `h2_samples.parquet` | `data_exchange/01_dispatch_output__train_input/` | Downloaded automatically by `webui\app.bat` from the project's Google Drive. You can also build them with steps 1 and 2. | Planner (`optimize_site_investor.py`) and `train_model.py` |

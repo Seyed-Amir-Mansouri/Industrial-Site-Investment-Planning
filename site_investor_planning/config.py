@@ -157,7 +157,7 @@ class CapexAssumptions:
     catalog: dict[str, list[AssetCandidate]] = field(default_factory=lambda: dict(CANDIDATE_CATALOG))
 
     discount_rate: float = 0.05
-    default_budget_eur: float = 500_000_000.0
+    default_budget_eur: float = 1_500_000_000.0
     theta_lower_bound_eur: float = -1e8
 
     site_max_mw: dict[str, float] = field(default_factory=lambda: {
