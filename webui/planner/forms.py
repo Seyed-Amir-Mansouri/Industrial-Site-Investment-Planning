@@ -26,7 +26,7 @@ class PlanRunForm(forms.Form):
     countries = forms.MultipleChoiceField(required=False, label="Candidate site countries",
                                           widget=forms.CheckboxSelectMultiple)
     n_sites = forms.IntegerField(min_value=1, max_value=MAX_SITES, initial=1, label="Sites to build",
-                                 help_text="Each site has its own settings in step 3. The optimizer picks a "
+                                 help_text="Each site has its own settings in step 2. The optimizer picks a "
                                            "country for each site; several sites may share a country.")
     budget = forms.FloatField(min_value=1e6, initial=1_500_000_000, label="Total CAPEX budget (EUR)",
                               help_text="Raw, unannualized budget across all sites.")

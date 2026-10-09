@@ -184,7 +184,39 @@
   <div class="card">
     <div class="section-head">
       <div>
-        <h2><span class="step">2</span>Candidate catalog</h2>
+        <h2><span class="step">2</span>Sites</h2>
+        <p class="lede">One card per site to build. Each site has its own daily peak demand (MW), minimum green hydrogen share and demand flexibility. Hourly demand is the per-unit yearly curve in <code>inputs/site_demand.csv</code> (shared by all sites) times the site's peaks. The optimizer picks a country for every site, and several sites may share a country.</p>
+      </div>
+      <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:0;">
+      {% for site in form.site_rows %}
+      <div class="catalog-card site-card" data-site-index="{{ site.index }}">
+        <div class="section-head" style="margin-bottom:10px;">
+          <label class="prob-field" style="font-weight:600;color:var(--ink)">{{ site.name }}</label>
+          <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+            <label class="prob-field">Green H2 (%) {{ site.green }}</label>
+            <label class="prob-field">Flexibility (±%) {{ site.flex }}</label>
+            <button type="button" class="btn ghost small" data-reset="site">Reset site</button>
+          </div>
+        </div>
+        {% for e in site.green.errors %}<div class="error">{{ e }}</div>{% endfor %}
+        {% for e in site.flex.errors %}<div class="error">{{ e }}</div>{% endfor %}
+        <div style="overflow-x:auto">
+        <table class="catalog-table">
+          <thead><tr>{% for label in form.demand_service_labels %}<th>{{ label }} (MW)</th>{% endfor %}</tr></thead>
+          <tbody><tr>{% for f in site.peaks %}<td>{{ f }}{% for e in f.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>{% endfor %}</tr></tbody>
+        </table>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="section-head">
+      <div>
+        <h2><span class="step">3</span>Candidate catalog</h2>
         <p class="lede">The product sizes, CAPEX, and lifetime the optimizer can choose from per asset. Add or remove candidates and edit their characteristics; changes apply to this run only. Defaults come from <code>site_investor_planning/config.py</code>.</p>
       </div>
       <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
@@ -222,38 +254,6 @@
         </table>
         <div class="toolbar">
           <button type="button" class="btn ghost small" data-add-candidate>+ Add candidate</button>
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="section-head">
-      <div>
-        <h2><span class="step">3</span>Sites</h2>
-        <p class="lede">One card per site to build. Each site has its own daily peak demand (MW), minimum green hydrogen share and demand flexibility. Hourly demand is the per-unit yearly curve in <code>inputs/site_demand.csv</code> (shared by all sites) times the site's peaks. The optimizer picks a country for every site, and several sites may share a country.</p>
-      </div>
-      <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:0;">
-      {% for site in form.site_rows %}
-      <div class="catalog-card site-card" data-site-index="{{ site.index }}">
-        <div class="section-head" style="margin-bottom:10px;">
-          <label class="prob-field" style="font-weight:600;color:var(--ink)">{{ site.name }}</label>
-          <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-            <label class="prob-field">Green H2 (%) {{ site.green }}</label>
-            <label class="prob-field">Flexibility (±%) {{ site.flex }}</label>
-            <button type="button" class="btn ghost small" data-reset="site">Reset site</button>
-          </div>
-        </div>
-        {% for e in site.green.errors %}<div class="error">{{ e }}</div>{% endfor %}
-        {% for e in site.flex.errors %}<div class="error">{{ e }}</div>{% endfor %}
-        <div style="overflow-x:auto">
-        <table class="catalog-table">
-          <thead><tr>{% for label in form.demand_service_labels %}<th>{{ label }} (MW)</th>{% endfor %}</tr></thead>
-          <tbody><tr>{% for f in site.peaks %}<td>{{ f }}{% for e in f.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>{% endfor %}</tr></tbody>
-        </table>
         </div>
       </div>
       {% endfor %}

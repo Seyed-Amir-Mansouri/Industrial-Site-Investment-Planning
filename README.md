@@ -301,7 +301,12 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      Countries are shown in a table, each with its flag, full name and code, and you click
      one to select it. *Select all* and *Clear* sit above them. Ticking *All eligible
      countries* turns the country picks off.
-  2. **Candidate catalog:** one card per technology listing the products the optimizer may
+  2. **Sites:** one card per site to build, with its name, minimum green hydrogen share,
+     flexibility and daily peak demand (MW) for each of the six demands, filled with the
+     defaults. Only as many cards as *Sites to build* are shown, and each has a **Reset site**
+     button. The sites are written to `sites.json` in the run's output folder and passed to the
+     planner with `--sites-file`.
+  3. **Candidate catalog:** one card per technology listing the products the optimizer may
      build: size (MW), CAPEX and, for the battery and H2 storage, energy (MWh), plus one
      lifetime per technology. You can edit any value, add products with **+ Add candidate**
      (up to 8 per technology) or remove them by clearing their row, and each card has a
@@ -310,11 +315,6 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      folder and passed to the planner through `PLANNER_CATALOG_OVERRIDES`); the defaults in
      `site_investor_planning/config.py` stay as they are. The run page prices its cost
      breakdown with the run's own catalog.
-  3. **Sites:** one card per site to build, with its name, minimum green hydrogen share,
-     flexibility and daily peak demand (MW) for each of the six demands, filled with the
-     defaults. Only as many cards as *Sites to build* are shown, and each has a **Reset site**
-     button. The sites are written to `sites.json` in the run's output folder and passed to the
-     planner with `--sites-file`.
   4. **Uncertainty scenarios:** one card per scenario. Each card has an include tick box,
      the scenario's probability in percent and a short description. Open a card to see
      the wind and solar error % for every country. Error % is the share of nominal output
