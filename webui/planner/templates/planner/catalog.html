@@ -84,9 +84,9 @@
 <div class="card">
   <h2>Uncertainty scenarios</h2>
   <table>
-    <thead><tr><th>Scenario</th>{% for name, p in scenarios.items %}<th class="num">{{ name }}</th>{% endfor %}</tr></thead>
+    <thead><tr><th>Scenario</th>{% for sc in scenarios %}<th class="num">{{ sc.label }}{% if sc.default %} (default){% endif %}</th>{% endfor %}</tr></thead>
     <tbody>
-      <tr><td>Probability</td>{% for name, p in scenarios.items %}<td class="num">{% widthratio p 1 100 %}%</td>{% endfor %}</tr>
+      <tr><td>Probability when combined</td>{% for sc in scenarios %}<td class="num">{% widthratio sc.prob 1 100 %}%</td>{% endfor %}</tr>
     </tbody>
   </table>
 </div>

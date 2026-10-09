@@ -39,17 +39,33 @@ RESCALE_TARGET_MAX_PCT = 50.0
 
 
 SCENARIO_OVERRIDES_ENV = "PLANNER_SCENARIO_OVERRIDES"
+BASELINE_SCENARIO = "p100"
 
 
 @lru_cache(maxsize=1)
 def load_uncertainty_scenarios() -> dict:
+    """Scenarios from ``inputs/uncertainty_scenarios.json``, with a run's overrides applied.
+
+    The override file (``PLANNER_SCENARIO_OVERRIDES``) may edit existing scenarios and add custom
+    ones marked ``"custom": true``: a custom scenario takes its market prices from
+    ``price_scenario`` (default the baseline ``p100``) and derates only the site's own wind/PV by
+    the errors it gives, applied as entered."""
     scenarios = json.loads(UNCERTAINTY_SCENARIOS_PATH.read_text())["scenarios"]
     override_path = os.environ.get(SCENARIO_OVERRIDES_ENV)
     if override_path:
         for name, edit in json.loads(Path(override_path).read_text())["scenarios"].items():
             if name in scenarios:
                 scenarios[name].update(edit)
+            elif edit.get("custom"):
+                scenarios[name] = {"price_scenario": BASELINE_SCENARIO, **edit}
     return scenarios
+
+
+def price_scenario(scenario: str) -> str:
+    """The dispatch scenario whose market prices ``scenario`` uses: itself, or for a custom
+    scenario its ``price_scenario``."""
+    sc = load_uncertainty_scenarios().get(scenario, {})
+    return sc.get("price_scenario", scenario)
 
 
 @lru_cache(maxsize=1)
@@ -59,7 +75,7 @@ def _global_max_error_pct() -> float:
     scenarios = load_uncertainty_scenarios()
     max_err = 0.0
     for name, sc in scenarios.items():
-        if name == "p100":
+        if name == BASELINE_SCENARIO or sc.get("custom"):
             continue
         for resource in ("wind", "solar"):
             for scale in sc[resource].values():
@@ -82,6 +98,8 @@ def _rescaled_capacity_scale(scenario: str | None, country: str) -> tuple[float,
     sc = load_uncertainty_scenarios().get(scenario)
     if sc is None:
         return 1.0, 1.0
+    if sc.get("custom"):
+        return sc["wind"].get(country, 1.0), sc["solar"].get(country, 1.0)
     factor = RESCALE_TARGET_MAX_PCT / _global_max_error_pct()
 
     def rescale(raw_scale: float) -> float:

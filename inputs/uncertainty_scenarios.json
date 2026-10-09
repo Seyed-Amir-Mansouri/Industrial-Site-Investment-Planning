@@ -1,4 +1,7 @@
 {
+  "default_scenarios": [
+    "p100"
+  ],
   "country_tiers": {
     "AT": "assumption",
     "BE": "assumption",

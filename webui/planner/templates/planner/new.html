@@ -264,7 +264,7 @@
     <div class="section-head">
       <div>
         <h2><span class="step">4</span>Uncertainty scenarios</h2>
-        <p class="lede">Tick the scenarios to include, set their probabilities (they must add up to 100%), and change the wind and solar error for each country. Error % = how much of the nominal output is lost. Changes apply to this run only; the defaults come from <code>inputs/uncertainty_scenarios.json</code>.</p>
+        <p class="lede">The Baseline is planned on its own by default (100%, deterministic). Tick more scenarios or add your own to plan under uncertainty: probabilities must add up to 100%, and with two or more scenarios the risk measure switches to CVaR. Error % = how much of the site's own wind/solar output is lost compared with the Baseline. Your own scenarios use Baseline market prices. Changes apply to this run only; the defined scenarios come from <code>inputs/uncertainty_scenarios.json</code>.</p>
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
         <span id="prob-total" class="total ok"></span>
@@ -304,6 +304,27 @@
         </details>
       </div>
       {% endfor %}
+      {% for row in form.custom_scenario_rows %}
+      <div class="scenario-card custom-scenario" data-custom-index="{{ row.index }}"{% if not row.include.value %} hidden{% endif %}>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div class="scenario-title">
+            <span hidden>{{ row.include }}</span>
+            {{ row.name }}
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <label class="prob-field">Probability {{ row.prob }} %</label>
+            <label class="prob-field">Wind error {{ row.wind }} %</label>
+            <label class="prob-field">Solar error {{ row.solar }} %</label>
+            <button type="button" class="btn ghost small" data-remove-scenario>Remove</button>
+          </div>
+        </div>
+        {% for f in row.prob.errors %}<div class="error">{{ f }}</div>{% endfor %}
+        <p class="lede" style="font-size:12px;margin:6px 0 0;">Same wind and solar error in every country, compared with the Baseline; Baseline market prices.</p>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="toolbar">
+      <button type="button" class="btn ghost small" data-add-scenario>+ Add scenario</button>
     </div>
   </div>
 
@@ -368,8 +389,8 @@
     const includeInputs = document.querySelectorAll('input[name^="scenario_include__"]');
     const probTotal = document.getElementById('prob-total');
     const scenarioCards = Array.from(document.querySelectorAll('.scenario-card')).map(card => ({
-      include: card.querySelector('input[name^="scenario_include__"]'),
-      prob: card.querySelector('input[name^="scenario_prob__"]'),
+      include: card.querySelector('input[name^="scenario_include__"], input[name^="custom_include__"]'),
+      prob: card.querySelector('input[name^="scenario_prob__"], input[name^="custom_prob__"]'),
     }));
     const catalogCards = Array.from(document.querySelectorAll('.catalog-card'));
 
@@ -391,7 +412,10 @@
       document.querySelectorAll('.site-card').forEach(card => { card.hidden = Number(card.dataset.siteIndex) >= n; });
     }
     function syncRisk() {
-      const cvar = document.querySelector('input[name="risk_measure"]:checked').value === 'cvar';
+      const n = scenarioCards.filter(c => c.include.checked).length;
+      const mode = n > 1 ? 'cvar' : 'deterministic';
+      riskRadios.forEach(r => { r.checked = r.value === mode; r.disabled = r.value !== mode; });
+      const cvar = mode === 'cvar';
       alphaBox.style.opacity = cvar ? 1 : .4;
       document.querySelector('input[name="cvar_alpha"]').disabled = !cvar;
     }
@@ -400,6 +424,7 @@
       const ok = Math.abs(total - 100) <= 0.01;
       probTotal.textContent = 'Probabilities total ' + total.toFixed(2) + '% (must be 100%)';
       probTotal.className = 'total ' + (ok ? 'ok' : 'bad');
+      syncRisk();
     }
     function syncCatalogCard(card) {
       const rows = Array.from(card.querySelectorAll('.catalog-row'));
@@ -453,6 +478,24 @@
         syncCatalogCard(card);
         return;
       }
+      if (e.target.closest('[data-add-scenario]')) {
+        const next = document.querySelector('.custom-scenario[hidden]');
+        if (next) {
+          next.hidden = false;
+          next.querySelector('input[name^="custom_include__"]').checked = true;
+          next.querySelector('input[name^="custom_name__"]').focus();
+        }
+        syncProbTotal();
+        return;
+      }
+      const removeScenario = e.target.closest('[data-remove-scenario]');
+      if (removeScenario) {
+        const card = removeScenario.closest('.custom-scenario');
+        card.querySelector('input[name^="custom_include__"]').checked = false;
+        card.hidden = true;
+        syncProbTotal();
+        return;
+      }
       const removeCandidate = e.target.closest('[data-remove-candidate]');
       if (removeCandidate) {
         const row = removeCandidate.closest('.catalog-row');
@@ -468,6 +511,7 @@
     nSitesInput.addEventListener('input', syncSites);
     riskRadios.forEach(r => r.addEventListener('change', syncRisk));
     probInputs.forEach(p => p.addEventListener('input', syncProbTotal));
+    document.querySelectorAll('input[name^="custom_prob__"]').forEach(p => p.addEventListener('input', syncProbTotal));
     includeInputs.forEach(c => c.addEventListener('change', syncProbTotal));
     syncAll();
   })();

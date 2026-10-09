@@ -188,8 +188,8 @@ longer.
 **Capacity-uncertainty scenarios / risk measure**
 | Flag | Default | What it does |
 |---|---|---|
-| `--cvar-alpha A` | 0.8 | Risk measure: CVaR at confidence level `A` (0–1) across the 4 planning scenarios (see *Planning scenarios* below). |
-| `--scenarios S,S,...` | all 4 | Restrict to a subset of scenarios (probabilities renormalized to sum to 1), e.g. `--scenarios p100` for a single deterministic baseline run ("on-plan"). |
+| `--scenarios S,S,...` | `p100` (the Baseline) | Scenarios to plan over, probabilities renormalized to sum to 1, e.g. `--scenarios p100,unc01,unc04`. One scenario is planned deterministically; two or more use CVaR. |
+| `--cvar-alpha A` | 0.8 | CVaR confidence level (0–1), used only with two or more scenarios. |
 | `--disabled-assets A,A,...` | none | Exclude asset keys at every site (max MW = 0), e.g. `battery_mw,tank_mw`. Keys: `wind_mw`, `pv_mw`, `battery_mw`, `heat_pump_mw`, `industrial_heat_pump_mw`, `electric_boiler_mw`, `electric_chiller_mw`, `electrolyser_mw`, `tank_mw`. |
 
 **Subproblem**
@@ -203,12 +203,18 @@ without a site has no demand and no capacity, so it costs nothing.
 
 **Planning scenarios**
 
+By default a run plans over the **Baseline** (`p100`, no capacity shortfall) alone, with 100%
+probability, and is solved **deterministically**. To plan under uncertainty, add scenarios; with
+two or more the risk measure is **CVaR** at `--cvar-alpha` (default 0.8). There is no
+expected-value option.
+
 `inputs/uncertainty_scenarios.json` defines 11 capacity-uncertainty scenarios (`p100` plus
-`unc01`–`unc10`), all kept for the dispatch runs that build the price data. Planning uses the 4
-with a positive probability. The 10 `unc` scenarios fall into three groups by how much they raise
-average electricity prices over `p100` in the candidate countries (hydrogen prices move by at
-most EUR 1.6/MWh), and one scenario stands for each group, carrying the group's combined
-probability:
+`unc01`–`unc10`), all kept for the dispatch runs that build the price data, and lists the
+default (`default_scenarios`: `p100`). Four of them have a positive probability and can be added
+to a run. The 10 `unc` scenarios fall into three groups by how much they raise average
+electricity prices over `p100` in the candidate countries (hydrogen prices move by at most
+EUR 1.6/MWh), and one scenario stands for each group, carrying the group's combined probability
+when all four are combined:
 
 | Scenario | Stands for | Electricity price vs `p100` | Probability |
 |---|---|---|---|
@@ -217,8 +223,14 @@ probability:
 | `unc01` | `unc01`, `unc02`, `unc03`, `unc05`, `unc08`, `unc10` | +20 to +24 EUR/MWh | 45.33% |
 | `unc04` | `unc04`, `unc06`, `unc07` | +29 to +30 EUR/MWh | 48.00% |
 
-With the default CVaR at α = 0.8, the 20% worst tail falls inside `unc04`. To plan with another
-scenario, give it a positive probability in the file (the probabilities must still add up to 1).
+With all four combined and CVaR at α = 0.8, the 20% worst tail falls inside `unc04`. To make
+another defined scenario available, give it a positive probability in the file.
+
+You can also add **your own scenarios** on the New run page: each has a name, a probability and a
+wind and a solar error in % compared with the Baseline, the same in every country. A custom
+scenario uses the Baseline's market prices and derates only the site's own wind/PV output by
+exactly those errors (the defined `unc` scenarios are rescaled so their worst case is 50%; custom
+ones are applied as entered).
 
 **Solve control / output**
 | Flag | Default | What it does |
@@ -249,7 +261,8 @@ together), iterating between them:
    each site builds, subject to the CAPEX budget and the per-site caps. Its objective is annualized
    CAPEX plus a recourse stand-in (`theta`) that starts unconstrained and gets tightened every
    round by the cuts below. There's one `theta_s` per capacity-uncertainty scenario, combined
-   via CVaR at `--cvar-alpha` (default 0.8) rather than a single shared scalar.
+   via CVaR at `--cvar-alpha` (default 0.8); with a single scenario it is just that scenario's
+   recourse (deterministic).
 2. **Joint subproblem (LP, every country in one linopy model, `optimize_site_investor.
    solve_joint`)** takes the master's site choice and capacities and solves the
    representative-day site operation (`--rep-days-per-month`), once per capacity-uncertainty
@@ -315,17 +328,17 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      folder and passed to the planner through `PLANNER_CATALOG_OVERRIDES`); the defaults in
      `site_investor_planning/config.py` stay as they are. The run page prices its cost
      breakdown with the run's own catalog.
-  4. **Uncertainty scenarios:** one card per scenario. Each card has an include tick box,
-     the scenario's probability in percent and a short description. Open a card to see
-     the wind and solar error % for every country. Error % is the share of nominal output
-     that is lost, so 0% means no loss. The probabilities of all scenarios must add up to
-     100%. A badge at the top shows the current total in green when it's right and red
-     when it isn't. Changes apply to this run only. The defaults come from
-     `inputs/uncertainty_scenarios.json`; only the 4 planning scenarios (positive probability)
-     are shown.
-  5. **Economics:** discount rate, the risk measure (CVaR or expected value, shown as a
-     switch) and the CVaR confidence level. Lifetimes are set per technology in the
-     candidate catalog.
+  4. **Uncertainty scenarios:** only the **Baseline** is ticked by default, at 100%. One card
+     per defined scenario has an include tick box, the scenario's probability in percent and a
+     short description; open a card to see the wind and solar error % for every country.
+     **+ Add scenario** adds your own scenario with a name, probability and one wind and one
+     solar error % compared with the Baseline (up to 4; **Remove** takes one out again). Error %
+     is the share of the site's own nominal output that is lost, so 0% means no loss. The
+     probabilities of the ticked scenarios must add up to 100%; a badge at the top shows the
+     total in green when it's right and red when it isn't. Changes apply to this run only.
+  5. **Economics:** discount rate, the risk measure and the CVaR confidence level. The risk
+     measure follows the scenarios: **Deterministic** with one scenario, **CVaR** with two or
+     more. Lifetimes are set per technology in the candidate catalog.
   6. **Solver settings:** representative days per month, optimality gap, maximum
      Benders iterations, master time limit and parallel workers.
 
@@ -465,8 +478,9 @@ python plan_capacity.py --countries DE,FR --scenarios p100 --rep-days-per-month 
 ```
 
 This is a small, fast run that checks the whole chain works before you start a full
-run. The output goes to `outputs/plan_*.csv`. For the full run, drop `--scenarios`,
-use `--all`, and raise `--rep-days-per-month` (see the flags table above).
+run. The output goes to `outputs/plan_*.csv`. For the full run, use `--all`, add the scenarios
+you want (e.g. `--scenarios p100,unc01,unc04`), and raise `--rep-days-per-month` (see the flags
+table above).
 
 ### Step 5: start the web planner
 

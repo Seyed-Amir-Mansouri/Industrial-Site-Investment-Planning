@@ -50,12 +50,14 @@ def load_scenario_probs(path: Path | None = None) -> dict[str, float]:
 
 SCENARIO_PROBS = load_scenario_probs()
 SCENARIOS = list(SCENARIO_PROBS)
+DEFAULT_SCENARIOS = json.loads((ROOT / "inputs" / "uncertainty_scenarios.json").read_text()).get(
+    "default_scenarios", [ohp.BASELINE_SCENARIO])
 
 
-def _cvar_alpha_arg(value: str) -> float | None:
-    if value.lower() in ("off", "none", "expected"):
-        return None
-    return float(value)
+def risk_measure(scenario_probs: dict[str, float], cvar_alpha: float) -> float | None:
+    """The CVaR confidence level to plan with: ``None`` (deterministic) for a single scenario,
+    ``cvar_alpha`` for two or more."""
+    return None if len(scenario_probs) == 1 else cvar_alpha
 
 
 def eligible_countries() -> list[str]:
@@ -106,7 +108,10 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     unit a fractional placement, every asset a mid-grid size within its site cap) and moves halfway
     toward each trial point. If HiGHS presolve fails on the master, it is re-solved once with
     presolve off."""
-    scenario_probs = scenario_probs if scenario_probs is not None else SCENARIO_PROBS
+    scenario_probs = scenario_probs if scenario_probs is not None else {s: 1.0 / len(DEFAULT_SCENARIOS)
+                                                                          for s in DEFAULT_SCENARIOS}
+    if len(scenario_probs) > 1 and cvar_alpha is None:
+        raise ValueError("planning over more than one scenario needs a CVaR confidence level (cvar_alpha)")
     sites = sites if sites is not None else hp.default_sites(1)
     cand_mw_c, cand_capex_c, host_zone = hp.build_candidates(countries, capex_cfg)
     crf = capex_cfg.capital_recovery_factors()
@@ -133,8 +138,12 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
 
     print(f"Building enriched price frames for {len(scenario_probs)} capacity scenarios "
          f"(one-time cost, reused by every subproblem solve): {list(scenario_probs)}")
-    price_frames = {s: (ohp.enriched_elec_df(scenario=s), ohp.enriched_h2_df(scenario=s))
-                    for s in scenario_probs}
+    frames_by_source = {}
+    for s in scenario_probs:
+        src = ohp.price_scenario(s)
+        if src not in frames_by_source:
+            frames_by_source[src] = (ohp.enriched_elec_df(scenario=src), ohp.enriched_h2_df(scenario=src))
+    price_frames = {s: frames_by_source[ohp.price_scenario(s)] for s in scenario_probs}
 
     m = hp.build_master(unit_ids, cand_mw, cand_capex, budget, crf, capex_cfg.theta_lower_bound_eur,
                         scenario_probs=scenario_probs, cvar_alpha=cvar_alpha, site_max_mw=site_max_mw,
@@ -234,7 +243,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                                         "site": site_star[u]})
             raw_capex = sum(capex_star[u][a] for u in unit_ids for a in hp.ASSETS)
             annualized_capex = sum(capex_star[u][a] * crf[a] for u in unit_ids for a in hp.ASSETS)
-            if cvar_alpha is not None:
+            if len(scenario_probs) > 1:
                 ub = annualized_capex + hp.cvar_value(Q_total_by_scenario, scenario_probs, cvar_alpha)
             else:
                 ub = annualized_capex + total_Q
@@ -316,18 +325,18 @@ def main() -> None:
     ap.add_argument("--rep-days-per-month", type=int, default=7,
                     help="solve every joint subproblem on N days/month (1-29, weighted to "
                          "approximate the full year), default 7")
-    ap.add_argument("--cvar-alpha", type=_cvar_alpha_arg, default=0.8,
-                    help="risk measure: CVaR at this confidence level (0-1) across "
-                         "capacity-uncertainty scenarios, default 0.8; 'off' = expected value")
+    ap.add_argument("--cvar-alpha", type=float, default=0.8,
+                    help="CVaR confidence level (0-1) used when planning over two or more "
+                         "scenarios, default 0.8; a single scenario is planned deterministically")
     ap.add_argument("--master-time-limit", type=float, default=180.0,
                     help="wall-time cap (seconds) per master MILP solve, default 180")
     ap.add_argument("--disabled-assets", type=str, default=None,
                     help="comma-separated asset keys to exclude from every site's candidate "
                          f"selection (max_mw=0), e.g. battery_mw,tank_mw. Choices: {hp.ASSETS}")
     ap.add_argument("--scenarios", type=str, default=None,
-                    help="comma-separated subset of capacity-uncertainty scenarios to optimize "
-                         f"over, probabilities renormalized to sum to 1.0, e.g. p100 for a single "
-                         f"deterministic baseline run (default: all {len(SCENARIO_PROBS)}). "
+                    help="comma-separated capacity-uncertainty scenarios to optimize over, "
+                         "probabilities renormalized to sum to 1.0, e.g. p100,unc01,unc04 (default: "
+                         f"{','.join(DEFAULT_SCENARIOS)}, the baseline, planned deterministically). "
                          f"Choices: {SCENARIOS}")
     ap.add_argument("--workers", type=int, default=None,
                     help="worker processes for running each iteration's scenario subproblems in "
@@ -350,15 +359,15 @@ def main() -> None:
         capex_cfg.lifetime_years = {a: args.lifetime_years for a in hp.ASSETS}
     budget = args.budget if args.budget is not None else capex_cfg.default_budget_eur
 
-    scenario_probs = SCENARIO_PROBS
-    if args.scenarios:
-        names = [s.strip() for s in args.scenarios.split(",") if s.strip()]
-        unknown = [s for s in names if s not in SCENARIO_PROBS]
-        if unknown:
-            raise ValueError(f"--scenarios has unknown name(s) {unknown} -- choices: {SCENARIOS}")
-        raw = {s: SCENARIO_PROBS[s] for s in names}
-        total = sum(raw.values())
-        scenario_probs = {s: p / total for s, p in raw.items()}
+    names = ([s.strip() for s in args.scenarios.split(",") if s.strip()] if args.scenarios
+             else list(DEFAULT_SCENARIOS))
+    unknown = [s for s in names if s not in SCENARIO_PROBS]
+    if unknown:
+        raise ValueError(f"scenario(s) {unknown} have no positive probability -- choices: {SCENARIOS}")
+    raw = {s: SCENARIO_PROBS[s] for s in names}
+    total = sum(raw.values())
+    scenario_probs = {s: p / total for s, p in raw.items()}
+    cvar_alpha = risk_measure(scenario_probs, args.cvar_alpha)
 
     disabled_assets = None
     if args.disabled_assets:
@@ -412,17 +421,16 @@ def main() -> None:
     print(f"Exchange caps: grid=unlimited, H2 pipeline=unlimited")
     if disabled_assets:
         print(f"Disabled assets (max_mw=0 at every site): {disabled_assets}")
-    if args.cvar_alpha is None:
-        print(f"Capacity-uncertainty scenarios (expected-value risk measure): {scenario_probs}")
+    if cvar_alpha is None:
+        print(f"Capacity-uncertainty scenario (deterministic): {scenario_probs}")
     else:
-        print(f"Capacity-uncertainty scenarios (CVaR_{args.cvar_alpha:.2f} risk measure): "
-             f"{scenario_probs}")
+        print(f"Capacity-uncertainty scenarios (CVaR_{cvar_alpha:.2f} risk measure): {scenario_probs}")
 
     t0 = time.time()
     res = run_benders(
         countries, budget, args.max_iters, args.gap_tol, capex_cfg,
         rep_days_per_month=args.rep_days_per_month,
-        cvar_alpha=args.cvar_alpha, master_time_limit=args.master_time_limit,
+        cvar_alpha=cvar_alpha, master_time_limit=args.master_time_limit,
         disabled_assets=disabled_assets, scenario_probs=scenario_probs, workers=args.workers,
         max_units_per_candidate=(args.max_units_per_candidate
                                  if args.max_units_per_candidate > 0 else None),
@@ -443,7 +451,7 @@ def main() -> None:
     print(f"\nChosen site(s): {', '.join(f'{sp.name} -> {unit_country[chosen[sp.name]]}' for sp in sites)}")
     print(f"Total raw CAPEX: {res['capex']:,.0f} EUR (budget {budget:,.0f} EUR, "
          f"{res['capex'] / budget:.1%} used)")
-    risk_label = (f"EXPECTED" if args.cvar_alpha is None else f"CVaR_{args.cvar_alpha:.2f}")
+    risk_label = ("deterministic" if cvar_alpha is None else f"CVaR_{cvar_alpha:.2f}")
     print(f"Best objective (annualized CAPEX + {risk_label} 1yr operating cost across "
          f"{len(scenario_probs)} scenarios, EUR, lower=better): {res['objective']:,.0f}")
 

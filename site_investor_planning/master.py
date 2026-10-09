@@ -37,6 +37,8 @@ def build_master(units: list[str], cand_mw: dict[str, dict[str, np.ndarray]],
         m.add_constraints(site.sel(unit=members).sum() == 1, name=f"place_site_{i}")
     if cvar_alpha is not None and scenario_probs is None:
         raise ValueError("cvar_alpha requires scenario_probs")
+    if scenario_probs is not None and len(scenario_probs) > 1 and cvar_alpha is None:
+        raise ValueError("more than one scenario needs a CVaR confidence level (cvar_alpha)")
     if scenario_probs is None:
         theta = m.add_variables(lower=theta_lower * len(units), name="theta")
         theta_term = theta
@@ -44,7 +46,7 @@ def build_master(units: list[str], cand_mw: dict[str, dict[str, np.ndarray]],
         scenario_idx = pd.Index(list(scenario_probs), name="scenario")
         theta = m.add_variables(lower=theta_lower * len(units), coords=[scenario_idx], name="theta")
         prob_da = xr.DataArray(list(scenario_probs.values()), coords=[scenario_idx])
-        if cvar_alpha is None:
+        if cvar_alpha is None or len(scenario_probs) == 1:
             theta_term = (theta * prob_da).sum()
         else:
             zeta = m.add_variables(name="zeta")

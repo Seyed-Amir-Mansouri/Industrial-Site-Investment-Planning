@@ -67,7 +67,7 @@
   <div class="kpi"><div class="label">Raw CAPEX</div><div class="value">€{{ summary.raw_capex_eur|floatformat:0 }}</div><div class="sub">{% if run.params.budget %}{% widthratio summary.raw_capex_eur run.params.budget 100 %}% of budget{% endif %}</div></div>
   <div class="kpi"><div class="label">Iterations</div><div class="value">{{ summary.iterations }}</div><div class="sub">{% if summary.converged %}converged{% else %}stopped at limit{% endif %}</div></div>
   <div class="kpi"><div class="label">Solve time</div><div class="value">{{ summary.elapsed_seconds|floatformat:1 }} s</div><div class="sub">{{ summary.elapsed_seconds|floatformat:0 }} seconds total</div></div>
-  <div class="kpi"><div class="label">Risk measure</div><div class="value">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }}{% else %}Expected{% endif %}</div><div class="sub">{{ run.params.scenarios|length }} scenarios</div></div>
+  <div class="kpi"><div class="label">Risk measure</div><div class="value">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }}{% elif run.params.risk_measure == "deterministic" %}Deterministic{% else %}Expected{% endif %}</div><div class="sub">{{ run.params.scenarios|length }} scenarios</div></div>
 </div>
 
 <div class="card" style="margin-bottom:18px">
@@ -75,7 +75,7 @@
   <p class="lede" style="margin-bottom:12px">Capital cost annualized at {{ run.params.discount_rate_pct }}% over each technology's own lifetime, versus the risk-adjusted operating cost.</p>
   <div class="grid kpis" style="margin-bottom:16px">
     <div class="kpi"><div class="label">Annualized CAPEX</div><div class="value">€{{ economics.annualized_capex_eur|floatformat:0 }}</div><div class="sub">per year, over asset lifetimes</div></div>
-    <div class="kpi"><div class="label">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }} operating cost{% else %}Expected operating cost{% endif %}</div><div class="value">€{{ economics.operating_cost_eur|floatformat:0 }}</div><div class="sub">objective − annualized CAPEX</div></div>
+    <div class="kpi"><div class="label">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }} operating cost{% elif run.params.risk_measure == "deterministic" %}Operating cost{% else %}Expected operating cost{% endif %}</div><div class="value">€{{ economics.operating_cost_eur|floatformat:0 }}</div><div class="sub">objective − annualized CAPEX</div></div>
     <div class="kpi"><div class="label">CAPEX per MW</div><div class="value">€{{ economics.capex_per_mw_eur|floatformat:0 }}</div><div class="sub">raw CAPEX ÷ total MW built</div></div>
   </div>
   <table>
@@ -103,7 +103,7 @@
     <tbody>
       {% for g in summary.green_h2_expected %}
       <tr>
-        <td><strong>{{ g.site }}</strong></td><td><strong>{{ g.country }}</strong></td><td><strong>Expected</strong></td><td class="num">100%</td>
+        <td><strong>{{ g.site }}</strong></td><td><strong>{{ g.country }}</strong></td><td><strong>Weighted</strong></td><td class="num">100%</td>
         <td class="num"><strong>{{ g.h2_demand_mwh|floatformat:0 }}</strong></td>
         <td class="num"><strong>{{ g.green_h2_produced_mwh|floatformat:0 }}</strong></td>
         <td class="num"><strong>{{ g.green_h2_bought_mwh|floatformat:0 }}</strong></td>
@@ -114,7 +114,7 @@
       {% endfor %}
       {% for g in summary.green_h2 %}
       <tr>
-        <td>{% firstof g.site g.country %}</td><td>{{ g.country }}</td><td>{{ g.scenario }}</td><td class="num">{% widthratio g.probability 1 100 %}%</td>
+        <td>{% firstof g.site g.country %}</td><td>{{ g.country }}</td><td>{{ run.params.scenario_labels|lookup:g.scenario|default:g.scenario }}</td><td class="num">{% widthratio g.probability 1 100 %}%</td>
         <td class="num">{{ g.h2_demand_mwh|floatformat:0 }}</td>
         <td class="num">{{ g.green_h2_produced_mwh|floatformat:0 }}</td>
         <td class="num">{{ g.green_h2_bought_mwh|floatformat:0 }}</td>
@@ -224,7 +224,7 @@
       {% endif %}
       <tr><th>Discount rate</th><td>{{ run.params.discount_rate_pct }}%</td></tr>
       <tr><th>Candidate catalog</th><td>{% if run.params.catalog_overrides %}set for this run on the New run page{% elif run.params.lifetime_years %}defaults, lifetime overridden to {{ run.params.lifetime_years }} years{% else %}defaults{% endif %}</td></tr>
-      <tr><th>Risk measure</th><td>{% if run.params.risk_measure == "cvar" %}CVaR at α = {{ run.params.cvar_alpha }}{% else %}Expected value{% endif %}</td></tr>
+      <tr><th>Risk measure</th><td>{% if run.params.risk_measure == "cvar" %}CVaR at α = {{ run.params.cvar_alpha }}{% elif run.params.risk_measure == "deterministic" %}Deterministic (one scenario){% else %}Expected value (older run){% endif %}</td></tr>
       <tr><th>Scenarios</th><td>{{ run.params.scenarios|join:", " }}</td></tr>
       <tr><th>Representative days / month</th><td>{{ run.params.rep_days_per_month }}</td></tr>
       <tr><th>Gap tolerance · max iterations</th><td>{{ run.params.gap_tol }} · {{ run.params.max_iters }}</td></tr>

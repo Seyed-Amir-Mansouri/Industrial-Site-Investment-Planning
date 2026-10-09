@@ -18,6 +18,13 @@ RUNS_DIR = PROJECT_ROOT / "outputs" / "webui"
 SCENARIO_OVERRIDES_ENV = "PLANNER_SCENARIO_OVERRIDES"
 CATALOG_OVERRIDES_ENV = "PLANNER_CATALOG_OVERRIDES"
 SITES_FILE_NAME = "sites.json"
+BASELINE_SCENARIO = "p100"
+SCENARIO_LABELS = {BASELINE_SCENARIO: "Baseline"}
+
+
+def scenario_label(key: str, labels: dict | None = None) -> str:
+    """Display name of a scenario: a run's own label for it, else Baseline for p100, else its key."""
+    return (labels or {}).get(key) or SCENARIO_LABELS.get(key, key)
 
 
 @lru_cache(maxsize=1)
@@ -214,10 +221,20 @@ def scenario_probabilities() -> dict[str, float]:
 
 @lru_cache(maxsize=1)
 def scenario_defaults() -> dict[str, dict]:
-    """The planning scenarios (positive default probability) from ``inputs/uncertainty_scenarios.json``."""
+    """The planning scenarios (positive default probability) from ``inputs/uncertainty_scenarios.json``,
+    the baseline first."""
     path = PROJECT_ROOT / "inputs" / "uncertainty_scenarios.json"
     scenarios = json.loads(path.read_text(encoding="utf-8"))["scenarios"]
-    return {name: sc for name, sc in scenarios.items() if float(sc["probability"]) > 0}
+    planning = {name: sc for name, sc in scenarios.items() if float(sc["probability"]) > 0}
+    order = sorted(planning, key=lambda n: (n != BASELINE_SCENARIO, list(scenarios).index(n)))
+    return {n: planning[n] for n in order}
+
+
+@lru_cache(maxsize=1)
+def default_scenarios() -> list[str]:
+    """Scenarios ticked on a new run, from ``default_scenarios`` in ``inputs/uncertainty_scenarios.json``."""
+    path = PROJECT_ROOT / "inputs" / "uncertainty_scenarios.json"
+    return json.loads(path.read_text(encoding="utf-8")).get("default_scenarios", [BASELINE_SCENARIO])
 
 
 def build_command(params: dict, output_prefix: Path) -> list[str]:
@@ -238,11 +255,12 @@ def build_command(params: dict, output_prefix: Path) -> list[str]:
             "--max-iters", str(params["max_iters"]),
             "--master-time-limit", str(params["master_time_limit"]),
             "--workers", str(params["workers"]),
-            "--cvar-alpha", str(params["cvar_alpha"]) if params["risk_measure"] == "cvar" else "off",
             "--output", str(output_prefix)]
+    if params.get("risk_measure") == "cvar":
+        cmd += ["--cvar-alpha", str(params["cvar_alpha"])]
     if params.get("disabled_assets"):
         cmd += ["--disabled-assets", ",".join(params["disabled_assets"])]
-    if params.get("scenarios") and set(params["scenarios"]) != set(scenario_probabilities()):
+    if params.get("scenarios"):
         cmd += ["--scenarios", ",".join(params["scenarios"])]
     return cmd
 
