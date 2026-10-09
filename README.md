@@ -211,7 +211,8 @@ expected-value option.
 `inputs/uncertainty_scenarios.json` defines 11 capacity-uncertainty scenarios (`p100` plus
 `unc01`–`unc10`), all kept for the dispatch runs that build the price data, and lists the
 default (`default_scenarios`: `p100`). Four of them have a positive probability and can be added
-to a run. The 10 `unc` scenarios fall into three groups by how much they raise average
+to a run from the command line with `--scenarios` (the web page offers the Baseline plus your own
+scenarios). The 10 `unc` scenarios fall into three groups by how much they raise average
 electricity prices over `p100` in the candidate countries (hydrogen prices move by at most
 EUR 1.6/MWh), and one scenario stands for each group, carrying the group's combined probability
 when all four are combined:
@@ -226,7 +227,7 @@ when all four are combined:
 With all four combined and CVaR at α = 0.8, the 20% worst tail falls inside `unc04`. To make
 another defined scenario available, give it a positive probability in the file.
 
-You can also add **your own scenarios** on the New run page: each has a name, a probability and a
+On the New run page you add **your own scenarios** instead: each has a name, a probability and a
 wind and a solar error in % compared with the Baseline, the same in every country. A custom
 scenario uses the Baseline's market prices and derates only the site's own wind/PV output by
 exactly those errors (the defined `unc` scenarios are rescaled so their worst case is 50%; custom
@@ -328,14 +329,13 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      folder and passed to the planner through `PLANNER_CATALOG_OVERRIDES`); the defaults in
      `site_investor_planning/config.py` stay as they are. The run page prices its cost
      breakdown with the run's own catalog.
-  4. **Uncertainty scenarios:** only the **Baseline** is ticked by default, at 100%. One card
-     per defined scenario has an include tick box, the scenario's probability in percent and a
-     short description; open a card to see the wind and solar error % for every country.
-     **+ Add scenario** adds your own scenario with a name, probability and one wind and one
-     solar error % compared with the Baseline (up to 4; **Remove** takes one out again). Error %
-     is the share of the site's own nominal output that is lost, so 0% means no loss. The
-     probabilities of the ticked scenarios must add up to 100%; a badge at the top shows the
-     total in green when it's right and red when it isn't. Changes apply to this run only.
+  4. **Uncertainty scenarios:** the **Baseline** card, ticked at 100% by default, and
+     **+ Add scenario**, which adds as many scenarios of your own as you like. Each added
+     scenario has a name, a probability and one wind and one solar error % compared with the
+     Baseline (the share of the site's own output lost, the same in every country); **Remove**
+     deletes it. The probabilities must add up to 100%; a badge at the top shows the total in
+     green when it's right and red when it isn't. **Reset this section** goes back to the
+     Baseline alone. Changes apply to this run only.
   5. **Economics:** discount rate, the risk measure and the CVaR confidence level. The risk
      measure follows the scenarios: **Deterministic** with one scenario, **CVaR** with two or
      more. Lifetimes are set per technology in the candidate catalog.

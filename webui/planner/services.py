@@ -231,6 +231,13 @@ def scenario_defaults() -> dict[str, dict]:
 
 
 @lru_cache(maxsize=1)
+def all_scenario_names() -> list[str]:
+    """Every scenario defined in ``inputs/uncertainty_scenarios.json``, planning or not."""
+    path = PROJECT_ROOT / "inputs" / "uncertainty_scenarios.json"
+    return list(json.loads(path.read_text(encoding="utf-8"))["scenarios"])
+
+
+@lru_cache(maxsize=1)
 def default_scenarios() -> list[str]:
     """Scenarios ticked on a new run, from ``default_scenarios`` in ``inputs/uncertainty_scenarios.json``."""
     path = PROJECT_ROOT / "inputs" / "uncertainty_scenarios.json"

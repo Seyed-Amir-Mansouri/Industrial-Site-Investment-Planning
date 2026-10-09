@@ -83,11 +83,6 @@
 
 <div class="card">
   <h2>Uncertainty scenarios</h2>
-  <table>
-    <thead><tr><th>Scenario</th>{% for sc in scenarios %}<th class="num">{{ sc.label }}{% if sc.default %} (default){% endif %}</th>{% endfor %}</tr></thead>
-    <tbody>
-      <tr><td>Probability when combined</td>{% for sc in scenarios %}<td class="num">{% widthratio sc.prob 1 100 %}%</td>{% endfor %}</tr>
-    </tbody>
-  </table>
+  <p class="lede">New runs plan over the {{ baseline_label }} alone (100%, deterministic). On the New run page you can add as many scenarios as you like, each with a probability and a wind and solar error compared with the {{ baseline_label }}; with two or more the risk measure is CVaR.</p>
 </div>
 {% endblock %}

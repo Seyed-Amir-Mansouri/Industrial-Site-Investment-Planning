@@ -109,7 +109,5 @@ def catalog(request):
         "site": services.site_assumptions(),
         "service_labels": services.SERVICE_LABELS,
         "asset_labels": ASSET_LABELS,
-        "scenarios": [{"label": services.scenario_label(s), "prob": p, "default": s in services.default_scenarios()}
-                      for s, p in sorted(services.scenario_probabilities().items(),
-                                         key=lambda kv: kv[0] != services.BASELINE_SCENARIO)],
+        "baseline_label": services.scenario_label(services.BASELINE_SCENARIO),
     })

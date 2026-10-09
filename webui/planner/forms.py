@@ -1,3 +1,5 @@
+import re
+
 from django import forms
 
 from . import services
@@ -17,7 +19,7 @@ ASSET_LABELS = {
 MWH_ASSETS = {"battery_mw", "tank_mw"}
 MAX_CANDIDATES_PER_ASSET = 8
 MAX_SITES = 6
-MAX_CUSTOM_SCENARIOS = 4
+CUSTOM_FIELD_RE = re.compile(r"^custom_name__(\d+)$")
 
 
 class PlanRunForm(forms.Form):
@@ -63,8 +65,10 @@ class PlanRunForm(forms.Form):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.defaults = services.scenario_defaults()
-        self.scenario_countries = sorted(next(iter(self.defaults.values()))["wind"])
+        all_scenarios = services.scenario_defaults()
+        self.baseline = services.BASELINE_SCENARIO
+        self.defaults = {self.baseline: all_scenarios[self.baseline]}
+        self.scenario_countries = sorted(services.eligible_countries())
         self.fields["countries"].choices = [(c, country_label(c)) for c in services.eligible_countries()]
 
         self.site_defaults = services.site_defaults()
@@ -101,25 +105,12 @@ class PlanRunForm(forms.Form):
                     self.fields[f"cat_mwh__{asset}__{i}"] = forms.FloatField(
                         required=False, min_value=0, initial=c["mwh"] if c else None, label="Energy (MWh)")
 
-        self.default_scenarios = services.default_scenarios()
-        only_default = len(self.default_scenarios) == 1
-        for s, d in self.defaults.items():
-            on = s in self.default_scenarios
-            self.fields[f"scenario_include__{s}"] = forms.BooleanField(required=False, initial=on)
-            self.fields[f"scenario_prob__{s}"] = forms.FloatField(
-                min_value=0, max_value=100,
-                initial=100.0 if (on and only_default) else round(d["probability"] * 100, 4),
-                label="Probability (%)")
-            for c in self.scenario_countries:
-                self.fields[f"err_wind__{s}__{c}"] = forms.FloatField(
-                    min_value=0, max_value=100, initial=round((1 - d["wind"].get(c, 1.0)) * 100, 4),
-                    label=f"{c} wind error (%)")
-                self.fields[f"err_solar__{s}__{c}"] = forms.FloatField(
-                    min_value=0, max_value=100, initial=round((1 - d["solar"].get(c, 1.0)) * 100, 4),
-                    label=f"{c} solar error (%)")
-
-        for i in range(MAX_CUSTOM_SCENARIOS):
-            self.fields[f"custom_include__{i}"] = forms.BooleanField(required=False, initial=False)
+        self.fields["scenario_include__" + self.baseline] = forms.BooleanField(required=False, initial=True)
+        self.fields["scenario_prob__" + self.baseline] = forms.FloatField(
+            min_value=0, max_value=100, initial=100.0, label="Probability (%)")
+        self.custom_indices = sorted({int(m.group(1)) for k in (self.data or {})
+                                      if (m := CUSTOM_FIELD_RE.match(k))})
+        for i in self.custom_indices:
             self.fields[f"custom_name__{i}"] = forms.CharField(
                 max_length=40, required=False, initial=f"Scenario {i + 1}", label="Name")
             self.fields[f"custom_prob__{i}"] = forms.FloatField(
@@ -177,38 +168,23 @@ class PlanRunForm(forms.Form):
         return rows
 
     @property
-    def scenario_rows(self) -> list[dict]:
-        rows = []
-        for s, d in self.defaults.items():
-            rows.append({
-                "name": services.scenario_label(s),
-                "key": s,
-                "band": "" if s == services.BASELINE_SCENARIO else d.get("systemic_band", ""),
-                "protected": d.get("protected_country", ""),
-                "sys_wind": d.get("systemic_wind_reduction_pct"),
-                "sys_solar": d.get("systemic_solar_reduction_pct"),
-                "include": self[f"scenario_include__{s}"],
-                "prob": self[f"scenario_prob__{s}"],
-                "countries": [{"code": c,
-                               "wind": self[f"err_wind__{s}__{c}"],
-                               "solar": self[f"err_solar__{s}__{c}"]}
-                              for c in self.scenario_countries],
-            })
-        return rows
+    def baseline_row(self) -> dict:
+        """The Baseline scenario's include box and probability."""
+        return {"name": services.scenario_label(self.baseline),
+                "include": self["scenario_include__" + self.baseline],
+                "prob": self["scenario_prob__" + self.baseline]}
 
     @property
     def custom_scenario_rows(self) -> list[dict]:
-        """One hidden card per possible custom scenario: name, probability and uniform wind/solar error."""
-        return [{"index": i, "include": self[f"custom_include__{i}"], "name": self[f"custom_name__{i}"],
-                 "prob": self[f"custom_prob__{i}"], "wind": self[f"custom_wind__{i}"],
-                 "solar": self[f"custom_solar__{i}"]}
-                for i in range(MAX_CUSTOM_SCENARIOS)]
+        """One card per custom scenario the user added: name, probability and uniform wind/solar error."""
+        return [{"index": i, "name": self[f"custom_name__{i}"], "prob": self[f"custom_prob__{i}"],
+                 "wind": self[f"custom_wind__{i}"], "solar": self[f"custom_solar__{i}"]}
+                for i in self.custom_indices]
 
     def _included_scenarios(self, data: dict) -> list[str]:
-        """Keys of every ticked scenario: the defined ones by name, custom ones as ``custom<N>``."""
-        defined = [s for s in self.defaults if data.get(f"scenario_include__{s}")]
-        custom = [f"custom{i + 1}" for i in range(MAX_CUSTOM_SCENARIOS) if data.get(f"custom_include__{i}")]
-        return defined + custom
+        """Keys of every scenario in the run: the Baseline if ticked, and every added scenario as ``custom<N>``."""
+        base = [self.baseline] if data.get("scenario_include__" + self.baseline) else []
+        return base + [f"custom{i + 1}" for i in self.custom_indices]
 
     def _scenario_prob(self, data: dict, key: str) -> float | None:
         if key.startswith("custom") and key[6:].isdigit():
@@ -281,18 +257,13 @@ class PlanRunForm(forms.Form):
         included = self._included_scenarios(d)
         total = sum(self._scenario_prob(d, s) for s in included)
         overrides = {}
-        for s in self.defaults:
-            probability = (d[f"scenario_prob__{s}"] / total) if s in included else 0.0
-            overrides[s] = {
-                "probability": probability,
-                "wind": {c: round(1 - d[f"err_wind__{s}__{c}"] / 100, 6) for c in self.scenario_countries},
-                "solar": {c: round(1 - d[f"err_solar__{s}__{c}"] / 100, 6) for c in self.scenario_countries},
-            }
+        for s in services.all_scenario_names():
+            overrides[s] = {"probability": 0.0}
+        if self.baseline in included:
+            overrides[self.baseline] = {"probability": d["scenario_prob__" + self.baseline] / total}
         labels = {s: services.scenario_label(s) for s in included}
-        for i in range(MAX_CUSTOM_SCENARIOS):
+        for i in self.custom_indices:
             key = f"custom{i + 1}"
-            if key not in included:
-                continue
             name = (d.get(f"custom_name__{i}") or "").strip() or f"Scenario {i + 1}"
             labels[key] = name
             overrides[key] = {
