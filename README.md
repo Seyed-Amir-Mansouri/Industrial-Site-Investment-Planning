@@ -188,7 +188,7 @@ longer.
 **Capacity-uncertainty scenarios / risk measure**
 | Flag | Default | What it does |
 |---|---|---|
-| `--scenarios S,S,...` | `p100` (the Baseline) | Scenarios to plan over, probabilities renormalized to sum to 1, e.g. `--scenarios p100,unc01,unc04`. One scenario is planned deterministically; two or more use CVaR. |
+| `--scenarios S,S,...` | `p100` (the Baseline) | Scenarios to plan over, probabilities renormalized to sum to 1. Scenarios other than the Baseline are defined in the `PLANNER_SCENARIO_OVERRIDES` file the web app writes. One scenario is planned deterministically; two or more use CVaR. |
 | `--cvar-alpha A` | 0.8 | CVaR confidence level (0–1), used only with two or more scenarios. |
 | `--disabled-assets A,A,...` | none | Exclude asset keys at every site (max MW = 0), e.g. `battery_mw,tank_mw`. Keys: `wind_mw`, `pv_mw`, `battery_mw`, `heat_pump_mw`, `industrial_heat_pump_mw`, `electric_boiler_mw`, `electric_chiller_mw`, `electrolyser_mw`, `tank_mw`. |
 
@@ -208,30 +208,14 @@ probability, and is solved **deterministically**. To plan under uncertainty, add
 two or more the risk measure is **CVaR** at `--cvar-alpha` (default 0.8). There is no
 expected-value option.
 
-`inputs/uncertainty_scenarios.json` defines 11 capacity-uncertainty scenarios (`p100` plus
-`unc01`–`unc10`), all kept for the dispatch runs that build the price data, and lists the
-default (`default_scenarios`: `p100`). Four of them have a positive probability and can be added
-to a run from the command line with `--scenarios` (the web page offers the Baseline plus your own
-scenarios). The 10 `unc` scenarios fall into three groups by how much they raise average
-electricity prices over `p100` in the candidate countries (hydrogen prices move by at most
-EUR 1.6/MWh), and one scenario stands for each group, carrying the group's combined probability
-when all four are combined:
+`inputs/uncertainty_scenarios.json` defines only the Baseline (`p100`) and lists it as the
+default (`default_scenarios`).
 
-| Scenario | Stands for | Electricity price vs `p100` | Probability |
-|---|---|---|---|
-| `p100` | no capacity shortfall | — | 3.33% |
-| `unc09` | `unc09` | +10.5 EUR/MWh | 3.33% |
-| `unc01` | `unc01`, `unc02`, `unc03`, `unc05`, `unc08`, `unc10` | +20 to +24 EUR/MWh | 45.33% |
-| `unc04` | `unc04`, `unc06`, `unc07` | +29 to +30 EUR/MWh | 48.00% |
-
-With all four combined and CVaR at α = 0.8, the 20% worst tail falls inside `unc04`. To make
-another defined scenario available, give it a positive probability in the file.
-
-On the New run page you add **your own scenarios** instead: each has a name, a probability and a
-wind and a solar error in % compared with the Baseline, the same in every country. A custom
-scenario uses the Baseline's market prices and derates only the site's own wind/PV output by
-exactly those errors (the defined `unc` scenarios are rescaled so their worst case is 50%; custom
-ones are applied as entered).
+Further scenarios are your own, added on the New run page: each has a name, a probability and a
+wind and a solar error in % compared with the Baseline, the same in every country. A scenario
+uses the Baseline's market prices and derates only the site's own wind/PV output by exactly those
+errors. The web app passes them to the planner in the run's scenario overrides file
+(`PLANNER_SCENARIO_OVERRIDES`, entries marked `"custom": true`).
 
 **Solve control / output**
 | Flag | Default | What it does |
@@ -440,7 +424,7 @@ It takes a long time, because each scenario is a full-year LP. To run only some 
 them, pass a comma-separated list:
 
 ```bash
-python run_capacity_scenarios.py --scenarios p100,unc01
+python run_capacity_scenarios.py --scenarios p100,wind70
 ```
 
 ### Step 2: build the feature tables (Option B only)
@@ -458,7 +442,7 @@ data_exchange/01_dispatch_output__train_input/h2_samples.parquet
 ```
 
 It also rewrites the zone adjacency files in `inputs/`. To pool only some scenarios,
-use `--scenarios p100,unc01`.
+use `--scenarios p100,wind70`.
 
 ### Step 3: train the price models (Option B only)
 
@@ -478,8 +462,7 @@ python plan_capacity.py --countries DE,FR --scenarios p100 --rep-days-per-month 
 ```
 
 This is a small, fast run that checks the whole chain works before you start a full
-run. The output goes to `outputs/plan_*.csv`. For the full run, use `--all`, add the scenarios
-you want (e.g. `--scenarios p100,unc01,unc04`), and raise `--rep-days-per-month` (see the flags
+run. The output goes to `outputs/plan_*.csv`. For the full run, use `--all` and raise `--rep-days-per-month` (see the flags
 table above).
 
 ### Step 5: start the web planner

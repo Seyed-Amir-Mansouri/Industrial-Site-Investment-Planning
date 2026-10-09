@@ -335,7 +335,8 @@ def main() -> None:
                          f"selection (max_mw=0), e.g. battery_mw,tank_mw. Choices: {hp.ASSETS}")
     ap.add_argument("--scenarios", type=str, default=None,
                     help="comma-separated capacity-uncertainty scenarios to optimize over, "
-                         "probabilities renormalized to sum to 1.0, e.g. p100,unc01,unc04 (default: "
+                         "probabilities renormalized to sum to 1.0; scenarios beyond the baseline come "
+                         "from the PLANNER_SCENARIO_OVERRIDES file the web app writes (default: "
                          f"{','.join(DEFAULT_SCENARIOS)}, the baseline, planned deterministically). "
                          f"Choices: {SCENARIOS}")
     ap.add_argument("--workers", type=int, default=None,

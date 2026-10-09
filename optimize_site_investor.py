@@ -35,7 +35,6 @@ N_MONTHS = 12
 TOTAL_YEAR_HOURS = TOTAL_YEAR_DAYS * HOURS_PER_DAY
 
 UNCERTAINTY_SCENARIOS_PATH = ROOT / "inputs" / "uncertainty_scenarios.json"
-RESCALE_TARGET_MAX_PCT = 50.0
 
 
 SCENARIO_OVERRIDES_ENV = "PLANNER_SCENARIO_OVERRIDES"
@@ -49,7 +48,7 @@ def load_uncertainty_scenarios() -> dict:
     The override file (``PLANNER_SCENARIO_OVERRIDES``) may edit existing scenarios and add custom
     ones marked ``"custom": true``: a custom scenario takes its market prices from
     ``price_scenario`` (default the baseline ``p100``) and derates only the site's own wind/PV by
-    the errors it gives, applied as entered."""
+    the errors it gives."""
     scenarios = json.loads(UNCERTAINTY_SCENARIOS_PATH.read_text())["scenarios"]
     override_path = os.environ.get(SCENARIO_OVERRIDES_ENV)
     if override_path:
@@ -68,47 +67,16 @@ def price_scenario(scenario: str) -> str:
     return sc.get("price_scenario", scenario)
 
 
-@lru_cache(maxsize=1)
-def _global_max_error_pct() -> float:
-    """Largest wind/solar capacity_scale error (%) across every unc scenario/country, used
-    as the rescale reference point so RESCALE_TARGET_MAX_PCT corresponds to that worst case."""
-    scenarios = load_uncertainty_scenarios()
-    max_err = 0.0
-    for name, sc in scenarios.items():
-        if name == BASELINE_SCENARIO or sc.get("custom"):
-            continue
-        for resource in ("wind", "solar"):
-            for scale in sc[resource].values():
-                err = (1.0 - scale) * 100.0
-                if err > max_err:
-                    max_err = err
-    return max_err
-
-
-def _rescaled_capacity_scale(scenario: str | None, country: str) -> tuple[float, float]:
-    """(wind_scale, solar_scale) for this scenario/country, rescaled so the worst case across
-    every unc scenario/country corresponds to RESCALE_TARGET_MAX_PCT error (not the real,
-    larger error baked into the training data) -- (1.0, 1.0) if scenario is None/unknown or
-    has no entry for this country (e.g. 'p100'). Only used for the candidate's OWN available
-    capacity (and hence its own contribution to the price-model input); the rest of the
-    system's price features keep reflecting the real, un-rescaled scenario severity, since
-    those come straight from edf/hdf's real per-scenario dispatch data."""
+def scenario_capacity_scale(scenario: str | None, country: str) -> tuple[float, float]:
+    """(wind_scale, solar_scale) of the site's OWN wind/PV output in this scenario and country: 1 minus
+    the scenario's error compared with the baseline, applied as given; (1.0, 1.0) for no scenario,
+    an unknown one or a country it doesn't list."""
     if not scenario:
         return 1.0, 1.0
     sc = load_uncertainty_scenarios().get(scenario)
     if sc is None:
         return 1.0, 1.0
-    if sc.get("custom"):
-        return sc["wind"].get(country, 1.0), sc["solar"].get(country, 1.0)
-    factor = RESCALE_TARGET_MAX_PCT / _global_max_error_pct()
-
-    def rescale(raw_scale: float) -> float:
-        err = (1.0 - raw_scale) * 100.0
-        return 1.0 - (err * factor) / 100.0
-
-    wind_scale = rescale(sc["wind"].get(country, 1.0))
-    solar_scale = rescale(sc["solar"].get(country, 1.0))
-    return wind_scale, solar_scale
+    return sc.get("wind", {}).get(country, 1.0), sc.get("solar", {}).get(country, 1.0)
 
 
 def _month_boundaries(total_days: int = TOTAL_YEAR_DAYS, n_months: int = N_MONTHS) -> list[int]:
@@ -196,9 +164,9 @@ def _donor_zone(candidates: list[str], cap_key: str, zdata: dict) -> str:
 @lru_cache(maxsize=64)
 def _zone_raw_profile(zone: str, hours_key: tuple[int, ...]):
     """Capacity- and scenario-independent part of ``sizing_and_profiles``: host-zone validation,
-    wind/PV donor resolution, and the raw (un-rescaled) normalized capacity-factor profiles.
+    wind/PV donor resolution, and the raw normalized capacity-factor profiles.
     Cached because it's invariant across every scenario/trial-point/core-point call within a
-    Benders run for a given zone and representative-hour selection -- only the scenario rescale
+    Benders run for a given zone and representative-hour selection -- only the scenario derating
     and the candidate's own MW sizing (applied by the caller) actually vary call to call."""
     hours = np.array(hours_key, dtype=int)
     start_day = int(hours.min()) // HOURS_PER_DAY + 1
@@ -236,10 +204,9 @@ def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict, scenario
     """Resolve this site's sizing (``capacities`` plus derived storage MWh) and wind/PV availability
     upper bounds for the given year-hour positions. If ``scenario`` is given, the site's OWN wind/PV
     capacity factor (and hence its own available-capacity bound and its own contribution to the price
-    feature row) is derated by that scenario's country-level capacity_scale, rescaled so the worst
-    case across all scenarios/countries corresponds to RESCALE_TARGET_MAX_PCT error -- NOT the real,
-    larger error baked into the training data (see ``_rescaled_capacity_scale``). The rest of the
-    system's price features are untouched, still reflecting the real severity."""
+    feature row) is derated by that scenario's error compared with the baseline (see
+    ``scenario_capacity_scale``). The rest of the system's price features come from the scenario's
+    price data, untouched."""
     start_day = int(hours.min()) // HOURS_PER_DAY + 1
     end_day = int(hours.max()) // HOURS_PER_DAY + 1
     cfg = _run_config(zone, start_day, end_day)
@@ -251,7 +218,7 @@ def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict, scenario
     hours_key = tuple(int(h) for h in hours)
     host_zone, wind_donor, pv_donor, wind_cf_norm, pv_cf_norm = _zone_raw_profile(zone, hours_key)
 
-    wind_scale, pv_scale = _rescaled_capacity_scale(scenario, country)
+    wind_scale, pv_scale = scenario_capacity_scale(scenario, country)
     wind_cf_norm = wind_cf_norm * wind_scale
     pv_cf_norm = pv_cf_norm * pv_scale
 
@@ -702,7 +669,7 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
           spec: SiteSpec | None = None) -> pd.DataFrame:
     """Solve one site's LP over a contiguous day range or representative-day sample, priced by the proxy models.
     ``spec`` gives the site's demand peaks, green hydrogen share and flexibility (default: a default site).
-    ``scenario``, if given, derates the site's OWN wind/PV capacity (rescaled, see
+    ``scenario``, if given, derates the site's OWN wind/PV capacity (see
     ``sizing_and_profiles``) -- pass the same scenario name used to build ``edf``/``hdf``."""
     representative = rep_days_per_month is not None
     if representative:
@@ -746,7 +713,7 @@ def solve_joint(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, di
     """Solve every unit's site LP jointly (representative-day horizon only) for a given trial capacity
     vector and site choice. ``units[u] = (zone, spec)`` places site ``spec`` in ``zone``; ``sites[u]``
     = 1 if that placement is built (default all 1). ``scenario``, if given, derates every unit's own
-    wind/PV capacity (rescaled, see ``sizing_and_profiles``) -- pass the same scenario name used to
+    wind/PV capacity (see ``sizing_and_profiles``) -- pass the same scenario name used to
     build ``edf``/``hdf``."""
     days, day_weights = _sample_days(rep_days_per_month, day_selection)
     result = _solve_sites(units, capacities, sites or {}, days, day_weights, HOURS_PER_DAY,
