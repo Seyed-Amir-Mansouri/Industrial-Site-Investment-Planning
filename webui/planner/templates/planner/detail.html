@@ -217,7 +217,7 @@
       <tr><th>Minimum green hydrogen share</th><td>{{ run.params.green_h2_share_pct|default:42 }}%</td></tr>
       <tr><th>Demand flexibility</th><td>±{{ run.params.demand_flex_pct|default:10 }}% per hour, net zero per day</td></tr>
       <tr><th>Discount rate</th><td>{{ run.params.discount_rate_pct }}%</td></tr>
-      <tr><th>Lifetime override</th><td>{% if run.params.lifetime_years %}{{ run.params.lifetime_years }} years{% else %}per-asset defaults{% endif %}</td></tr>
+      <tr><th>Candidate catalog</th><td>{% if run.params.catalog_overrides %}set for this run on the New run page{% elif run.params.lifetime_years %}defaults, lifetime overridden to {{ run.params.lifetime_years }} years{% else %}defaults{% endif %}</td></tr>
       <tr><th>Risk measure</th><td>{% if run.params.risk_measure == "cvar" %}CVaR at α = {{ run.params.cvar_alpha }}{% else %}Expected value{% endif %}</td></tr>
       <tr><th>Scenarios</th><td>{{ run.params.scenarios|join:", " }}</td></tr>
       <tr><th>Representative days / month</th><td>{{ run.params.rep_days_per_month }}</td></tr>

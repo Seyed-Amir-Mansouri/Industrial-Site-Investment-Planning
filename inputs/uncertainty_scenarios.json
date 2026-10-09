@@ -17,7 +17,7 @@
   "scenarios": {
     "unc01": {
       "systemic_band": "mild",
-      "probability": 0.16,
+      "probability": 0.4533333333,
       "systemic_wind_reduction_pct": 59.9,
       "systemic_solar_reduction_pct": 65.2,
       "protected_country": "HR",
@@ -54,7 +54,7 @@
     },
     "unc02": {
       "systemic_band": "mild",
-      "probability": 0.03333333333333333,
+      "probability": 0.0,
       "systemic_wind_reduction_pct": 59.0,
       "systemic_solar_reduction_pct": 61.5,
       "protected_country": "RO",
@@ -91,7 +91,7 @@
     },
     "unc03": {
       "systemic_band": "moderate",
-      "probability": 0.16,
+      "probability": 0.0,
       "systemic_wind_reduction_pct": 61.4,
       "systemic_solar_reduction_pct": 58.7,
       "protected_country": "HU",
@@ -128,7 +128,7 @@
     },
     "unc04": {
       "systemic_band": "moderate",
-      "probability": 0.16,
+      "probability": 0.48,
       "systemic_wind_reduction_pct": 59.3,
       "systemic_solar_reduction_pct": 62.8,
       "protected_country": "SI",
@@ -165,7 +165,7 @@
     },
     "unc05": {
       "systemic_band": "severe",
-      "probability": 0.03333333333333333,
+      "probability": 0.0,
       "systemic_wind_reduction_pct": 58.4,
       "systemic_solar_reduction_pct": 58.2,
       "protected_country": "PL",
@@ -202,7 +202,7 @@
     },
     "unc06": {
       "systemic_band": "mild",
-      "probability": 0.16,
+      "probability": 0.0,
       "systemic_wind_reduction_pct": 61.6,
       "systemic_solar_reduction_pct": 57.8,
       "protected_country": "AT",
@@ -239,7 +239,7 @@
     },
     "unc07": {
       "systemic_band": "moderate",
-      "probability": 0.16,
+      "probability": 0.0,
       "systemic_wind_reduction_pct": 63.0,
       "systemic_solar_reduction_pct": 60.6,
       "protected_country": "CZ",
@@ -276,7 +276,7 @@
     },
     "unc08": {
       "systemic_band": "severe",
-      "probability": 0.03333333333333333,
+      "probability": 0.0,
       "systemic_wind_reduction_pct": 58.8,
       "systemic_solar_reduction_pct": 63.1,
       "protected_country": "SK",
@@ -313,7 +313,7 @@
     },
     "unc09": {
       "systemic_band": "severe",
-      "probability": 0.03333333333333333,
+      "probability": 0.0333333333,
       "systemic_wind_reduction_pct": 57.7,
       "systemic_solar_reduction_pct": 57.2,
       "protected_country": "DE",
@@ -350,7 +350,7 @@
     },
     "unc10": {
       "systemic_band": "moderate",
-      "probability": 0.03333333333333333,
+      "probability": 0.0,
       "systemic_wind_reduction_pct": 61.5,
       "systemic_solar_reduction_pct": 58.6,
       "protected_country": "FR",
@@ -387,7 +387,7 @@
     },
     "p100": {
       "systemic_band": "mild",
-      "probability": 0.03333333333333333,
+      "probability": 0.0333333333,
       "systemic_wind_reduction_pct": 0.0,
       "systemic_solar_reduction_pct": 0.0,
       "wind": {
