@@ -118,8 +118,10 @@ green load, the wind/PV claimed for it, GOs bought and sold, and green hydrogen 
 
 `site_investor_planning/config.py` holds:
 
-- `CANDIDATE_CATALOG`: five real-world product sizes per asset, each with its own absolute
-  CAPEX and lifetime. Wind, PV, battery, electrolyser and H2 tank come from
+- `CANDIDATE_CATALOG`: one real-world product per asset, with its own absolute CAPEX and
+  lifetime. The optimizer builds it as many times as needed (up to the site cap), so capacity
+  comes in steps of that product's size. More products can be added per run on the New run
+  page. Wind, PV, battery, electrolyser and H2 tank come from
   `Help/Candidates (Edited).docx`'s 2030 candidate-product table. The heat pump, industrial
   heat pump, electric boiler and electric chiller entries are indicative 2030 costs in the
   range of public technology catalogues (e.g. the Danish Energy Agency's). Replace them with
@@ -159,8 +161,8 @@ coupled through the site's energy balances in the subproblem and the shared budg
 **Capacity-uncertainty scenarios / risk measure**
 | Flag | Default | What it does |
 |---|---|---|
-| `--cvar-alpha A` | 0.8 | Risk measure: CVaR at confidence level `A` (0–1) across the 11 capacity-uncertainty scenarios in `inputs/uncertainty_scenarios.json` (`p100` + `unc01`–`unc10`, non-uniform probabilities — 6 scenarios at ~3.33% each summing to 20%, 5 at 16% each, so the α=0.8 tail lands exactly on those 6). |
-| `--scenarios S,S,...` | all 11 | Restrict to a subset of scenarios (probabilities renormalized to sum to 1), e.g. `--scenarios p100` for a single deterministic baseline run ("on-plan"). |
+| `--cvar-alpha A` | 0.8 | Risk measure: CVaR at confidence level `A` (0–1) across the 4 planning scenarios (see *Planning scenarios* below). |
+| `--scenarios S,S,...` | all 4 | Restrict to a subset of scenarios (probabilities renormalized to sum to 1), e.g. `--scenarios p100` for a single deterministic baseline run ("on-plan"). |
 | `--disabled-assets A,A,...` | none | Exclude asset keys at every site (max MW = 0), e.g. `battery_mw,tank_mw`. Keys: `wind_mw`, `pv_mw`, `battery_mw`, `heat_pump_mw`, `industrial_heat_pump_mw`, `electric_boiler_mw`, `electric_chiller_mw`, `electrolyser_mw`, `tank_mw`. |
 
 **Subproblem**
@@ -171,6 +173,25 @@ coupled through the site's energy balances in the subproblem and the shared budg
 Every candidate country's site LP is solved together, in one joint linopy model
 (`optimize_site_investor.solve_joint`); there's no independent-per-country mode. A country
 without a site has no demand and no capacity, so it costs nothing.
+
+**Planning scenarios**
+
+`inputs/uncertainty_scenarios.json` defines 11 capacity-uncertainty scenarios (`p100` plus
+`unc01`–`unc10`), all kept for the dispatch runs that build the price data. Planning uses the 4
+with a positive probability. The 10 `unc` scenarios fall into three groups by how much they raise
+average electricity prices over `p100` in the candidate countries (hydrogen prices move by at
+most EUR 1.6/MWh), and one scenario stands for each group, carrying the group's combined
+probability:
+
+| Scenario | Stands for | Electricity price vs `p100` | Probability |
+|---|---|---|---|
+| `p100` | no capacity shortfall | — | 3.33% |
+| `unc09` | `unc09` | +10.5 EUR/MWh | 3.33% |
+| `unc01` | `unc01`, `unc02`, `unc03`, `unc05`, `unc08`, `unc10` | +20 to +24 EUR/MWh | 45.33% |
+| `unc04` | `unc04`, `unc06`, `unc07` | +29 to +30 EUR/MWh | 48.00% |
+
+With the default CVaR at α = 0.8, the 20% worst tail falls inside `unc04`. To plan with another
+scenario, give it a positive probability in the file (the probabilities must still add up to 1).
 
 **Solve control / output**
 | Flag | Default | What it does |
@@ -269,7 +290,8 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      that is lost, so 0% means no loss. The probabilities of all scenarios must add up to
      100%. A badge at the top shows the current total in green when it's right and red
      when it isn't. Changes apply to this run only. The defaults come from
-     `inputs/uncertainty_scenarios.json`.
+     `inputs/uncertainty_scenarios.json`; only the 4 planning scenarios (positive probability)
+     are shown.
   4. **Economics:** discount rate, the risk measure (CVaR or expected value, shown as a
      switch) and the CVaR confidence level. Lifetimes are set per technology in the
      candidate catalog.

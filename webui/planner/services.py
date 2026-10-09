@@ -191,8 +191,10 @@ def scenario_probabilities() -> dict[str, float]:
 
 @lru_cache(maxsize=1)
 def scenario_defaults() -> dict[str, dict]:
+    """The planning scenarios (positive default probability) from ``inputs/uncertainty_scenarios.json``."""
     path = PROJECT_ROOT / "inputs" / "uncertainty_scenarios.json"
-    return json.loads(path.read_text(encoding="utf-8"))["scenarios"]
+    scenarios = json.loads(path.read_text(encoding="utf-8"))["scenarios"]
+    return {name: sc for name, sc in scenarios.items() if float(sc["probability"]) > 0}
 
 
 def build_command(params: dict, output_prefix: Path) -> list[str]:

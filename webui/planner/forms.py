@@ -98,12 +98,22 @@ class PlanRunForm(forms.Form):
                     label=f"{c} solar error (%)")
 
     COUNTRY_TABLE_COLUMNS = 4
+    ASSET_TABLE_COLUMNS = 3
+
+    def _table_rows(self, field: str, cols: int) -> list[list]:
+        """A checkbox field's options chunked into table rows of ``cols`` cells."""
+        cells = list(self[field])
+        return [cells[i:i + cols] for i in range(0, len(cells), cols)]
 
     @property
     def country_table_rows(self) -> list[list]:
-        cells = list(self["countries"])
-        cols = self.COUNTRY_TABLE_COLUMNS
-        return [cells[i:i + cols] for i in range(0, len(cells), cols)]
+        """Candidate country checkboxes laid out as table rows."""
+        return self._table_rows("countries", self.COUNTRY_TABLE_COLUMNS)
+
+    @property
+    def disabled_asset_table_rows(self) -> list[list]:
+        """Excluded-technology checkboxes laid out as table rows."""
+        return self._table_rows("disabled_assets", self.ASSET_TABLE_COLUMNS)
 
     @property
     def catalog_rows(self) -> list[dict]:

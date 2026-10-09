@@ -175,9 +175,19 @@
         {{ form.max_units_per_candidate }}
         <div class="help">{{ form.max_units_per_candidate.help_text }}</div>
       </div>
-      <div class="field pills">
+      <div class="field" style="grid-column: 1 / -1;">
         <label>{{ form.disabled_assets.label }}</label>
-        {{ form.disabled_assets }}
+        <table class="country-table">
+          <tbody>
+            {% for row in form.disabled_asset_table_rows %}
+            <tr>
+              {% for cell in row %}
+              <td><label class="country-cell">{{ cell.tag }} {{ cell.choice_label }}</label></td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
         <div class="help">Ticked technologies are excluded at every site.</div>
       </div>
     </div>

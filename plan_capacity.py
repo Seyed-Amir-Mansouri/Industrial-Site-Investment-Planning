@@ -33,14 +33,15 @@ def load_catalog_override(capex_cfg: hp.CapexAssumptions, path: Path) -> None:
 
 
 def load_scenario_probs(path: Path | None = None) -> dict[str, float]:
-    """Read {scenario: probability} from the saved scenario JSON."""
+    """Read {scenario: probability} from the saved scenario JSON, keeping only scenarios with a positive
+    probability (the rest stay defined for the dispatch runs but are left out of planning)."""
     if path is None:
         data = ohp.load_uncertainty_scenarios()
         source = ROOT / "inputs" / "uncertainty_scenarios.json"
     else:
         data = json.loads(path.read_text())["scenarios"]
         source = path
-    probs = {name: float(sc["probability"]) for name, sc in data.items()}
+    probs = {name: float(sc["probability"]) for name, sc in data.items() if float(sc["probability"]) > 0}
     total = sum(probs.values())
     if abs(total - 1.0) > 1e-4:
         raise ValueError(f"{source}'s scenario probabilities sum to {total:.6f}, not 1.0")
@@ -341,8 +342,8 @@ def main() -> None:
                          "Pass 1 to force sequential (e.g. for debugging).")
     ap.add_argument("--max-units-per-candidate", type=int, default=0,
                     help="max buildable units of each individual candidate product per "
-                         "country/asset (there are 5 real candidate products per asset in the "
-                         "catalog); default 0 = unbounded. Pass e.g. 3 to cap each product at 3 units.")
+                         "site/asset (the default catalog has one product per asset, built as many "
+                         "times as needed); default 0 = unbounded. Pass e.g. 3 to cap each product at 3 units.")
     args = ap.parse_args()
 
     capex_cfg = hp.CapexAssumptions()
