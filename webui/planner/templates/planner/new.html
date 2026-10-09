@@ -255,7 +255,7 @@
       </thead>
       <tbody>
         {% for row in form.demand_peak_rows %}
-        <tr>
+        <tr data-country-row="{{ row.country }}">
           <td><strong>{{ row.country }}</strong></td>
           {% for f in row.fields %}<td>{{ f }}{% for e in f.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>{% endfor %}
         </tr>
@@ -263,6 +263,7 @@
       </tbody>
     </table>
     </div>
+    <p class="help" data-no-country-note hidden>Select at least one country in step 1 to edit its peaks.</p>
   </div>
 
   <div class="card">
@@ -298,7 +299,7 @@
             <thead><tr><th>Country</th><th>Wind error %</th><th>Solar error %</th></tr></thead>
             <tbody>
               {% for c in row.countries %}
-              <tr>
+              <tr data-country-row="{{ c.code }}">
                 <td>{{ c.code }}</td>
                 <td>{{ c.wind }}</td>
                 <td>{{ c.solar }}</td>
@@ -382,6 +383,19 @@
       const on = allBox.checked;
       countryBox.style.opacity = on ? .4 : 1;
       countryInputs.forEach(c => c.disabled = on);
+      syncCountryRows();
+    }
+    function syncCountryRows() {
+      const all = allBox.checked;
+      const picked = new Set(Array.from(countryInputs).filter(c => c.checked).map(c => c.value));
+      const rows = document.querySelectorAll('[data-country-row]');
+      let shown = 0;
+      rows.forEach(r => {
+        const show = all || picked.has(r.dataset.countryRow);
+        r.hidden = !show;
+        if (show && r.closest('.peak-table')) shown += 1;
+      });
+      document.querySelectorAll('[data-no-country-note]').forEach(n => { n.hidden = shown > 0; });
     }
     function syncRisk() {
       const cvar = document.querySelector('input[name="risk_measure"]:checked').value === 'cvar';
@@ -431,6 +445,7 @@
       const country = e.target.closest('[data-country]');
       if (country) {
         countryInputs.forEach(c => c.checked = country.dataset.country === 'all');
+        syncCountryRows();
       }
       const addCandidate = e.target.closest('[data-add-candidate]');
       if (addCandidate) {
@@ -455,6 +470,7 @@
     form.addEventListener('reset', function () { setTimeout(syncAll, 0); });
 
     allBox.addEventListener('change', syncCountries);
+    countryInputs.forEach(c => c.addEventListener('change', syncCountryRows));
     riskRadios.forEach(r => r.addEventListener('change', syncRisk));
     probInputs.forEach(p => p.addEventListener('input', syncProbTotal));
     includeInputs.forEach(c => c.addEventListener('change', syncProbTotal));
