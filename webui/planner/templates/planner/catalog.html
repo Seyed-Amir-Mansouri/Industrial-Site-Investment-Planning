@@ -15,18 +15,23 @@
 </div>
 
 <div class="card">
-  <h2>Site demand</h2>
-  <p class="lede" style="margin-bottom:12px">Annual internal demand (MWh / year) of a site built in each country, summed from the hourly profiles in <code>inputs/site_demand.csv</code>. Edit that file to change the demand.</p>
-  <div style="overflow-x:auto">
+  <h2>Default site</h2>
+  <p class="lede" style="margin-bottom:12px">The settings every new site starts from on the New run page, where each site can be given its own peaks, green hydrogen share and flexibility. Hourly demand = the per-unit yearly curve in <code>inputs/site_demand.csv</code> (shared by all sites) × the site's daily peak. Defaults live in <code>DEFAULT_SITE_PEAKS_MW</code> and <code>SiteSpec</code> in <code>site_investor_planning/config.py</code>.</p>
+  <div style="overflow-x:auto;margin-bottom:12px">
   <table>
-    <thead><tr><th>Country</th>{% for key in site.services %}<th class="num">{{ service_labels|lookup:key }}</th>{% endfor %}</tr></thead>
+    <thead><tr><th></th>{% for key in site.services %}<th class="num">{{ service_labels|lookup:key }}</th>{% endfor %}</tr></thead>
     <tbody>
-      {% for row in site.demand_rows %}
-      <tr><td><strong>{{ row.country }}</strong></td>{% for v in row.values %}<td class="num">{{ v|floatformat:0 }}</td>{% endfor %}</tr>
-      {% endfor %}
+      <tr><td><strong>Daily peak (MW)</strong></td>{% for v in site.default_peaks %}<td class="num">{{ v|floatformat:"-4" }}</td>{% endfor %}</tr>
+      <tr><td><strong>Annual demand (MWh / year)</strong></td>{% for v in site.default_annual %}<td class="num">{{ v|floatformat:0 }}</td>{% endfor %}</tr>
     </tbody>
   </table>
   </div>
+  <table>
+    <tbody>
+      <tr><th style="width:320px">Minimum green share of hydrogen demand</th><td class="num">{% widthratio site.green_share 1 100 %}%</td></tr>
+      <tr><th>Demand flexibility (all demands, net zero per day)</th><td class="num">±{{ site.flex_pct|floatformat:"-1" }}%</td></tr>
+    </tbody>
+  </table>
 </div>
 
 <div class="card">
@@ -46,25 +51,12 @@
 
 <div class="card">
   <h2>Green hydrogen and certificates</h2>
-  <p class="lede" style="margin-bottom:12px">Default rules for green (RFNBO) hydrogen. The electrolyser's green electricity must be additional (the site's own new wind/PV, or Guarantees of Origin bought from additional plants) and matched every hour. The share can be changed per run on the New run page.</p>
+  <p class="lede" style="margin-bottom:12px">Rules for green (RFNBO) hydrogen. The electrolyser's green electricity must be additional (the site's own new wind/PV, or Guarantees of Origin bought from additional plants) and matched every hour. Each site sets its own minimum green share.</p>
   <table>
     <tbody>
-      <tr><th style="width:320px">Minimum green share of hydrogen demand</th><td class="num">{% widthratio site.green_share 1 100 %}%</td></tr>
-      <tr><th>Guarantee of Origin buy price</th><td class="num">€{{ site.go_buy_price|floatformat:"-1" }} / MWh</td></tr>
+      <tr><th style="width:320px">Guarantee of Origin buy price</th><td class="num">€{{ site.go_buy_price|floatformat:"-1" }} / MWh</td></tr>
       <tr><th>Guarantee of Origin sell price</th><td class="num">€{{ site.go_sell_price|floatformat:"-1" }} / MWh</td></tr>
       <tr><th>Certified green hydrogen premium</th><td class="num">€{{ site.green_h2_premium|floatformat:"-1" }} / MWh above the hydrogen price</td></tr>
-    </tbody>
-  </table>
-</div>
-
-<div class="card">
-  <h2>Demand flexibility</h2>
-  <p class="lede" style="margin-bottom:12px">How far each hour's demand may move up or down, as a share of itself; the shifts net to zero over each day. The New run page sets one value for all demands.</p>
-  <table>
-    <tbody>
-      {% for f in site.flex %}
-      <tr><th style="width:320px">{{ service_labels|lookup:f.service }}</th><td class="num">±{{ f.pct|floatformat:"-1" }}%</td></tr>
-      {% endfor %}
     </tbody>
   </table>
 </div>
@@ -91,11 +83,6 @@
 
 <div class="card">
   <h2>Uncertainty scenarios</h2>
-  <table>
-    <thead><tr><th>Scenario</th>{% for name, p in scenarios.items %}<th class="num">{{ name }}</th>{% endfor %}</tr></thead>
-    <tbody>
-      <tr><td>Probability</td>{% for name, p in scenarios.items %}<td class="num">{% widthratio p 1 100 %}%</td>{% endfor %}</tr>
-    </tbody>
-  </table>
+  <p class="lede">New runs plan over the {{ baseline_label }} alone (100%, deterministic). On the New run page you can add as many scenarios as you like, each with a probability and a wind and solar error compared with the {{ baseline_label }}; with two or more the risk measure is CVaR.</p>
 </div>
 {% endblock %}

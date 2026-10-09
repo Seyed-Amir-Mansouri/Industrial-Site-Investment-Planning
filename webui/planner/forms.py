@@ -1,3 +1,5 @@
+import re
+
 from django import forms
 
 from . import services
@@ -16,23 +18,20 @@ ASSET_LABELS = {
 }
 MWH_ASSETS = {"battery_mw", "tank_mw"}
 MAX_CANDIDATES_PER_ASSET = 8
+MAX_SITES = 6
+CUSTOM_FIELD_RE = re.compile(r"^custom_name__(\d+)$")
 
 
 class PlanRunForm(forms.Form):
     name = forms.CharField(max_length=120, required=False, label="Run name",
-                           widget=forms.TextInput(attrs={"placeholder": "e.g. Baseline 500M, PV only"}))
+                           widget=forms.TextInput(attrs={"placeholder": "e.g. Baseline 1.5B, PV only"}))
     all_countries = forms.BooleanField(required=False, initial=True, label="All eligible countries")
     countries = forms.MultipleChoiceField(required=False, label="Candidate site countries",
                                           widget=forms.CheckboxSelectMultiple)
-    n_sites = forms.IntegerField(min_value=1, max_value=13, initial=1, label="Sites to build",
-                                 help_text="The optimizer picks this many countries to build a site in.")
-    green_h2_share_pct = forms.FloatField(
-        min_value=0, max_value=100, initial=42, label="Minimum green hydrogen share (%)",
-        help_text="Share of each site's annual hydrogen demand that must be green (RFNBO). 0 = no requirement.")
-    demand_flex_pct = forms.FloatField(
-        min_value=0, max_value=50, initial=10, label="Demand flexibility (%)",
-        help_text="How far each hour's demand may move up or down; shifts net to zero over each day. 0 = rigid.")
-    budget = forms.FloatField(min_value=1e6, initial=500_000_000, label="Total CAPEX budget (EUR)",
+    n_sites = forms.IntegerField(min_value=1, max_value=MAX_SITES, initial=1, label="Sites to build",
+                                 help_text="Each site has its own settings in step 2. The optimizer picks a "
+                                           "country for each site; several sites may share a country.")
+    budget = forms.FloatField(min_value=1e6, initial=1_500_000_000, label="Total CAPEX budget (EUR)",
                               help_text="Raw, unannualized budget across all sites.")
     disabled_assets = forms.MultipleChoiceField(
         required=False, label="Excluded asset types",
@@ -45,8 +44,10 @@ class PlanRunForm(forms.Form):
 
     discount_rate_pct = forms.FloatField(min_value=0, max_value=30, initial=5, label="Discount rate (%)")
     risk_measure = forms.ChoiceField(
-        choices=[("cvar", "CVaR (risk-averse)"), ("expected", "Expected value (risk-neutral)")],
-        initial="cvar", label="Risk measure", widget=forms.RadioSelect)
+        required=False,
+        choices=[("deterministic", "Deterministic (one scenario)"), ("cvar", "CVaR (two or more scenarios)")],
+        initial="deterministic", label="Risk measure", widget=forms.RadioSelect,
+        help_text="Set automatically: deterministic with one scenario, CVaR with two or more.")
     cvar_alpha = forms.FloatField(required=False, min_value=0.5, max_value=0.99, initial=0.8,
                                   label="CVaR confidence level α",
                                   help_text="Higher α focuses on the worst tail of scenarios.")
@@ -64,9 +65,28 @@ class PlanRunForm(forms.Form):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.defaults = services.scenario_defaults()
-        self.scenario_countries = sorted(next(iter(self.defaults.values()))["wind"])
+        all_scenarios = services.scenario_defaults()
+        self.baseline = services.BASELINE_SCENARIO
+        self.defaults = {self.baseline: all_scenarios[self.baseline]}
+        self.scenario_countries = sorted(services.eligible_countries())
         self.fields["countries"].choices = [(c, country_label(c)) for c in services.eligible_countries()]
+
+        self.site_defaults = services.site_defaults()
+        self.demand_services = services.demand_services()
+        self.demand_service_labels = [services.SERVICE_LABELS[s] for s in self.demand_services]
+        for i in range(MAX_SITES):
+            self.fields[f"site_name__{i}"] = forms.CharField(
+                max_length=40, required=False, initial=f"Site {i + 1}", label="Name")
+            self.fields[f"site_green__{i}"] = forms.FloatField(
+                min_value=0, max_value=100, initial=round(self.site_defaults["green_share"] * 100, 4),
+                label="Minimum green hydrogen share (%)")
+            self.fields[f"site_flex__{i}"] = forms.FloatField(
+                min_value=0, max_value=50, initial=round(self.site_defaults["flex_fraction"] * 100, 4),
+                label="Demand flexibility (%)")
+            for service in self.demand_services:
+                self.fields[f"site_peak__{i}__{service}"] = forms.FloatField(
+                    min_value=0, initial=round(self.site_defaults["peaks_mw"][service], 4),
+                    label=f"{services.SERVICE_LABELS[service]} (MW)")
 
         self.catalog_defaults = services.capex_assumptions_defaults()
         self.assets = self.catalog_defaults["assets"]
@@ -85,17 +105,21 @@ class PlanRunForm(forms.Form):
                     self.fields[f"cat_mwh__{asset}__{i}"] = forms.FloatField(
                         required=False, min_value=0, initial=c["mwh"] if c else None, label="Energy (MWh)")
 
-        for s, d in self.defaults.items():
-            self.fields[f"scenario_include__{s}"] = forms.BooleanField(required=False, initial=True)
-            self.fields[f"scenario_prob__{s}"] = forms.FloatField(
-                min_value=0, max_value=100, initial=round(d["probability"] * 100, 4), label="Probability (%)")
+        self.fields["scenario_include__" + self.baseline] = forms.BooleanField(required=False, initial=True)
+        self.fields["scenario_prob__" + self.baseline] = forms.FloatField(
+            min_value=0, max_value=100, initial=100.0, label="Probability (%)")
+        self.custom_indices = sorted({int(m.group(1)) for k in (self.data or {})
+                                      if (m := CUSTOM_FIELD_RE.match(k))})
+        for i in self.custom_indices:
+            self.fields[f"custom_name__{i}"] = forms.CharField(
+                max_length=40, required=False, initial=f"Scenario {i + 1}", label="Name")
+            self.fields[f"custom_prob__{i}"] = forms.FloatField(
+                min_value=0, max_value=100, initial=0, label="Probability (%)")
             for c in self.scenario_countries:
-                self.fields[f"err_wind__{s}__{c}"] = forms.FloatField(
-                    min_value=0, max_value=100, initial=round((1 - d["wind"].get(c, 1.0)) * 100, 4),
-                    label=f"{c} wind error (%)")
-                self.fields[f"err_solar__{s}__{c}"] = forms.FloatField(
-                    min_value=0, max_value=100, initial=round((1 - d["solar"].get(c, 1.0)) * 100, 4),
-                    label=f"{c} solar error (%)")
+                self.fields[f"custom_wind__{i}__{c}"] = forms.FloatField(
+                    min_value=0, max_value=100, initial=0, label=f"{c} wind error vs baseline (%)")
+                self.fields[f"custom_solar__{i}__{c}"] = forms.FloatField(
+                    min_value=0, max_value=100, initial=0, label=f"{c} solar error vs baseline (%)")
 
     COUNTRY_TABLE_COLUMNS = 4
     ASSET_TABLE_COLUMNS = 3
@@ -114,6 +138,14 @@ class PlanRunForm(forms.Form):
     def disabled_asset_table_rows(self) -> list[list]:
         """Excluded-technology checkboxes laid out as table rows."""
         return self._table_rows("disabled_assets", self.ASSET_TABLE_COLUMNS)
+
+    @property
+    def site_rows(self) -> list[dict]:
+        """One card per possible site: its name, green share, flexibility and daily peak fields."""
+        return [{"index": i, "name": self[f"site_name__{i}"], "green": self[f"site_green__{i}"],
+                 "flex": self[f"site_flex__{i}"],
+                 "peaks": [self[f"site_peak__{i}__{svc}"] for svc in self.demand_services]}
+                for i in range(MAX_SITES)]
 
     @property
     def catalog_rows(self) -> list[dict]:
@@ -137,42 +169,49 @@ class PlanRunForm(forms.Form):
         return rows
 
     @property
-    def scenario_rows(self) -> list[dict]:
-        rows = []
-        for s, d in self.defaults.items():
-            rows.append({
-                "name": s,
-                "band": d.get("systemic_band", ""),
-                "protected": d.get("protected_country", ""),
-                "sys_wind": d.get("systemic_wind_reduction_pct"),
-                "sys_solar": d.get("systemic_solar_reduction_pct"),
-                "include": self[f"scenario_include__{s}"],
-                "prob": self[f"scenario_prob__{s}"],
-                "countries": [{"code": c,
-                               "wind": self[f"err_wind__{s}__{c}"],
-                               "solar": self[f"err_solar__{s}__{c}"]}
-                              for c in self.scenario_countries],
-            })
-        return rows
+    def baseline_row(self) -> dict:
+        """The Baseline scenario's include box and probability."""
+        return {"name": services.scenario_label(self.baseline),
+                "include": self["scenario_include__" + self.baseline],
+                "prob": self["scenario_prob__" + self.baseline]}
+
+    @property
+    def custom_scenario_rows(self) -> list[dict]:
+        """One card per custom scenario the user added: name, probability and each country's wind/solar error."""
+        return [{"index": i, "name": self[f"custom_name__{i}"], "prob": self[f"custom_prob__{i}"],
+                 "countries": [{"code": c, "wind": self[f"custom_wind__{i}__{c}"],
+                                "solar": self[f"custom_solar__{i}__{c}"]} for c in self.scenario_countries]}
+                for i in self.custom_indices]
+
+    def _included_scenarios(self, data: dict) -> list[str]:
+        """Keys of every scenario in the run: the Baseline if ticked, and every added scenario as ``custom<N>``."""
+        base = [self.baseline] if data.get("scenario_include__" + self.baseline) else []
+        return base + [f"custom{i + 1}" for i in self.custom_indices]
+
+    def _scenario_prob(self, data: dict, key: str) -> float | None:
+        if key.startswith("custom") and key[6:].isdigit():
+            return data.get(f"custom_prob__{int(key[6:]) - 1}")
+        return data.get(f"scenario_prob__{key}")
 
     def clean(self):
         data = super().clean()
         if not data.get("all_countries") and not data.get("countries"):
             self.add_error("countries", "Select at least one country or choose all countries.")
-        n_candidates = (len(services.eligible_countries()) if data.get("all_countries")
-                        else len(data.get("countries") or []))
-        if data.get("n_sites") and n_candidates and data["n_sites"] > n_candidates:
-            self.add_error("n_sites", f"Only {n_candidates} candidate countries are selected.")
-        included = [s for s in self.defaults if data.get(f"scenario_include__{s}")]
+        n_sites = data.get("n_sites") or 0
+        names = [(data.get(f"site_name__{i}") or "").strip() or f"Site {i + 1}" for i in range(n_sites)]
+        if len(set(names)) != len(names):
+            self.add_error(None, f"Each site needs its own name; got {', '.join(names)}.")
+        included = self._included_scenarios(data)
         if not included:
             self.add_error(None, "Select at least one uncertainty scenario.")
-        probs = [data.get(f"scenario_prob__{s}") for s in included]
+        probs = [self._scenario_prob(data, s) for s in included]
         if all(p is not None for p in probs):
             total = sum(probs)
             if abs(total - 100) > 0.01:
                 self.add_error(None, f"Scenario probabilities add up to {total:.2f}%. They must add up to 100%.")
-        if data.get("risk_measure") == "cvar" and data.get("cvar_alpha") is None:
-            self.add_error("cvar_alpha", "Enter a confidence level for CVaR.")
+        data["risk_measure"] = "deterministic" if len(included) <= 1 else "cvar"
+        if data["risk_measure"] == "cvar" and data.get("cvar_alpha") is None:
+            self.add_error("cvar_alpha", "Enter a confidence level for CVaR (two or more scenarios are included).")
 
         for asset in self.assets:
             count = 0
@@ -211,26 +250,41 @@ class PlanRunForm(forms.Form):
                 candidates.append(candidate)
             catalog_overrides[asset] = sorted(candidates, key=lambda c: c["mw"])
 
-        included = [s for s in self.defaults if d.get(f"scenario_include__{s}")]
-        total = sum(d[f"scenario_prob__{s}"] for s in included)
+        sites = [{"name": (d.get(f"site_name__{i}") or "").strip() or f"Site {i + 1}",
+                  "peaks_mw": {svc: d[f"site_peak__{i}__{svc}"] for svc in self.demand_services},
+                  "green_share": d[f"site_green__{i}"] / 100,
+                  "flex_fraction": d[f"site_flex__{i}"] / 100}
+                 for i in range(d["n_sites"])]
+
+        included = self._included_scenarios(d)
+        total = sum(self._scenario_prob(d, s) for s in included)
         overrides = {}
-        for s in self.defaults:
-            probability = (d[f"scenario_prob__{s}"] / total) if s in included else 0.0
-            overrides[s] = {
-                "probability": probability,
-                "wind": {c: round(1 - d[f"err_wind__{s}__{c}"] / 100, 6) for c in self.scenario_countries},
-                "solar": {c: round(1 - d[f"err_solar__{s}__{c}"] / 100, 6) for c in self.scenario_countries},
+        for s in services.all_scenario_names():
+            overrides[s] = {"probability": 0.0}
+        if self.baseline in included:
+            overrides[self.baseline] = {"probability": d["scenario_prob__" + self.baseline] / total}
+        labels = {s: services.scenario_label(s) for s in included}
+        for i in self.custom_indices:
+            key = f"custom{i + 1}"
+            name = (d.get(f"custom_name__{i}") or "").strip() or f"Scenario {i + 1}"
+            labels[key] = name
+            overrides[key] = {
+                "custom": True,
+                "label": name,
+                "probability": d[f"custom_prob__{i}"] / total,
+                "wind": {c: round(1 - d[f"custom_wind__{i}__{c}"] / 100, 6) for c in self.scenario_countries},
+                "solar": {c: round(1 - d[f"custom_solar__{i}__{c}"] / 100, 6) for c in self.scenario_countries},
             }
         return {
             "all_countries": d["all_countries"],
             "countries": sorted(d["countries"]),
             "n_sites": d["n_sites"],
-            "green_h2_share_pct": d["green_h2_share_pct"],
-            "demand_flex_pct": d["demand_flex_pct"],
+            "sites": sites,
             "budget": d["budget"],
             "disabled_assets": list(d["disabled_assets"]),
             "max_units_per_candidate": d["max_units_per_candidate"],
             "scenarios": included,
+            "scenario_labels": labels,
             "scenario_overrides": overrides,
             "catalog_overrides": catalog_overrides,
             "discount_rate_pct": d["discount_rate_pct"],

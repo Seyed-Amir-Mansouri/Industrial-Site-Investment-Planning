@@ -159,18 +159,6 @@
         {% for e in form.n_sites.errors %}<div class="error">{{ e }}</div>{% endfor %}
       </div>
       <div class="field">
-        <label>{{ form.green_h2_share_pct.label }}</label>
-        {{ form.green_h2_share_pct }}
-        <div class="help">{{ form.green_h2_share_pct.help_text }}</div>
-        {% for e in form.green_h2_share_pct.errors %}<div class="error">{{ e }}</div>{% endfor %}
-      </div>
-      <div class="field">
-        <label>{{ form.demand_flex_pct.label }}</label>
-        {{ form.demand_flex_pct }}
-        <div class="help">{{ form.demand_flex_pct.help_text }}</div>
-        {% for e in form.demand_flex_pct.errors %}<div class="error">{{ e }}</div>{% endfor %}
-      </div>
-      <div class="field">
         <label>{{ form.max_units_per_candidate.label }}</label>
         {{ form.max_units_per_candidate }}
         <div class="help">{{ form.max_units_per_candidate.help_text }}</div>
@@ -196,8 +184,40 @@
   <div class="card">
     <div class="section-head">
       <div>
-        <h2><span class="step">2</span>Candidate catalog</h2>
-        <p class="lede">The product sizes, CAPEX, and lifetime the optimizer can choose from per asset. Add or remove candidates and edit their characteristics; changes apply to this run only. Defaults come from <code>g_investor_planning/config.py</code>.</p>
+        <h2><span class="step">2</span>Sites</h2>
+        <p class="lede">One card per site to build. Each site has its own daily peak demand (MW), minimum green hydrogen share and demand flexibility. Hourly demand is the per-unit yearly curve in <code>inputs/site_demand.csv</code> (shared by all sites) times the site's peaks. The optimizer picks a country for every site, and several sites may share a country.</p>
+      </div>
+      <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:0;">
+      {% for site in form.site_rows %}
+      <div class="catalog-card site-card" data-site-index="{{ site.index }}">
+        <div class="section-head" style="margin-bottom:10px;">
+          <label class="prob-field" style="font-weight:600;color:var(--ink)">{{ site.name }}</label>
+          <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+            <label class="prob-field">Green H2 (%) {{ site.green }}</label>
+            <label class="prob-field">Flexibility (±%) {{ site.flex }}</label>
+            <button type="button" class="btn ghost small" data-reset="site">Reset site</button>
+          </div>
+        </div>
+        {% for e in site.green.errors %}<div class="error">{{ e }}</div>{% endfor %}
+        {% for e in site.flex.errors %}<div class="error">{{ e }}</div>{% endfor %}
+        <div style="overflow-x:auto">
+        <table class="catalog-table">
+          <thead><tr>{% for label in form.demand_service_labels %}<th>{{ label }} (MW)</th>{% endfor %}</tr></thead>
+          <tbody><tr>{% for f in site.peaks %}<td>{{ f }}{% for e in f.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>{% endfor %}</tr></tbody>
+        </table>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="section-head">
+      <div>
+        <h2><span class="step">3</span>Candidate catalog</h2>
+        <p class="lede">The product sizes, CAPEX, and lifetime the optimizer can choose from per asset. Add or remove candidates and edit their characteristics; changes apply to this run only. Defaults come from <code>site_investor_planning/config.py</code>.</p>
       </div>
       <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
     </div>
@@ -243,40 +263,46 @@
   <div class="card">
     <div class="section-head">
       <div>
-        <h2><span class="step">3</span>Uncertainty scenarios</h2>
-        <p class="lede">Tick the scenarios to include, set their probabilities (they must add up to 100%), and change the wind and solar error for each country. Error % = how much of the nominal output is lost. Changes apply to this run only; the defaults come from <code>inputs/uncertainty_scenarios.json</code>.</p>
+        <h2><span class="step">4</span>Uncertainty scenarios</h2>
+        <p class="lede">The Baseline is planned on its own by default (100%, deterministic). Add as many scenarios of your own as you like to plan under uncertainty: each has a probability and a wind and solar error per country compared with the Baseline (the share of the site's own wind/solar output lost), and uses Baseline market prices. Probabilities must add up to 100%; with two or more scenarios the risk measure switches to CVaR. Changes apply to this run only.</p>
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
         <span id="prob-total" class="total ok"></span>
         <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
       </div>
     </div>
-    <div style="display:flex;flex-direction:column;gap:12px;">
-      {% for row in form.scenario_rows %}
+    <div id="scenario-list" style="display:flex;flex-direction:column;gap:12px;">
       <div class="scenario-card">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
           <div class="scenario-title">
-            {{ row.include }}
-            <span>{{ row.name }}</span>
-            <span class="lede" style="font-size:12px;font-weight:400;">
-              {{ row.band }}{% if row.protected %} · protected country {{ row.protected }}{% endif %}{% if row.sys_wind is not None %} · systemic wind −{{ row.sys_wind }}%, solar −{{ row.sys_solar }}%{% endif %}
-            </span>
+            {{ form.baseline_row.include }}
+            <span>{{ form.baseline_row.name }}</span>
+            <span class="lede" style="font-size:12px;font-weight:400;">no wind or solar shortfall</span>
           </div>
-          <div style="display:flex;align-items:center;gap:10px;">
+          <label class="prob-field">Probability {{ form.baseline_row.prob }} %</label>
+        </div>
+      </div>
+      {% for row in form.custom_scenario_rows %}
+      <div class="scenario-card custom-scenario">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div class="scenario-title">{{ row.name }}</div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <label class="prob-field">Probability {{ row.prob }} %</label>
-            <button type="button" class="btn ghost small" data-reset="scenario">Reset scenario</button>
+            <button type="button" class="btn ghost small" data-remove-scenario>Remove</button>
           </div>
         </div>
-        <details>
-          <summary>Country error % (wind / solar)</summary>
+        {% for f in row.prob.errors %}<div class="error">{{ f }}</div>{% endfor %}
+        <details open>
+          <summary>Country error % compared with the Baseline (wind / solar)</summary>
           <table style="margin-top:8px;">
             <thead><tr><th>Country</th><th>Wind error %</th><th>Solar error %</th></tr></thead>
             <tbody>
+              <tr><td><em>All countries</em></td><td><input type="number" data-fill="wind" min="0" max="100" step="any" placeholder="set all"></td><td><input type="number" data-fill="solar" min="0" max="100" step="any" placeholder="set all"></td></tr>
               {% for c in row.countries %}
-              <tr>
+              <tr data-country-row="{{ c.code }}">
                 <td>{{ c.code }}</td>
-                <td>{{ c.wind }}</td>
-                <td>{{ c.solar }}</td>
+                <td>{{ c.wind }}{% for e in c.wind.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>
+                <td>{{ c.solar }}{% for e in c.solar.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>
               </tr>
               {% endfor %}
             </tbody>
@@ -285,12 +311,42 @@
       </div>
       {% endfor %}
     </div>
+    <template id="custom-scenario-template">
+      <div class="scenario-card custom-scenario">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div class="scenario-title"><input type="text" name="custom_name____I__" value="Scenario __N__" maxlength="40"></div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <label class="prob-field">Probability <input type="number" name="custom_prob____I__" value="0" min="0" max="100" step="any" required> %</label>
+            <button type="button" class="btn ghost small" data-remove-scenario>Remove</button>
+          </div>
+        </div>
+        <details open>
+          <summary>Country error % compared with the Baseline (wind / solar)</summary>
+          <table style="margin-top:8px;">
+            <thead><tr><th>Country</th><th>Wind error %</th><th>Solar error %</th></tr></thead>
+            <tbody>
+              <tr><td><em>All countries</em></td><td><input type="number" data-fill="wind" min="0" max="100" step="any" placeholder="set all"></td><td><input type="number" data-fill="solar" min="0" max="100" step="any" placeholder="set all"></td></tr>
+              {% for c in form.scenario_countries %}
+              <tr data-country-row="{{ c }}">
+                <td>{{ c }}</td>
+                <td><input type="number" name="custom_wind____I____{{ c }}" value="0" min="0" max="100" step="any" required></td>
+                <td><input type="number" name="custom_solar____I____{{ c }}" value="0" min="0" max="100" step="any" required></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </details>
+      </div>
+    </template>
+    <div class="toolbar">
+      <button type="button" class="btn ghost small" data-add-scenario>+ Add scenario</button>
+    </div>
   </div>
 
   <div class="card">
     <div class="section-head">
       <div>
-        <h2><span class="step">4</span>Economics</h2>
+        <h2><span class="step">5</span>Economics</h2>
         <p class="lede">How capital is annualized and how uncertainty is penalized.</p>
       </div>
       <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
@@ -315,7 +371,7 @@
   <div class="card">
     <div class="section-head">
       <div>
-        <h2><span class="step">5</span>Solver settings</h2>
+        <h2><span class="step">6</span>Solver settings</h2>
         <p class="lede">Defaults are tuned for a good balance of speed and accuracy.</p>
       </div>
       <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
@@ -344,30 +400,56 @@
     const countryInputs = countryBox.querySelectorAll('input[type="checkbox"]');
     const riskRadios = document.querySelectorAll('input[name="risk_measure"]');
     const alphaBox = document.getElementById('alpha-box');
-    const probInputs = document.querySelectorAll('input[name^="scenario_prob__"]');
-    const includeInputs = document.querySelectorAll('input[name^="scenario_include__"]');
     const probTotal = document.getElementById('prob-total');
-    const scenarioCards = Array.from(document.querySelectorAll('.scenario-card')).map(card => ({
-      include: card.querySelector('input[name^="scenario_include__"]'),
-      prob: card.querySelector('input[name^="scenario_prob__"]'),
-    }));
+    const scenarioList = document.getElementById('scenario-list');
+    const scenarioTemplate = document.getElementById('custom-scenario-template');
+    function scenarioCards() {
+      return Array.from(scenarioList.querySelectorAll('.scenario-card')).map(card => {
+        const include = card.querySelector('input[name^="scenario_include__"]');
+        return {
+          on: include ? include.checked : true,
+          prob: card.querySelector('input[name^="scenario_prob__"], input[name^="custom_prob__"]'),
+        };
+      });
+    }
+    function nextScenarioIndex() {
+      const used = Array.from(scenarioList.querySelectorAll('input[name^="custom_name__"]'))
+        .map(i => parseInt(i.name.split('__')[1], 10));
+      return used.length ? Math.max(...used) + 1 : 0;
+    }
     const catalogCards = Array.from(document.querySelectorAll('.catalog-card'));
 
     function syncCountries() {
       const on = allBox.checked;
       countryBox.style.opacity = on ? .4 : 1;
       countryInputs.forEach(c => c.disabled = on);
+      syncCountryRows();
+    }
+    function syncCountryRows() {
+      const all = allBox.checked;
+      const picked = new Set(Array.from(countryInputs).filter(c => c.checked).map(c => c.value));
+      const rows = document.querySelectorAll('[data-country-row]');
+      rows.forEach(r => { r.hidden = !(all || picked.has(r.dataset.countryRow)); });
+    }
+    const nSitesInput = document.querySelector('input[name="n_sites"]');
+    function syncSites() {
+      const n = Math.max(1, parseInt(nSitesInput.value, 10) || 1);
+      document.querySelectorAll('.site-card').forEach(card => { card.hidden = Number(card.dataset.siteIndex) >= n; });
     }
     function syncRisk() {
-      const cvar = document.querySelector('input[name="risk_measure"]:checked').value === 'cvar';
+      const n = scenarioCards().filter(c => c.on).length;
+      const mode = n > 1 ? 'cvar' : 'deterministic';
+      riskRadios.forEach(r => { r.checked = r.value === mode; r.disabled = r.value !== mode; });
+      const cvar = mode === 'cvar';
       alphaBox.style.opacity = cvar ? 1 : .4;
       document.querySelector('input[name="cvar_alpha"]').disabled = !cvar;
     }
     function syncProbTotal() {
-      const total = scenarioCards.reduce((sum, c) => sum + (c.include.checked ? (parseFloat(c.prob.value) || 0) : 0), 0);
+      const total = scenarioCards().reduce((sum, c) => sum + (c.on ? (parseFloat(c.prob.value) || 0) : 0), 0);
       const ok = Math.abs(total - 100) <= 0.01;
       probTotal.textContent = 'Probabilities total ' + total.toFixed(2) + '% (must be 100%)';
       probTotal.className = 'total ' + (ok ? 'ok' : 'bad');
+      syncRisk();
     }
     function syncCatalogCard(card) {
       const rows = Array.from(card.querySelectorAll('.catalog-row'));
@@ -390,22 +472,26 @@
     }
     function syncAll() {
       syncCountries();
+      syncSites();
       syncRisk();
       syncProbTotal();
       syncCatalogRows();
     }
 
-    const RESET_SCOPES = { scenario: '.scenario-card', 'catalog-asset': '.catalog-card' };
+    const RESET_SCOPES = { scenario: '.scenario-card', 'catalog-asset': '.catalog-card', site: '.site-card' };
     document.addEventListener('click', function (e) {
       const reset = e.target.closest('[data-reset]');
       if (reset) {
         const scope = reset.closest(RESET_SCOPES[reset.dataset.reset] || '.card');
         resetWithin(scope);
+        scope.querySelectorAll('.custom-scenario').forEach(card => card.remove());
+        syncProbTotal();
         return;
       }
       const country = e.target.closest('[data-country]');
       if (country) {
         countryInputs.forEach(c => c.checked = country.dataset.country === 'all');
+        syncCountryRows();
       }
       const addCandidate = e.target.closest('[data-add-candidate]');
       if (addCandidate) {
@@ -419,6 +505,25 @@
         syncCatalogCard(card);
         return;
       }
+      if (e.target.closest('[data-add-scenario]')) {
+        const i = nextScenarioIndex();
+        const html = scenarioTemplate.innerHTML.replaceAll('__I__', String(i)).replaceAll('__N__', String(i + 1));
+        scenarioList.insertAdjacentHTML('beforeend', html);
+        const card = scenarioList.lastElementChild;
+        const name = card.querySelector('input[name^="custom_name__"]');
+        name.focus();
+        name.select();
+        syncFills(card);
+        syncCountryRows();
+        syncProbTotal();
+        return;
+      }
+      const removeScenario = e.target.closest('[data-remove-scenario]');
+      if (removeScenario) {
+        removeScenario.closest('.custom-scenario').remove();
+        syncProbTotal();
+        return;
+      }
       const removeCandidate = e.target.closest('[data-remove-candidate]');
       if (removeCandidate) {
         const row = removeCandidate.closest('.catalog-row');
@@ -430,9 +535,28 @@
     form.addEventListener('reset', function () { setTimeout(syncAll, 0); });
 
     allBox.addEventListener('change', syncCountries);
+    countryInputs.forEach(c => c.addEventListener('change', syncCountryRows));
+    nSitesInput.addEventListener('input', syncSites);
     riskRadios.forEach(r => r.addEventListener('change', syncRisk));
-    probInputs.forEach(p => p.addEventListener('input', syncProbTotal));
-    includeInputs.forEach(c => c.addEventListener('change', syncProbTotal));
+    function syncFills(card) {
+      card.querySelectorAll('[data-fill]').forEach(fill => {
+        const values = Array.from(card.querySelectorAll('input[name^="custom_' + fill.dataset.fill + '__"]'))
+          .map(i => i.value);
+        fill.value = values.length && values.every(v => v === values[0]) ? values[0] : '';
+      });
+    }
+    scenarioList.addEventListener('input', function (e) {
+      const card = e.target.closest('.custom-scenario');
+      const fill = e.target.closest('[data-fill]');
+      if (fill && fill.value !== '') {
+        card.querySelectorAll('input[name^="custom_' + fill.dataset.fill + '__"]').forEach(i => { i.value = fill.value; });
+      } else if (card && /^custom_(wind|solar)__/.test(e.target.name || '')) {
+        syncFills(card);
+      }
+      syncProbTotal();
+    });
+    scenarioList.querySelectorAll('.custom-scenario').forEach(syncFills);
+    scenarioList.addEventListener('change', syncProbTotal);
     syncAll();
   })();
 </script>

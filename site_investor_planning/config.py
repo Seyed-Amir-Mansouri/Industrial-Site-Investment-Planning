@@ -12,6 +12,11 @@ Assets and the internal demand each one serves:
 Thermal assets are sized in MW of useful output (MW_th / MW_cold), the electrolyser in MW of
 electrical input. ``HEAT_SERVICES`` are the demands the existing gas boiler backs up.
 
+Every site to build is a ``SiteSpec``: its own daily peak demand per service (MW_th for heat and
+cooling, MW_LHV for hydrogen), green hydrogen share and demand flexibility. A site's hourly demand
+is the per-unit yearly curve in ``inputs/site_demand.csv`` times its peaks, wherever it is built.
+``DEFAULT_SITE_PEAKS_MW`` are the peaks a new site starts from.
+
 Each asset has one default product, which the master may build any number of times (up to
 the site cap). Catalog sources: wind (Vestas V100-2.0 turbine class), PV (fixed-tilt, 40yr), battery (Li-ion, 2h, 20yr), electrolyser (PEM,
 25yr) and H2 tank (compressed, ~16.7h, 30yr) follow the 2030 candidate-product table in
@@ -30,6 +35,11 @@ ASSETS = ["wind_mw", "pv_mw", "battery_mw",
 
 SERVICES = ["electricity", "space_heat", "process_heat", "steam", "cooling", "hydrogen"]
 HEAT_SERVICES = ["space_heat", "process_heat", "steam"]
+
+DEFAULT_SITE_PEAKS_MW: dict[str, float] = {
+    "electricity": 6.604, "space_heat": 1.0466, "process_heat": 5.2832, "steam": 3.9624,
+    "cooling": 1.884, "hydrogen": 1.3208,
+}
 
 THERMAL_ASSET_SERVICES = {
     "heat_pump_mw": ["space_heat"],
@@ -124,7 +134,7 @@ SITE_TECH = SiteTechParams()
 class GreenH2Params:
     """Green (RFNBO) hydrogen rules and the green certificate market.
 
-    At least ``green_share`` of the site's annual hydrogen demand must be green. Green hydrogen is
+    Each site sets its own minimum green share of annual hydrogen demand (``SiteSpec.green_share``). Green hydrogen is
     either made by the site's electrolyser from additional renewable electricity, matched hour by
     hour (EU RFNBO temporal correlation from 2030), or bought as certified green hydrogen at
     ``green_h2_premium`` above the hydrogen market price. Additional renewable electricity is the
@@ -132,17 +142,35 @@ class GreenH2Params:
     own wind/PV exported to the grid earns GOs it can sell, unless that output is claimed for green
     hydrogen.
 
-    Defaults: 42% green share (RED III 2030 RFNBO target for industrial hydrogen), GOs bought at
-    8 and sold at 6 EUR/MWh, and a certified green H2 premium of 120 EUR/MWh (~EUR 4/kg).
+    Defaults: GOs bought at 8 and sold at 6 EUR/MWh, and a certified green H2 premium of
+    120 EUR/MWh (~EUR 4/kg).
     """
 
-    green_share: float = 0.42
     go_buy_price_eur_per_mwh: float = 8.0
     go_sell_price_eur_per_mwh: float = 6.0
     green_h2_premium_eur_per_mwh: float = 120.0
 
 
 GREEN_H2 = GreenH2Params()
+
+
+@dataclass
+class SiteSpec:
+    """One industrial site to build: its name, daily peak demand per service (MW), minimum green
+    share of its annual hydrogen demand (default 42%, the RED III 2030 RFNBO target for industrial
+    hydrogen), and demand flexibility (how far each hour's demand may move up or down as a share of
+    itself, the shifts netting to zero over each day; default 10%)."""
+
+    name: str
+    peaks_mw: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SITE_PEAKS_MW))
+    green_share: float = 0.42
+    flex_fraction: float = 0.10
+
+    def __post_init__(self) -> None:
+        missing = [svc for svc in SERVICES if svc not in self.peaks_mw]
+        if missing:
+            raise ValueError(f"site {self.name!r} is missing peak(s) for {missing}")
+        self.peaks_mw = {svc: float(self.peaks_mw[svc]) for svc in SERVICES}
 
 
 @dataclass
@@ -157,7 +185,7 @@ class CapexAssumptions:
     catalog: dict[str, list[AssetCandidate]] = field(default_factory=lambda: dict(CANDIDATE_CATALOG))
 
     discount_rate: float = 0.05
-    default_budget_eur: float = 500_000_000.0
+    default_budget_eur: float = 1_500_000_000.0
     theta_lower_bound_eur: float = -1e8
 
     site_max_mw: dict[str, float] = field(default_factory=lambda: {

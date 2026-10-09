@@ -27,10 +27,11 @@ Retrain with `python train_model.py`.
 
 ## 2. Industrial Site Investor planning (`site_investor_planning/`, `optimize_site_investor.py`)
 
-An industrial site has its own internal demand for electricity, heat, cooling and hydrogen.
-The planner decides **where** to build the site (which candidate country), **which
-technologies** to install there, and **how big** each one should be, using the price models
-above as a price-taker market signal.
+You define one or more industrial **sites**, each with its own internal demand for
+electricity, heat, cooling and hydrogen, its own minimum green hydrogen share and its own demand
+flexibility. For every site the planner decides **where** to build it (which candidate country;
+several sites may share one), **which technologies** to install there, and **how big** each one
+should be, using the price models above as a price-taker market signal.
 
 | Demand | Main asset(s) | Backup when the new assets don't cover it |
 |---|---|---|
@@ -57,6 +58,7 @@ above as a price-taker market signal.
 ```bash
 python optimize_site_investor.py --zone DE00 --day 5
 python plan_capacity.py --countries DE,FR,PL --n-sites 1 --rep-days-per-month 1
+python plan_capacity.py --countries DE,FR,PL --sites-file sites.json --rep-days-per-month 1
 ```
 
 `optimize_site_investor.py`'s standalone `--day`/`--start-day`/`--end-day` CLI also
@@ -68,37 +70,57 @@ too, since `solve_joint` has no contiguous-range mode.
 
 ### Site demand
 
-The site's hourly demand profiles are read from `inputs/site_demand.csv`. It has one row per
-candidate country and model-year hour (8736 per country) and these columns, all in MW (MW of
-heat or cooling for the thermal demands, MW_LHV for hydrogen):
+A site's hourly demand is one per-unit curve per demand times the site's daily peak:
 
-```
-country,hour,electricity,space_heat,process_heat,steam,cooling,hydrogen
+- `inputs/site_demand.csv` holds the **per-unit curves** for the whole year: 8736 rows (`hour`
+  0–8735), each value that hour's demand as a share of the site's daily peak (1.0 = a normal
+  day's peak hour; a day can be set higher or lower). The curves are shared by every site. The
+  shipped file repeats one daily curve every day, so edit individual days to make them differ:
+
+  ```
+  hour,electricity,space_heat,process_heat,steam,cooling,hydrogen
+  ```
+
+- Each site's **daily peaks** (MW of heat or cooling for the thermal demands, MW_LHV for
+  hydrogen), **minimum green hydrogen share** and **flexibility** belong to the site, not the
+  country: a site keeps its demand wherever it is built. New sites start from
+  `DEFAULT_SITE_PEAKS_MW`, a 42% green share and ±10% flexibility (`SiteSpec` in
+  `site_investor_planning/config.py`).
+
+Sites are given to the planner in a JSON file (`--sites-file`), one entry per site; anything left
+out falls back to the defaults:
+
+```json
+{"sites": [
+  {"name": "Food plant", "peaks_mw": {"electricity": 6.6, "steam": 4.0}, "green_share": 0.42, "flex_fraction": 0.10},
+  {"name": "Chemicals", "peaks_mw": {"steam": 9.0, "hydrogen": 3.0}, "green_share": 0.80, "flex_fraction": 0.0}
+]}
 ```
 
-A site built in a country gets that country's profiles. If you drop the `country` column, one
-8736-row profile applies in every country. Edit the file to change the demand; the planner
-prints each candidate country's annual totals at the start of a run, and the web Catalog page
-shows them too.
+Without a file, `--n-sites N` builds N sites with the default settings, and
+`--green-h2-share-pct` / `--demand-flex-pct` change the green share and flexibility of all of
+them. The planner prints each site's settings and annual totals at the start of a run and writes
+them to `_sites.csv`; the web New run page edits every site on its own card.
 
 `process_heat` is low/medium-temperature process heat and `steam` is high-temperature process
-heat / steam. The shipped profiles are synthetic: 50 GWh electricity, 40 GWh low/medium-temperature
-process heat, 30 GWh high-temperature heat / steam and 10 GWh hydrogen per year on a two-shift
-weekday pattern; space heating (8 GWh at 3000 heating degree days)
-scaled by each country's heating degree days; and 12 GWh process cooling plus comfort cooling
-scaled by each country's cooling degree days.
+heat / steam. The shipped curves are synthetic: electricity, process heat, steam and hydrogen
+run at full load from 6:00 to 22:00 and 60% at night; space heating at full load from 6:00 to
+20:00 and 70% otherwise; cooling peaks at 14:00 and drops to about 54% at night. The default
+peaks were set so the annual totals match the earlier synthetic demand (50 GWh electricity,
+40 GWh process heat, 30 GWh steam, 10 GWh hydrogen, 8 GWh space heating and 13.2 GWh cooling per
+year, the German values of the earlier per-country demand). There are no seasons or weekends in
+the shipped curves: every day is the same until you edit it.
 
-Every demand is also **flexible**: each hour it may move up or down by up to a share of its
-original value (`SiteDemandAssumptions.flex_fraction`, 10% for each demand by default), as long
-as the shifts net to zero over each day, so the day's total energy is unchanged. The site uses
-this to move load into cheap or high-renewable hours. Pass `--demand-flex-pct P` to set the same
-share for all six demands (`0` makes demand rigid). The exported schedules include each
-demand's hourly shift.
+Every demand is also **flexible**: each hour it may move up or down by up to the site's
+flexibility share of its original value (10% by default), as long as the shifts net to zero over
+each day, so the day's total energy is unchanged. The site uses this to move load into cheap or
+high-renewable hours. A site with 0% flexibility has rigid demand. The exported schedules
+include each demand's hourly shift.
 
 ### Green hydrogen and the certificate market
 
-At least a share of each site's annual hydrogen demand must be green (RFNBO), by default 42%
-(the RED III 2030 target for hydrogen used in industry). Green hydrogen comes from two sources:
+At least the site's own share of its annual hydrogen demand must be green (RFNBO), by default
+42% (the RED III 2030 target for hydrogen used in industry). Green hydrogen comes from two sources:
 
 - **The site's electrolyser, under the EU RFNBO rules.** Its green electricity must be
   *additional* and *matched every hour* (the temporal-correlation rule that applies from 2030).
@@ -109,9 +131,9 @@ At least a share of each site's annual hydrogen demand must be green (RFNBO), by
   master proposes.
 
 The site also sells GOs (6 EUR/MWh by default) for the wind/PV it exports, except for output it
-has already claimed for green hydrogen. The defaults live in `GreenH2Params` in
-`site_investor_planning/config.py`. Pass `--green-h2-share-pct P` to change the share (`0`
-removes the requirement; GO sales stay on). The exported schedules include the electrolyser's
+has already claimed for green hydrogen. The prices live in `GreenH2Params` in
+`site_investor_planning/config.py`; each site sets its own share (`0` removes the requirement for
+that site; GO sales stay on). The exported schedules include the electrolyser's
 green load, the wind/PV claimed for it, GOs bought and sold, and green hydrogen bought.
 
 ### Technology and cost assumptions
@@ -143,26 +165,31 @@ Full, current list also always available via `python plan_capacity.py --help`.
 |---|---|---|
 | `--countries CC,CC,...` | — | Candidate site countries, comma-separated 2-letter codes, e.g. `DE,FR,PL` (mutually exclusive with `--all`) |
 | `--all` | — | Every eligible country is a candidate |
-| `--n-sites N` | 1 | How many sites to build, each in a different candidate country. The optimizer picks which. |
-| `--green-h2-share-pct P` | 42 | Minimum green (RFNBO) share of each site's annual hydrogen demand, in %. `0` = no requirement. |
-| `--demand-flex-pct P` | 10 for each demand | Hourly demand flexibility in % of each hour's demand, for all six demands; shifts net to zero over each day. `0` = rigid demand. |
+| `--sites-file FILE` | — | JSON file defining each site to build (name, daily peaks, green share, flexibility); see *Site demand*. Overrides the three flags below. |
+| `--n-sites N` | 1 | Without `--sites-file`: how many default sites to build. The optimizer picks a country for each; sites may share one. |
+| `--green-h2-share-pct P` | 42 | Without `--sites-file`: minimum green (RFNBO) share of every site's annual hydrogen demand, in %. `0` = no requirement. |
+| `--demand-flex-pct P` | 10 | Without `--sites-file`: hourly demand flexibility of every site, in % of each hour's demand; shifts net to zero over each day. `0` = rigid demand. |
 
 **Budget / CAPEX**
 | Flag | Default | What it does |
 |---|---|---|
-| `--budget EUR` | 500,000,000 | Raw/unannualized CAPEX budget, shared across every site. |
+| `--budget EUR` | 1,500,000,000 | Raw/unannualized CAPEX budget, shared across every site. |
 | `--discount-rate R` | 0.05 | Discount rate for the capital recovery factor |
 | `--lifetime-years N` | catalog's own (30/40/20yr wind/PV/battery, 20/25/25/20yr heat pump/industrial heat pump/electric boiler/chiller, 25/30yr electrolyser/tank) | Overrides every asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
 
-The master builds exactly `--n-sites` sites. Only a chosen site may host capacity, up to its
-per-site cap for each asset (see *Technology and cost assumptions*). Assets are otherwise
-coupled through the site's energy balances in the subproblem and the shared budget.
+The master places every site in exactly one candidate country, and several sites may share a
+country. Internally each (site, country) pair is a separate candidate with its own capacities;
+only the chosen pair of each site may host capacity, up to that site's cap for each asset (see
+*Technology and cost assumptions*). Sites are otherwise coupled only through the shared budget.
+Each site is a price-taker, so two sites in one country don't affect each other's prices. With
+more sites, each iteration solves more site LPs (sites × candidate countries), so runs take
+longer.
 
 **Capacity-uncertainty scenarios / risk measure**
 | Flag | Default | What it does |
 |---|---|---|
-| `--cvar-alpha A` | 0.8 | Risk measure: CVaR at confidence level `A` (0–1) across the 4 planning scenarios (see *Planning scenarios* below). |
-| `--scenarios S,S,...` | all 4 | Restrict to a subset of scenarios (probabilities renormalized to sum to 1), e.g. `--scenarios p100` for a single deterministic baseline run ("on-plan"). |
+| `--scenarios S,S,...` | `p100` (the Baseline) | Scenarios to plan over, probabilities renormalized to sum to 1. Scenarios other than the Baseline are defined in the `PLANNER_SCENARIO_OVERRIDES` file the web app writes. One scenario is planned deterministically; two or more use CVaR. |
+| `--cvar-alpha A` | 0.8 | CVaR confidence level (0–1), used only with two or more scenarios. |
 | `--disabled-assets A,A,...` | none | Exclude asset keys at every site (max MW = 0), e.g. `battery_mw,tank_mw`. Keys: `wind_mw`, `pv_mw`, `battery_mw`, `heat_pump_mw`, `industrial_heat_pump_mw`, `electric_boiler_mw`, `electric_chiller_mw`, `electrolyser_mw`, `tank_mw`. |
 
 **Subproblem**
@@ -176,22 +203,19 @@ without a site has no demand and no capacity, so it costs nothing.
 
 **Planning scenarios**
 
-`inputs/uncertainty_scenarios.json` defines 11 capacity-uncertainty scenarios (`p100` plus
-`unc01`–`unc10`), all kept for the dispatch runs that build the price data. Planning uses the 4
-with a positive probability. The 10 `unc` scenarios fall into three groups by how much they raise
-average electricity prices over `p100` in the candidate countries (hydrogen prices move by at
-most EUR 1.6/MWh), and one scenario stands for each group, carrying the group's combined
-probability:
+By default a run plans over the **Baseline** (`p100`, no capacity shortfall) alone, with 100%
+probability, and is solved **deterministically**. To plan under uncertainty, add scenarios; with
+two or more the risk measure is **CVaR** at `--cvar-alpha` (default 0.8). There is no
+expected-value option.
 
-| Scenario | Stands for | Electricity price vs `p100` | Probability |
-|---|---|---|---|
-| `p100` | no capacity shortfall | — | 3.33% |
-| `unc09` | `unc09` | +10.5 EUR/MWh | 3.33% |
-| `unc01` | `unc01`, `unc02`, `unc03`, `unc05`, `unc08`, `unc10` | +20 to +24 EUR/MWh | 45.33% |
-| `unc04` | `unc04`, `unc06`, `unc07` | +29 to +30 EUR/MWh | 48.00% |
+`inputs/uncertainty_scenarios.json` defines only the Baseline (`p100`) and lists it as the
+default (`default_scenarios`).
 
-With the default CVaR at α = 0.8, the 20% worst tail falls inside `unc04`. To plan with another
-scenario, give it a positive probability in the file (the probabilities must still add up to 1).
+Further scenarios are your own, added on the New run page: each has a name, a probability and a
+wind and a solar error in % compared with the Baseline for each country. A scenario
+uses the Baseline's market prices and derates only the site's own wind/PV output by exactly those
+errors. The web app passes them to the planner in the run's scenario overrides file
+(`PLANNER_SCENARIO_OVERRIDES`, entries marked `"custom": true`).
 
 **Solve control / output**
 | Flag | Default | What it does |
@@ -199,7 +223,7 @@ scenario, give it a positive probability in the file (the probabilities must sti
 | `--max-iters N` | 30 | Benders iteration cap |
 | `--gap-tol G` | 0.01 (1%) | Relative Benders convergence gap |
 | `--master-time-limit S` | 180 | Wall-time cap (seconds) per master MILP solve. The master gets genuinely hard to solve to proven optimality as cuts accumulate at large scale, so this bounds it instead; the Benders lower bound is still read from HiGHS's own proven dual bound, so the result stays mathematically rigorous even when the search is cut off early. |
-| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (with a `site` column, 1 = chosen)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each chosen site's green hydrogen and GO totals per scenario)/(with `--export-schedules`) `_schedule_<country>_<scenario>.csv` |
+| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (one row per site: its chosen country and capacities)/`_sites.csv` (each site's settings and annual demand)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each site's green hydrogen and GO totals per scenario)/(with `--export-schedules`) `_schedule_<site>_<country>_<scenario>.csv` |
 | `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each chosen site's representative-day schedule: every demand, asset output, grid and H2 import/export, and backup use |
 
 Each iteration adds two optimality cuts per scenario: one from the subproblem solved at the
@@ -217,12 +241,13 @@ hourly LP dispatch variables per candidate country, doesn't scale. So `plan_capa
 splits it into a master problem and one joint subproblem (covering every candidate country
 together), iterating between them:
 
-1. **Master (MILP, `site_investor_planning/master.py`)** picks which `--n-sites` countries get
-   a site (one binary per country) and how many units of each catalog product each site
-   builds, subject to the CAPEX budget and the per-site caps. Its objective is annualized
+1. **Master (MILP, `site_investor_planning/master.py`)** picks a country for each site (one
+   binary per site and country, exactly one per site) and how many units of each catalog product
+   each site builds, subject to the CAPEX budget and the per-site caps. Its objective is annualized
    CAPEX plus a recourse stand-in (`theta`) that starts unconstrained and gets tightened every
    round by the cuts below. There's one `theta_s` per capacity-uncertainty scenario, combined
-   via CVaR at `--cvar-alpha` (default 0.8) rather than a single shared scalar.
+   via CVaR at `--cvar-alpha` (default 0.8); with a single scenario it is just that scenario's
+   recourse (deterministic).
 2. **Joint subproblem (LP, every country in one linopy model, `optimize_site_investor.
    solve_joint`)** takes the master's site choice and capacities and solves the
    representative-day site operation (`--rep-days-per-month`), once per capacity-uncertainty
@@ -268,14 +293,18 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
 - **Runs** is the home page. It lists the 100 most recent planning runs with their
   status (running, completed or failed), the candidate countries and technologies in scope,
   the risk measure, the budget, the objective and the time taken. Click a run to open it.
-- **New run** is where you set up a planning run. The form has five numbered sections:
-  1. **Problem definition:** run name, total CAPEX budget, candidate site countries, the
-     number of sites to build, the minimum green hydrogen share, the demand flexibility,
-     excluded technologies and the cap on units per product.
+- **New run** is where you set up a planning run. The form has six numbered sections:
+  1. **Problem definition:** run name, total CAPEX budget, candidate countries, the number of
+     sites to build (up to 6), excluded technologies and the cap on units per product.
      Countries are shown in a table, each with its flag, full name and code, and you click
      one to select it. *Select all* and *Clear* sit above them. Ticking *All eligible
      countries* turns the country picks off.
-  2. **Candidate catalog:** one card per technology listing the products the optimizer may
+  2. **Sites:** one card per site to build, with its name, minimum green hydrogen share,
+     flexibility and daily peak demand (MW) for each of the six demands, filled with the
+     defaults. Only as many cards as *Sites to build* are shown, and each has a **Reset site**
+     button. The sites are written to `sites.json` in the run's output folder and passed to the
+     planner with `--sites-file`.
+  3. **Candidate catalog:** one card per technology listing the products the optimizer may
      build: size (MW), CAPEX and, for the battery and H2 storage, energy (MWh), plus one
      lifetime per technology. You can edit any value, add products with **+ Add candidate**
      (up to 8 per technology) or remove them by clearing their row, and each card has a
@@ -284,24 +313,23 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      folder and passed to the planner through `PLANNER_CATALOG_OVERRIDES`); the defaults in
      `site_investor_planning/config.py` stay as they are. The run page prices its cost
      breakdown with the run's own catalog.
-  3. **Uncertainty scenarios:** one card per scenario. Each card has an include tick box,
-     the scenario's probability in percent and a short description. Open a card to see
-     the wind and solar error % for every country. Error % is the share of nominal output
-     that is lost, so 0% means no loss. The probabilities of all scenarios must add up to
-     100%. A badge at the top shows the current total in green when it's right and red
-     when it isn't. Changes apply to this run only. The defaults come from
-     `inputs/uncertainty_scenarios.json`; only the 4 planning scenarios (positive probability)
-     are shown.
-  4. **Economics:** discount rate, the risk measure (CVaR or expected value, shown as a
-     switch) and the CVaR confidence level. Lifetimes are set per technology in the
-     candidate catalog.
-  5. **Solver settings:** representative days per month, optimality gap, maximum
+  4. **Uncertainty scenarios:** the **Baseline** card, ticked at 100% by default, and
+     **+ Add scenario**, which adds as many scenarios of your own as you like. Each added
+     scenario has a name, a probability and a table of wind and solar error % compared with the
+     Baseline for every selected country (the share of the site's own output lost); the *All
+     countries* row fills a whole column at once. **Remove** deletes it. The probabilities must add up to 100%; a badge at the top shows the total in
+     green when it's right and red when it isn't. **Reset this section** goes back to the
+     Baseline alone. Changes apply to this run only.
+  5. **Economics:** discount rate, the risk measure and the CVaR confidence level. The risk
+     measure follows the scenarios: **Deterministic** with one scenario, **CVaR** with two or
+     more. Lifetimes are set per technology in the candidate catalog.
+  6. **Solver settings:** representative days per month, optimality gap, maximum
      Benders iterations, master time limit and parallel workers.
 
   Each section has its own **Reset this section** button. Each scenario card has a
   **Reset scenario** button. **Reset all settings** at the bottom returns the whole form
   to its defaults. **Run plan** starts the run, and the page opens the run's details.
-- **Run detail** shows one finished run. It has the chosen site(s) and headline numbers
+- **Run detail** shows one finished run. It has each site with its chosen country, the headline numbers
   (objective, raw CAPEX, risk measure), installed capacity at each site in MW, the product
   units built, the green hydrogen results (green share reached, green hydrogen produced and
   bought, GOs bought and sold, per scenario and probability-weighted), a map of the candidate
@@ -355,7 +383,7 @@ says otherwise.
 |---|---|---|---|
 | `zones_2030.parquet`, `networks_2030.parquet`, `marginal_price_electricity_2030.parquet`, `marginal_price_hydrogen_2030.parquet`, `crossborder_electricity_2030.parquet`, `crossborder_hydrogen_2030.parquet`, `hydro_*_2030.parquet`, `smr_production_2030.parquet` | `inputs/` | In git | Dispatch engine and planner |
 | `uncertainty_scenarios.json` | `inputs/` | In git | Planner (scenario probabilities and country error factors) |
-| `site_demand.csv` | `inputs/` | In git | Planner (hourly site demand profiles per country) |
+| `site_demand.csv` | `inputs/` | In git | Planner (per-unit hourly demand curves for the year, shared by all sites; each site's daily peaks come with the site) |
 | `elec_adjacency.json`, `h2_adjacency.json` | `inputs/` | In git (rewritten by `build_dataset.py`) | Price models |
 | `electricity_model.joblib`, `hydrogen_model.joblib` and the `*_metrics.csv` files | `data_exchange/02_train_output__benders_input/` | In git (written by `train_model.py`) | Planner |
 | `elec_samples.parquet`, `h2_samples.parquet` | `data_exchange/01_dispatch_output__train_input/` | Downloaded automatically by `webui\app.bat` from the project's Google Drive. You can also build them with steps 1 and 2. | Planner (`optimize_site_investor.py`) and `train_model.py` |
@@ -396,7 +424,7 @@ It takes a long time, because each scenario is a full-year LP. To run only some 
 them, pass a comma-separated list:
 
 ```bash
-python run_capacity_scenarios.py --scenarios p100,unc01
+python run_capacity_scenarios.py --scenarios p100,wind70
 ```
 
 ### Step 2: build the feature tables (Option B only)
@@ -414,7 +442,7 @@ data_exchange/01_dispatch_output__train_input/h2_samples.parquet
 ```
 
 It also rewrites the zone adjacency files in `inputs/`. To pool only some scenarios,
-use `--scenarios p100,unc01`.
+use `--scenarios p100,wind70`.
 
 ### Step 3: train the price models (Option B only)
 
@@ -434,8 +462,8 @@ python plan_capacity.py --countries DE,FR --scenarios p100 --rep-days-per-month 
 ```
 
 This is a small, fast run that checks the whole chain works before you start a full
-run. The output goes to `outputs/plan_*.csv`. For the full run, drop `--scenarios`,
-use `--all`, and raise `--rep-days-per-month` (see the flags table above).
+run. The output goes to `outputs/plan_*.csv`. For the full run, use `--all` and raise `--rep-days-per-month` (see the flags
+table above).
 
 ### Step 5: start the web planner
 
