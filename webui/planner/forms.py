@@ -115,10 +115,11 @@ class PlanRunForm(forms.Form):
                 max_length=40, required=False, initial=f"Scenario {i + 1}", label="Name")
             self.fields[f"custom_prob__{i}"] = forms.FloatField(
                 min_value=0, max_value=100, initial=0, label="Probability (%)")
-            self.fields[f"custom_wind__{i}"] = forms.FloatField(
-                min_value=0, max_value=100, initial=0, label="Wind error vs baseline (%)")
-            self.fields[f"custom_solar__{i}"] = forms.FloatField(
-                min_value=0, max_value=100, initial=0, label="Solar error vs baseline (%)")
+            for c in self.scenario_countries:
+                self.fields[f"custom_wind__{i}__{c}"] = forms.FloatField(
+                    min_value=0, max_value=100, initial=0, label=f"{c} wind error vs baseline (%)")
+                self.fields[f"custom_solar__{i}__{c}"] = forms.FloatField(
+                    min_value=0, max_value=100, initial=0, label=f"{c} solar error vs baseline (%)")
 
     COUNTRY_TABLE_COLUMNS = 4
     ASSET_TABLE_COLUMNS = 3
@@ -176,9 +177,10 @@ class PlanRunForm(forms.Form):
 
     @property
     def custom_scenario_rows(self) -> list[dict]:
-        """One card per custom scenario the user added: name, probability and uniform wind/solar error."""
+        """One card per custom scenario the user added: name, probability and each country's wind/solar error."""
         return [{"index": i, "name": self[f"custom_name__{i}"], "prob": self[f"custom_prob__{i}"],
-                 "wind": self[f"custom_wind__{i}"], "solar": self[f"custom_solar__{i}"]}
+                 "countries": [{"code": c, "wind": self[f"custom_wind__{i}__{c}"],
+                                "solar": self[f"custom_solar__{i}__{c}"]} for c in self.scenario_countries]}
                 for i in self.custom_indices]
 
     def _included_scenarios(self, data: dict) -> list[str]:
@@ -270,8 +272,8 @@ class PlanRunForm(forms.Form):
                 "custom": True,
                 "label": name,
                 "probability": d[f"custom_prob__{i}"] / total,
-                "wind": {c: round(1 - d[f"custom_wind__{i}"] / 100, 6) for c in self.scenario_countries},
-                "solar": {c: round(1 - d[f"custom_solar__{i}"] / 100, 6) for c in self.scenario_countries},
+                "wind": {c: round(1 - d[f"custom_wind__{i}__{c}"] / 100, 6) for c in self.scenario_countries},
+                "solar": {c: round(1 - d[f"custom_solar__{i}__{c}"] / 100, 6) for c in self.scenario_countries},
             }
         return {
             "all_countries": d["all_countries"],

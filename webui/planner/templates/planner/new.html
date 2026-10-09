@@ -264,7 +264,7 @@
     <div class="section-head">
       <div>
         <h2><span class="step">4</span>Uncertainty scenarios</h2>
-        <p class="lede">The Baseline is planned on its own by default (100%, deterministic). Add as many scenarios of your own as you like to plan under uncertainty: each has a probability and a wind and solar error compared with the Baseline (the share of the site's own wind/solar output lost, the same in every country), and uses Baseline market prices. Probabilities must add up to 100%; with two or more scenarios the risk measure switches to CVaR. Changes apply to this run only.</p>
+        <p class="lede">The Baseline is planned on its own by default (100%, deterministic). Add as many scenarios of your own as you like to plan under uncertainty: each has a probability and a wind and solar error per country compared with the Baseline (the share of the site's own wind/solar output lost), and uses Baseline market prices. Probabilities must add up to 100%; with two or more scenarios the risk measure switches to CVaR. Changes apply to this run only.</p>
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
         <span id="prob-total" class="total ok"></span>
@@ -288,14 +288,26 @@
           <div class="scenario-title">{{ row.name }}</div>
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <label class="prob-field">Probability {{ row.prob }} %</label>
-            <label class="prob-field">Wind error {{ row.wind }} %</label>
-            <label class="prob-field">Solar error {{ row.solar }} %</label>
             <button type="button" class="btn ghost small" data-remove-scenario>Remove</button>
           </div>
         </div>
         {% for f in row.prob.errors %}<div class="error">{{ f }}</div>{% endfor %}
-        {% for f in row.wind.errors %}<div class="error">{{ f }}</div>{% endfor %}
-        {% for f in row.solar.errors %}<div class="error">{{ f }}</div>{% endfor %}
+        <details open>
+          <summary>Country error % compared with the Baseline (wind / solar)</summary>
+          <table style="margin-top:8px;">
+            <thead><tr><th>Country</th><th>Wind error %</th><th>Solar error %</th></tr></thead>
+            <tbody>
+              <tr><td><em>All countries</em></td><td><input type="number" data-fill="wind" min="0" max="100" step="any" placeholder="set all"></td><td><input type="number" data-fill="solar" min="0" max="100" step="any" placeholder="set all"></td></tr>
+              {% for c in row.countries %}
+              <tr data-country-row="{{ c.code }}">
+                <td>{{ c.code }}</td>
+                <td>{{ c.wind }}{% for e in c.wind.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>
+                <td>{{ c.solar }}{% for e in c.solar.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </details>
       </div>
       {% endfor %}
     </div>
@@ -305,11 +317,25 @@
           <div class="scenario-title"><input type="text" name="custom_name____I__" value="Scenario __N__" maxlength="40"></div>
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <label class="prob-field">Probability <input type="number" name="custom_prob____I__" value="0" min="0" max="100" step="any" required> %</label>
-            <label class="prob-field">Wind error <input type="number" name="custom_wind____I__" value="0" min="0" max="100" step="any" required> %</label>
-            <label class="prob-field">Solar error <input type="number" name="custom_solar____I__" value="0" min="0" max="100" step="any" required> %</label>
             <button type="button" class="btn ghost small" data-remove-scenario>Remove</button>
           </div>
         </div>
+        <details open>
+          <summary>Country error % compared with the Baseline (wind / solar)</summary>
+          <table style="margin-top:8px;">
+            <thead><tr><th>Country</th><th>Wind error %</th><th>Solar error %</th></tr></thead>
+            <tbody>
+              <tr><td><em>All countries</em></td><td><input type="number" data-fill="wind" min="0" max="100" step="any" placeholder="set all"></td><td><input type="number" data-fill="solar" min="0" max="100" step="any" placeholder="set all"></td></tr>
+              {% for c in form.scenario_countries %}
+              <tr data-country-row="{{ c }}">
+                <td>{{ c }}</td>
+                <td><input type="number" name="custom_wind____I____{{ c }}" value="0" min="0" max="100" step="any" required></td>
+                <td><input type="number" name="custom_solar____I____{{ c }}" value="0" min="0" max="100" step="any" required></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </details>
       </div>
     </template>
     <div class="toolbar">
@@ -487,6 +513,7 @@
         const name = card.querySelector('input[name^="custom_name__"]');
         name.focus();
         name.select();
+        syncCountryRows();
         syncProbTotal();
         return;
       }
@@ -510,7 +537,14 @@
     countryInputs.forEach(c => c.addEventListener('change', syncCountryRows));
     nSitesInput.addEventListener('input', syncSites);
     riskRadios.forEach(r => r.addEventListener('change', syncRisk));
-    scenarioList.addEventListener('input', syncProbTotal);
+    scenarioList.addEventListener('input', function (e) {
+      const fill = e.target.closest('[data-fill]');
+      if (fill && fill.value !== '') {
+        const card = fill.closest('.custom-scenario');
+        card.querySelectorAll('input[name^="custom_' + fill.dataset.fill + '__"]').forEach(i => { i.value = fill.value; });
+      }
+      syncProbTotal();
+    });
     scenarioList.addEventListener('change', syncProbTotal);
     syncAll();
   })();

@@ -212,7 +212,7 @@ expected-value option.
 default (`default_scenarios`).
 
 Further scenarios are your own, added on the New run page: each has a name, a probability and a
-wind and a solar error in % compared with the Baseline, the same in every country. A scenario
+wind and a solar error in % compared with the Baseline for each country. A scenario
 uses the Baseline's market prices and derates only the site's own wind/PV output by exactly those
 errors. The web app passes them to the planner in the run's scenario overrides file
 (`PLANNER_SCENARIO_OVERRIDES`, entries marked `"custom": true`).
@@ -315,9 +315,9 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      breakdown with the run's own catalog.
   4. **Uncertainty scenarios:** the **Baseline** card, ticked at 100% by default, and
      **+ Add scenario**, which adds as many scenarios of your own as you like. Each added
-     scenario has a name, a probability and one wind and one solar error % compared with the
-     Baseline (the share of the site's own output lost, the same in every country); **Remove**
-     deletes it. The probabilities must add up to 100%; a badge at the top shows the total in
+     scenario has a name, a probability and a table of wind and solar error % compared with the
+     Baseline for every selected country (the share of the site's own output lost); the *All
+     countries* row fills a whole column at once. **Remove** deletes it. The probabilities must add up to 100%; a badge at the top shows the total in
      green when it's right and red when it isn't. **Reset this section** goes back to the
      Baseline alone. Changes apply to this run only.
   5. **Economics:** discount rate, the risk measure and the CVaR confidence level. The risk
