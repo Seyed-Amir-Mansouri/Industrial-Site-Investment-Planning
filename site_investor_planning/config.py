@@ -12,8 +12,8 @@ Assets and the internal demand each one serves:
 Thermal assets are sized in MW of useful output (MW_th / MW_cold), the electrolyser in MW of
 electrical input. ``HEAT_SERVICES`` are the demands the existing gas boiler backs up.
 
-``DEMAND_PEAKS_MW`` is the default peak demand of a site in each country, in MW (MW_th for heat and
-cooling, MW_LHV for hydrogen); a site's hourly demand is its per-unit profile in
+``DEMAND_PEAKS_MW`` is the default daily peak demand of a site in each country, in MW (MW_th for
+heat and cooling, MW_LHV for hydrogen); a site's hourly demand is the per-unit yearly curve in
 ``inputs/site_demand.csv`` times these peaks.
 
 Each asset has one default product, which the master may build any number of times (up to
@@ -36,19 +36,19 @@ SERVICES = ["electricity", "space_heat", "process_heat", "steam", "cooling", "hy
 HEAT_SERVICES = ["space_heat", "process_heat", "steam"]
 
 DEMAND_PEAKS_MW: dict[str, dict[str, float]] = {
-    "AT": {"electricity": 7.512, "space_heat": 3.2528, "process_heat": 6.0096, "steam": 4.5072, "cooling": 3.2571, "hydrogen": 1.5024},
-    "BE": {"electricity": 7.512, "space_heat": 2.6614, "process_heat": 6.0096, "steam": 4.5072, "cooling": 2.1664, "hydrogen": 1.5024},
-    "CZ": {"electricity": 7.512, "space_heat": 3.2528, "process_heat": 6.0096, "steam": 4.5072, "cooling": 2.7117, "hydrogen": 1.5024},
-    "DE": {"electricity": 7.512, "space_heat": 2.9571, "process_heat": 6.0096, "steam": 4.5072, "cooling": 2.53, "hydrogen": 1.5024},
-    "FR": {"electricity": 7.512, "space_heat": 2.2671, "process_heat": 6.0096, "steam": 4.5072, "cooling": 4.3477, "hydrogen": 1.5024},
-    "HR": {"electricity": 7.512, "space_heat": 2.2671, "process_heat": 6.0096, "steam": 4.5072, "cooling": 10.8915, "hydrogen": 1.5024},
-    "HU": {"electricity": 7.512, "space_heat": 2.6614, "process_heat": 6.0096, "steam": 4.5072, "cooling": 7.256, "hydrogen": 1.5024},
-    "LU": {"electricity": 7.512, "space_heat": 2.8585, "process_heat": 6.0096, "steam": 4.5072, "cooling": 2.3482, "hydrogen": 1.5024},
-    "NL": {"electricity": 7.512, "space_heat": 2.6614, "process_heat": 6.0096, "steam": 4.5072, "cooling": 2.1664, "hydrogen": 1.5024},
-    "PL": {"electricity": 7.512, "space_heat": 3.2528, "process_heat": 6.0096, "steam": 4.5072, "cooling": 2.8935, "hydrogen": 1.5024},
-    "RO": {"electricity": 7.512, "space_heat": 2.76, "process_heat": 6.0096, "steam": 4.5072, "cooling": 9.0738, "hydrogen": 1.5024},
-    "SI": {"electricity": 7.512, "space_heat": 2.6614, "process_heat": 6.0096, "steam": 4.5072, "cooling": 5.0748, "hydrogen": 1.5024},
-    "SK": {"electricity": 7.512, "space_heat": 3.0557, "process_heat": 6.0096, "steam": 4.5072, "cooling": 4.3477, "hydrogen": 1.5024},
+    "AT": {"electricity": 6.604, "space_heat": 1.1512, "process_heat": 5.2832, "steam": 3.9624, "cooling": 2.0553, "hydrogen": 1.3208},
+    "BE": {"electricity": 6.604, "space_heat": 0.9419, "process_heat": 5.2832, "steam": 3.9624, "cooling": 1.7984, "hydrogen": 1.3208},
+    "CZ": {"electricity": 6.604, "space_heat": 1.1512, "process_heat": 5.2832, "steam": 3.9624, "cooling": 1.9268, "hydrogen": 1.3208},
+    "DE": {"electricity": 6.604, "space_heat": 1.0466, "process_heat": 5.2832, "steam": 3.9624, "cooling": 1.884, "hydrogen": 1.3208},
+    "FR": {"electricity": 6.604, "space_heat": 0.8024, "process_heat": 5.2832, "steam": 3.9624, "cooling": 2.3122, "hydrogen": 1.3208},
+    "HR": {"electricity": 6.604, "space_heat": 0.8024, "process_heat": 5.2832, "steam": 3.9624, "cooling": 3.8537, "hydrogen": 1.3208},
+    "HU": {"electricity": 6.604, "space_heat": 0.9419, "process_heat": 5.2832, "steam": 3.9624, "cooling": 2.9973, "hydrogen": 1.3208},
+    "LU": {"electricity": 6.604, "space_heat": 1.0117, "process_heat": 5.2832, "steam": 3.9624, "cooling": 1.8412, "hydrogen": 1.3208},
+    "NL": {"electricity": 6.604, "space_heat": 0.9419, "process_heat": 5.2832, "steam": 3.9624, "cooling": 1.7984, "hydrogen": 1.3208},
+    "PL": {"electricity": 6.604, "space_heat": 1.1512, "process_heat": 5.2832, "steam": 3.9624, "cooling": 1.9696, "hydrogen": 1.3208},
+    "RO": {"electricity": 6.604, "space_heat": 0.9768, "process_heat": 5.2832, "steam": 3.9624, "cooling": 3.4255, "hydrogen": 1.3208},
+    "SI": {"electricity": 6.604, "space_heat": 0.9419, "process_heat": 5.2832, "steam": 3.9624, "cooling": 2.4835, "hydrogen": 1.3208},
+    "SK": {"electricity": 6.604, "space_heat": 1.0815, "process_heat": 5.2832, "steam": 3.9624, "cooling": 2.3122, "hydrogen": 1.3208},
 }
 
 THERMAL_ASSET_SERVICES = {

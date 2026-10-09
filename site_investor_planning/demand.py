@@ -1,16 +1,16 @@
-"""Hourly internal demand profiles of one industrial site: per-unit shapes times peak MW.
+"""Hourly internal demand of one industrial site: one per-unit yearly curve per demand times a peak.
 
-``inputs/site_demand.csv`` holds the per-unit shapes: one row per candidate country and model-year
-hour (8736 per country) with columns ``country``, ``hour`` and one column per service:
-``electricity``, ``space_heat``, ``process_heat`` (low/medium-temperature), ``steam``
-(high-temperature heat / steam), ``cooling`` and ``hydrogen``. Each value is that hour's demand as
-a share of the column's annual peak (1.0 = the peak hour). Without a ``country`` column, the same
-shapes apply in every country.
+``inputs/site_demand.csv`` holds the per-unit curves: 8736 rows (``hour`` 0-8735, the model year)
+and one column per service: ``electricity``, ``space_heat``, ``process_heat`` (low/medium-temperature),
+``steam`` (high-temperature heat / steam), ``cooling`` and ``hydrogen``. Each value is that hour's
+demand as a share of the country's daily peak (1.0 = a normal day's peak hour; a day can go above
+or below it). The same curves apply in every country. The shipped file repeats one daily curve
+for the whole year.
 
-``DEMAND_PEAKS_MW`` in ``config.py`` holds the default peaks: per country and service, in MW
-(MW_th for heat and cooling, MW_LHV for hydrogen). A run can override any of them
-through a JSON file named by the ``PLANNER_DEMAND_PEAK_OVERRIDES`` environment variable, shaped
-``{"peaks": {country: {service: MW}}}``. A site's hourly MW demand is its shape times its peak.
+``DEMAND_PEAKS_MW`` in ``config.py`` holds the default daily peaks: per country and service, in MW
+(MW_th for heat and cooling, MW_LHV for hydrogen). A run can override any of them through a JSON
+file named by the ``PLANNER_DEMAND_PEAK_OVERRIDES`` environment variable, shaped
+``{"peaks": {country: {service: MW}}}``. A site's hourly MW demand is the curve times its peak.
 """
 from __future__ import annotations
 
@@ -75,38 +75,30 @@ def peaks_mw() -> dict[str, dict[str, float]]:
 
 
 @lru_cache(maxsize=1)
-def _load_csv() -> pd.DataFrame:
-    """Read and validate the per-unit shapes in ``SITE_DEMAND_CSV``."""
+def yearly_curves() -> dict[str, np.ndarray]:
+    """The 8736-hour per-unit curve of every service, read and checked from ``SITE_DEMAND_CSV``."""
     if not SITE_DEMAND_CSV.exists():
-        raise FileNotFoundError(f"site demand profiles not found: {SITE_DEMAND_CSV}")
+        raise FileNotFoundError(f"site demand curves not found: {SITE_DEMAND_CSV}")
     df = pd.read_csv(SITE_DEMAND_CSV)
     missing = [c for c in ["hour", *SERVICES] if c not in df.columns]
     if missing:
         raise ValueError(f"{SITE_DEMAND_CSV} is missing column(s) {missing}")
-    groups = df.groupby("country") if "country" in df.columns else [(None, df)]
-    for country, g in groups:
-        if len(g) != YEAR_HOURS or set(g["hour"]) != set(range(YEAR_HOURS)):
-            raise ValueError(f"{SITE_DEMAND_CSV}: {country or 'profile'} needs hours 0-{YEAR_HOURS - 1} "
-                             f"exactly once, got {len(g)} rows")
+    if len(df) != YEAR_HOURS or set(df["hour"]) != set(range(YEAR_HOURS)):
+        raise ValueError(f"{SITE_DEMAND_CSV} needs hours 0-{YEAR_HOURS - 1} exactly once, got {len(df)} rows")
     if (df[SERVICES] < 0).any().any():
         raise ValueError(f"{SITE_DEMAND_CSV} has negative per-unit demand values")
-    return df
+    df = df.sort_values("hour")
+    return {s: df[s].to_numpy(dtype=float) for s in SERVICES}
 
 
 @lru_cache(maxsize=32)
 def year_profiles(country: str) -> dict[str, np.ndarray]:
-    """Full-year (8736h) MW profile of every service for a site built in ``country``: its per-unit
-    shape times its peak MW."""
-    df = _load_csv()
-    if "country" in df.columns:
-        df = df[df["country"] == country]
-        if df.empty:
-            raise ValueError(f"{SITE_DEMAND_CSV} has no demand profiles for country {country!r}")
+    """Full-year (8736h) MW profile of every service for a site built in ``country``: the per-unit
+    yearly curve times the country's daily peak MW."""
     peaks = peaks_mw().get(country)
     if peaks is None:
         raise ValueError(f"DEMAND_PEAKS_MW in config.py has no demand peaks for country {country!r}")
-    df = df.sort_values("hour")
-    return {s: df[s].to_numpy(dtype=float) * peaks[s] for s in SERVICES}
+    return {s: curve * peaks[s] for s, curve in yearly_curves().items()}
 
 
 def annual_demand_mwh(country: str) -> dict[str, float]:

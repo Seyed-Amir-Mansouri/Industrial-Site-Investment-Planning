@@ -68,32 +68,34 @@ too, since `solve_joint` has no contiguous-range mode.
 
 ### Site demand
 
-The site's hourly demand is a per-unit profile times a peak, from two files:
+The site's hourly demand is one daily curve per demand times a peak:
 
-- `inputs/site_demand.csv` holds the **per-unit profiles**: one row per candidate country and
-  model-year hour (8736 per country), each value that hour's demand as a share of the column's
-  annual peak (1.0 = the peak hour):
+- `inputs/site_demand.csv` holds the **per-unit curves** for the whole year: 8736 rows (`hour`
+  0–8735), each value that hour's demand as a share of the country's daily peak (1.0 = a normal
+  day's peak hour; a day can be set higher or lower). The same curves apply in every country. The
+  shipped file repeats one daily curve every day, so edit individual days to make them differ:
 
   ```
-  country,hour,electricity,space_heat,process_heat,steam,cooling,hydrogen
+  hour,electricity,space_heat,process_heat,steam,cooling,hydrogen
   ```
 
-  If you drop the `country` column, one 8736-row profile applies in every country.
-- `DEMAND_PEAKS_MW` in `site_investor_planning/config.py` holds the default **peaks** in MW (MW
-  of heat or cooling for the thermal demands, MW_LHV for hydrogen) for each country and demand.
+- `DEMAND_PEAKS_MW` in `site_investor_planning/config.py` holds each country's **daily peak** in
+  MW (MW of heat or cooling for the thermal demands, MW_LHV for hydrogen) for each demand.
 
-A site built in a country gets that country's profile times its peaks. To change how big a
-demand is, edit its peak; to change its shape over the year, edit the profile. The New run page
+A site built in a country gets the curves times that country's peaks. To change how big a demand
+is, edit its peak; to change its shape on some hours or days, edit the curve. The New run page
 can change any peak for a single run (passed to the planner as a JSON file through
 `PLANNER_DEMAND_PEAK_OVERRIDES`). The planner prints each candidate country's annual totals at
 the start of a run, and the web Catalog page shows the peaks and annual totals.
 
 `process_heat` is low/medium-temperature process heat and `steam` is high-temperature process
-heat / steam. The shipped profiles are synthetic: 50 GWh electricity, 40 GWh low/medium-temperature
-process heat, 30 GWh high-temperature heat / steam and 10 GWh hydrogen per year on a two-shift
-weekday pattern; space heating (8 GWh at 3000 heating degree days)
-scaled by each country's heating degree days; and 12 GWh process cooling plus comfort cooling
-scaled by each country's cooling degree days.
+heat / steam. The shipped curves are synthetic: electricity, process heat, steam and hydrogen
+run at full load from 6:00 to 22:00 and 60% at night; space heating at full load from 6:00 to
+20:00 and 70% otherwise; cooling peaks at 14:00 and drops to about 54% at night. The default
+peaks were set so the annual totals match the earlier synthetic demand (50 GWh electricity,
+40 GWh process heat, 30 GWh steam and 10 GWh hydrogen per year in every country; space heating
+and cooling differ by country with its heating and cooling degree days). There are no seasons
+or weekends in the shipped curves: every day is the same until you edit it.
 
 Every demand is also **flexible**: each hour it may move up or down by up to a share of its
 original value (`SiteDemandAssumptions.flex_fraction`, 10% for each demand by default), as long
@@ -291,7 +293,7 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      folder and passed to the planner through `PLANNER_CATALOG_OVERRIDES`); the defaults in
      `site_investor_planning/config.py` stay as they are. The run page prices its cost
      breakdown with the run's own catalog.
-  3. **Site demand peaks:** a table of every candidate country's peak demand (MW) for each
+  3. **Site demand peaks:** a table of every selected country's daily peak demand (MW) for each
      of the six demands, filled with the defaults from `DEMAND_PEAKS_MW` in `site_investor_planning/config.py`. Edits
      apply to this run only.
   4. **Uncertainty scenarios:** one card per scenario. Each card has an include tick box,
@@ -365,7 +367,7 @@ says otherwise.
 |---|---|---|---|
 | `zones_2030.parquet`, `networks_2030.parquet`, `marginal_price_electricity_2030.parquet`, `marginal_price_hydrogen_2030.parquet`, `crossborder_electricity_2030.parquet`, `crossborder_hydrogen_2030.parquet`, `hydro_*_2030.parquet`, `smr_production_2030.parquet` | `inputs/` | In git | Dispatch engine and planner |
 | `uncertainty_scenarios.json` | `inputs/` | In git | Planner (scenario probabilities and country error factors) |
-| `site_demand.csv` | `inputs/` | In git | Planner (per-unit hourly site demand profiles per country; peaks are in `site_investor_planning/config.py`) |
+| `site_demand.csv` | `inputs/` | In git | Planner (per-unit hourly demand curves for the year; daily peaks per country are in `site_investor_planning/config.py`) |
 | `elec_adjacency.json`, `h2_adjacency.json` | `inputs/` | In git (rewritten by `build_dataset.py`) | Price models |
 | `electricity_model.joblib`, `hydrogen_model.joblib` and the `*_metrics.csv` files | `data_exchange/02_train_output__benders_input/` | In git (written by `train_model.py`) | Planner |
 | `elec_samples.parquet`, `h2_samples.parquet` | `data_exchange/01_dispatch_output__train_input/` | Downloaded automatically by `webui\app.bat` from the project's Google Drive. You can also build them with steps 1 and 2. | Planner (`optimize_site_investor.py`) and `train_model.py` |

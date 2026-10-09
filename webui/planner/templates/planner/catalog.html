@@ -16,8 +16,8 @@
 
 <div class="card">
   <h2>Site demand</h2>
-  <p class="lede" style="margin-bottom:12px">Hourly demand = the per-unit profile in <code>inputs/site_demand.csv</code> × the peak in <code>DEMAND_PEAKS_MW</code> in <code>site_investor_planning/config.py</code>. Peaks can be changed per run on the New run page.</p>
-  <h3 style="margin:8px 0">Peak demand (MW)</h3>
+  <p class="lede" style="margin-bottom:12px">Hourly demand = the per-unit yearly curve in <code>inputs/site_demand.csv</code> (the same in every country) × the daily peak in <code>DEMAND_PEAKS_MW</code> in <code>site_investor_planning/config.py</code>. Peaks can be changed per run on the New run page.</p>
+  <h3 style="margin:8px 0">Daily peak demand (MW)</h3>
   <div style="overflow-x:auto;margin-bottom:16px">
   <table>
     <thead><tr><th>Country</th>{% for key in site.services %}<th class="num">{{ service_labels|lookup:key }}</th>{% endfor %}</tr></thead>
