@@ -26,8 +26,8 @@ from price_model.multivariate import predict as model_predict
 from price_model.neighbors import add_neighbor_features, add_candidate_neighbor_prices, load_adjacency
 from price_model import api as price_api
 from site_investor_planning.config import (ASSETS, GREEN_H2, HEAT_SERVICES, SERVICES, SITE_TECH,
-                                          THERMAL_ASSET_SERVICES)
-from site_investor_planning.demand import SITE_DEMAND, site_demand
+                                          THERMAL_ASSET_SERVICES, SiteSpec)
+from site_investor_planning.demand import site_demand
 
 HOURS_PER_DAY = 24
 TOTAL_YEAR_DAYS = 364
@@ -35,62 +35,48 @@ N_MONTHS = 12
 TOTAL_YEAR_HOURS = TOTAL_YEAR_DAYS * HOURS_PER_DAY
 
 UNCERTAINTY_SCENARIOS_PATH = ROOT / "inputs" / "uncertainty_scenarios.json"
-RESCALE_TARGET_MAX_PCT = 50.0
 
 
 SCENARIO_OVERRIDES_ENV = "PLANNER_SCENARIO_OVERRIDES"
+BASELINE_SCENARIO = "p100"
 
 
 @lru_cache(maxsize=1)
 def load_uncertainty_scenarios() -> dict:
+    """Scenarios from ``inputs/uncertainty_scenarios.json``, with a run's overrides applied.
+
+    The override file (``PLANNER_SCENARIO_OVERRIDES``) may edit existing scenarios and add custom
+    ones marked ``"custom": true``: a custom scenario takes its market prices from
+    ``price_scenario`` (default the baseline ``p100``) and derates only the site's own wind/PV by
+    the errors it gives."""
     scenarios = json.loads(UNCERTAINTY_SCENARIOS_PATH.read_text())["scenarios"]
     override_path = os.environ.get(SCENARIO_OVERRIDES_ENV)
     if override_path:
         for name, edit in json.loads(Path(override_path).read_text())["scenarios"].items():
             if name in scenarios:
                 scenarios[name].update(edit)
+            elif edit.get("custom"):
+                scenarios[name] = {"price_scenario": BASELINE_SCENARIO, **edit}
     return scenarios
 
 
-@lru_cache(maxsize=1)
-def _global_max_error_pct() -> float:
-    """Largest wind/solar capacity_scale error (%) across every unc scenario/country, used
-    as the rescale reference point so RESCALE_TARGET_MAX_PCT corresponds to that worst case."""
-    scenarios = load_uncertainty_scenarios()
-    max_err = 0.0
-    for name, sc in scenarios.items():
-        if name == "p100":
-            continue
-        for resource in ("wind", "solar"):
-            for scale in sc[resource].values():
-                err = (1.0 - scale) * 100.0
-                if err > max_err:
-                    max_err = err
-    return max_err
+def price_scenario(scenario: str) -> str:
+    """The dispatch scenario whose market prices ``scenario`` uses: itself, or for a custom
+    scenario its ``price_scenario``."""
+    sc = load_uncertainty_scenarios().get(scenario, {})
+    return sc.get("price_scenario", scenario)
 
 
-def _rescaled_capacity_scale(scenario: str | None, country: str) -> tuple[float, float]:
-    """(wind_scale, solar_scale) for this scenario/country, rescaled so the worst case across
-    every unc scenario/country corresponds to RESCALE_TARGET_MAX_PCT error (not the real,
-    larger error baked into the training data) -- (1.0, 1.0) if scenario is None/unknown or
-    has no entry for this country (e.g. 'p100'). Only used for the candidate's OWN available
-    capacity (and hence its own contribution to the price-model input); the rest of the
-    system's price features keep reflecting the real, un-rescaled scenario severity, since
-    those come straight from edf/hdf's real per-scenario dispatch data."""
+def scenario_capacity_scale(scenario: str | None, country: str) -> tuple[float, float]:
+    """(wind_scale, solar_scale) of the site's OWN wind/PV output in this scenario and country: 1 minus
+    the scenario's error compared with the baseline, applied as given; (1.0, 1.0) for no scenario,
+    an unknown one or a country it doesn't list."""
     if not scenario:
         return 1.0, 1.0
     sc = load_uncertainty_scenarios().get(scenario)
     if sc is None:
         return 1.0, 1.0
-    factor = RESCALE_TARGET_MAX_PCT / _global_max_error_pct()
-
-    def rescale(raw_scale: float) -> float:
-        err = (1.0 - raw_scale) * 100.0
-        return 1.0 - (err * factor) / 100.0
-
-    wind_scale = rescale(sc["wind"].get(country, 1.0))
-    solar_scale = rescale(sc["solar"].get(country, 1.0))
-    return wind_scale, solar_scale
+    return sc.get("wind", {}).get(country, 1.0), sc.get("solar", {}).get(country, 1.0)
 
 
 def _month_boundaries(total_days: int = TOTAL_YEAR_DAYS, n_months: int = N_MONTHS) -> list[int]:
@@ -178,9 +164,9 @@ def _donor_zone(candidates: list[str], cap_key: str, zdata: dict) -> str:
 @lru_cache(maxsize=64)
 def _zone_raw_profile(zone: str, hours_key: tuple[int, ...]):
     """Capacity- and scenario-independent part of ``sizing_and_profiles``: host-zone validation,
-    wind/PV donor resolution, and the raw (un-rescaled) normalized capacity-factor profiles.
+    wind/PV donor resolution, and the raw normalized capacity-factor profiles.
     Cached because it's invariant across every scenario/trial-point/core-point call within a
-    Benders run for a given zone and representative-hour selection -- only the scenario rescale
+    Benders run for a given zone and representative-hour selection -- only the scenario derating
     and the candidate's own MW sizing (applied by the caller) actually vary call to call."""
     hours = np.array(hours_key, dtype=int)
     start_day = int(hours.min()) // HOURS_PER_DAY + 1
@@ -218,10 +204,9 @@ def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict, scenario
     """Resolve this site's sizing (``capacities`` plus derived storage MWh) and wind/PV availability
     upper bounds for the given year-hour positions. If ``scenario`` is given, the site's OWN wind/PV
     capacity factor (and hence its own available-capacity bound and its own contribution to the price
-    feature row) is derated by that scenario's country-level capacity_scale, rescaled so the worst
-    case across all scenarios/countries corresponds to RESCALE_TARGET_MAX_PCT error -- NOT the real,
-    larger error baked into the training data (see ``_rescaled_capacity_scale``). The rest of the
-    system's price features are untouched, still reflecting the real severity."""
+    feature row) is derated by that scenario's error compared with the baseline (see
+    ``scenario_capacity_scale``). The rest of the system's price features come from the scenario's
+    price data, untouched."""
     start_day = int(hours.min()) // HOURS_PER_DAY + 1
     end_day = int(hours.max()) // HOURS_PER_DAY + 1
     cfg = _run_config(zone, start_day, end_day)
@@ -233,7 +218,7 @@ def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict, scenario
     hours_key = tuple(int(h) for h in hours)
     host_zone, wind_donor, pv_donor, wind_cf_norm, pv_cf_norm = _zone_raw_profile(zone, hours_key)
 
-    wind_scale, pv_scale = _rescaled_capacity_scale(scenario, country)
+    wind_scale, pv_scale = scenario_capacity_scale(scenario, country)
     wind_cf_norm = wind_cf_norm * wind_scale
     pv_cf_norm = pv_cf_norm * pv_scale
 
@@ -396,41 +381,42 @@ def _sample_days(rep_days_per_month: int, day_selection: str) -> tuple[list[int]
     return representative_days(rep_days_per_month)
 
 
-def _solve_sites(zones: list[str], capacities: dict[str, dict], sites: dict[str, float],
+def _solve_sites(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, dict], sites: dict[str, float],
                  days: list[int], day_weights: list[float], block_len: int,
-                 return_duals: bool, edf, hdf, quiet: bool, scenario: str | None,
-                 flex: dict[str, float] | None = None, green_share: float | None = None) -> dict:
-    """Build and solve every zone's site LP together over ``days`` (``day_weights`` per day), cut
+                 return_duals: bool, edf, hdf, quiet: bool, scenario: str | None) -> dict:
+    """Build and solve every unit's site LP together over ``days`` (``day_weights`` per day), cut
     into blocks of ``block_len`` hours (24 = representative days, each its own storage cycle; the
-    whole horizon = one contiguous run). ``sites[z]`` scales zone ``z``'s internal demand: 1 = site
-    built there, 0 = no site (default 1). ``flex[svc]`` lets each hour's demand of ``svc`` move by up
-    to that fraction of itself, netting to zero over each block (default ``SITE_DEMAND.flex_fraction``).
+    whole horizon = one contiguous run). A unit is one site placed in one zone:
+    ``units[u] = (zone, spec)``, the zone giving prices, wind/PV profiles and the scenario derating,
+    the ``SiteSpec`` giving demand peaks, green hydrogen share and flexibility. ``sites[u]`` scales
+    unit ``u``'s internal demand: 1 = the site is built there, 0 = not (default 1). The site's
+    ``flex_fraction`` lets each hour's demand move by up to that fraction of itself, netting to zero
+    over each block.
 
     Each demand has its own hourly balance, served by its own asset(s) and its backup (gas boiler
     for heat, legacy chiller for cooling, market imports for electricity and hydrogen). The site's
     own wind/PV exported to the grid earns Guarantees of Origin it can sell, unless that output is
-    claimed for green hydrogen. With ``green_share`` > 0 (default ``GREEN_H2.green_share``), the
-    electrolyser's green load in each hour must be covered by that hour's own (new, hence additional)
-    wind/PV or GOs bought from additional plants, and green production plus certified green H2
-    purchases must reach ``green_share`` of the site's annual hydrogen demand.
+    claimed for green hydrogen. The electrolyser's green load in each hour must be covered by that
+    hour's own (new, hence additional) wind/PV or GOs bought from additional plants, and green
+    production plus certified green H2 purchases must reach the site's ``green_share`` of its annual
+    hydrogen demand.
 
     Cut coefficients: each asset's is the sum of the duals on its capacity constraints; the site's
     is the sensitivity to switching the site on, which scales every balance's demand, every
     flexibility band and the green hydrogen requirement. A solve HiGHS reports as failed is retried
     once with presolve off."""
     t0 = time.time()
-    flex = SITE_DEMAND.flex_fraction if flex is None else flex
     green = GREEN_H2
-    green_share = green.green_share if green_share is None else green_share
     tech = SITE_TECH
+    unit_ids = list(units)
     hours = np.array([(d - 1) * HOURS_PER_DAY + h for d in days for h in range(HOURS_PER_DAY)], dtype=int)
     H = len(hours)
     n_blocks = H // block_len
 
-    zone_idx = pd.Index(zones, name="zone")
+    unit_idx = pd.Index(unit_ids, name="unit")
     day_idx = pd.RangeIndex(n_blocks, name="day")
     hid_idx = pd.RangeIndex(block_len, name="hid")
-    coords = [zone_idx, day_idx, hid_idx]
+    coords = [unit_idx, day_idx, hid_idx]
     weight_flat = np.repeat(np.asarray(day_weights, dtype=float), HOURS_PER_DAY)
     w = xr.DataArray(weight_flat.reshape(n_blocks, block_len), coords=[day_idx, hid_idx])
 
@@ -440,29 +426,34 @@ def _solve_sites(zones: list[str], capacities: dict[str, dict], sites: dict[str,
     cfgs, sizings, host_zones = {}, {}, {}
     stacks = {k: [] for k in ("wind_upper", "pv_upper", "wind_cf", "pv_cf", "p_elec", "p_h2",
                               *(f"demand_{s}" for s in _BALANCES))}
-    for z in zones:
+    for u in unit_ids:
+        z, spec = units[u]
         (cfg, s, host_zone, wind_donor, pv_donor, wind_upper, pv_upper,
-         wind_cf_norm, pv_cf_norm) = sizing_and_profiles(z, hours, capacities[z], scenario)
-        cfgs[z], sizings[z], host_zones[z] = cfg, s, host_zone
+         wind_cf_norm, pv_cf_norm) = sizing_and_profiles(z, hours, capacities[u], scenario)
+        cfgs[u], sizings[u], host_zones[u] = cfg, s, host_zone
         elec_zone = _ELEC_ZONE_OVERRIDES.get(z[:2], z)
         p_elec, p_h2 = proxy_price_series(elec_zone, hours, h2_zone=z, edf=edf, hdf=hdf,
                                           wind_gen_add=wind_cf_norm * s["wind_mw"],
                                           pv_gen_add=pv_cf_norm * s["pv_mw"],
                                           battery_add=s["battery_mw"], electrolyser_add=s["electrolyser_mw"],
                                           tank_add=s["tank_mw"])
-        demand = site_demand(z[:2], hours)
+        demand = site_demand(spec.peaks_mw, hours)
         for key, arr in (("wind_upper", wind_upper), ("pv_upper", pv_upper), ("wind_cf", wind_cf_norm),
                          ("pv_cf", pv_cf_norm), ("p_elec", p_elec), ("p_h2", p_h2)):
             stacks[key].append(r2d(arr))
         for svc in _BALANCES:
             stacks[f"demand_{svc}"].append(r2d(demand[svc]))
     da = {k: xr.DataArray(np.stack(v), coords=coords) for k, v in stacks.items()}
-    site_da = xr.DataArray([float(sites.get(z, 1.0)) for z in zones], coords=[zone_idx])
+    site_da = xr.DataArray([float(sites.get(u, 1.0)) for u in unit_ids], coords=[unit_idx])
+    flex_da = xr.DataArray([float(units[u][1].flex_fraction) for u in unit_ids], coords=[unit_idx])
+    green_da = xr.DataArray([float(units[u][1].green_share) for u in unit_ids], coords=[unit_idx])
+    any_flex = bool((flex_da > 0).any())
+    any_green = bool((green_da > 0).any())
 
     def per_zone(key):
-        return xr.DataArray([sizings[z][key] for z in zones], coords=[zone_idx])
+        return xr.DataArray([sizings[u][key] for u in unit_ids], coords=[unit_idx])
 
-    cfg0 = cfgs[zones[0]]
+    cfg0 = cfgs[unit_ids[0]]
     ely_eff = cfg0.g_investor_electrolyser_efficiency
     batt_eff, tank_eff = cfg0.g_investor_battery_efficiency, cfg0.g_investor_tank_efficiency
     sto_cost = cfg0.storage_op_cost_eur_per_mwh
@@ -502,11 +493,10 @@ def _solve_sites(zones: list[str], capacities: dict[str, dict], sites: dict[str,
 
     shift = {}
     for svc in _BALANCES:
-        frac = float(flex.get(svc, 0.0))
-        if frac <= 0:
+        if not any_flex:
             continue
         sh = m.add_variables(coords=coords, name=f"shift_{svc}")
-        band = frac * da[f"demand_{svc}"] * site_da
+        band = flex_da * da[f"demand_{svc}"] * site_da
         m.add_constraints(sh <= band, name=f"shift_up_{svc}")
         m.add_constraints(-1 * sh <= band, name=f"shift_down_{svc}")
         m.add_constraints(sh.sum("hid") == 0, name=f"shift_net_{svc}")
@@ -530,7 +520,7 @@ def _solve_sites(zones: list[str], capacities: dict[str, dict], sites: dict[str,
     go_sell = m.add_variables(lower=0.0, coords=coords, name="go_sell")
     m.add_constraints(go_sell - grid_sell <= 0, name="go_sell_export")
     green_cost = -green.go_sell_price_eur_per_mwh * (w * go_sell).sum()
-    if green_share > 0:
+    if any_green:
         ely_green = m.add_variables(lower=0.0, coords=coords, name="ely_green")
         res_to_ely = m.add_variables(lower=0.0, coords=coords, name="res_to_ely")
         go_buy = m.add_variables(lower=0.0, coords=coords, name="go_buy")
@@ -541,7 +531,7 @@ def _solve_sites(zones: list[str], capacities: dict[str, dict], sites: dict[str,
         m.add_constraints(h2_buy_green - h2_buy <= 0, name="h2_buy_green_cap")
         annual_h2 = (w * da["demand_hydrogen"]).sum(["day", "hid"])
         m.add_constraints((w * (ely_eff * ely_green + h2_buy_green)).sum(["day", "hid"])
-                          >= green_share * annual_h2 * site_da, name="green_h2_share")
+                          >= green_da * annual_h2 * site_da, name="green_h2_share")
         green_cost = (green_cost + green.go_buy_price_eur_per_mwh * (w * go_buy).sum()
                       + green.green_h2_premium_eur_per_mwh * (w * h2_buy_green).sum())
 
@@ -590,39 +580,39 @@ def _solve_sites(zones: list[str], capacities: dict[str, dict], sites: dict[str,
         }
         lam = sum((dual[con] * da[f"demand_{svc}"]).sum(hd) for svc, con in _BALANCES.items())
         for svc in shift:
-            band_per_site = float(flex[svc]) * da[f"demand_{svc}"]
+            band_per_site = flex_da * da[f"demand_{svc}"]
             lam = lam + ((dual[f"shift_up_{svc}"] + dual[f"shift_down_{svc}"]) * band_per_site).sum(hd)
-        if green_share > 0:
-            lam = lam + dual["green_h2_share"] * green_share * annual_h2
-        cut_coeffs = {z: {a: float(mu[a].sel(zone=z)) for a in ASSETS} for z in zones}
-        site_coeffs = {z: float(lam.sel(zone=z)) for z in zones}
+        if any_green:
+            lam = lam + dual["green_h2_share"] * green_da * annual_h2
+        cut_coeffs = {u: {a: float(mu[a].sel(unit=u)) for a in ASSETS} for u in unit_ids}
+        site_coeffs = {u: float(lam.sel(unit=u)) for u in unit_ids}
 
     sol = m.solution
     schedules, objective_by_zone = {}, {}
-    for z in zones:
+    for u in unit_ids:
         def v(name):
-            return np.asarray(sol[name].sel(zone=z).values).reshape(-1)
-        p_elec_z = np.asarray(da["p_elec"].sel(zone=z).values).reshape(-1)
-        p_h2_z = np.asarray(da["p_h2"].sel(zone=z).values).reshape(-1)
+            return np.asarray(sol[name].sel(unit=u).values).reshape(-1)
+        p_elec_z = np.asarray(da["p_elec"].sel(unit=u).values).reshape(-1)
+        p_h2_z = np.asarray(da["p_h2"].sel(unit=u).values).reshape(-1)
         gb, gs, hb, hs = v("grid_buy"), v("grid_sell"), v("h2_buy"), v("h2_sell")
         gas = sum(v(_BACKUP_VARS[svc]) for svc in HEAT_SERVICES)
         bc, bd, tc, td = v("batt_ch"), v("batt_dis"), v("tank_ch"), v("tank_dis")
         zero = np.zeros(H)
         gos = v("go_sell")
         gob, hbg, eg, re = ((v("go_buy"), v("h2_buy_green"), v("ely_green"), v("res_to_ely"))
-                            if green_share > 0 else (zero, zero, zero, zero))
+                            if any_green else (zero, zero, zero, zero))
         z_cost = float((weight_flat * ((p_elec_z + tech.grid_import_fee_eur_per_mwh) * gb - p_elec_z * gs
                                        + (p_h2_z + tech.h2_import_fee_eur_per_mwh) * hb - p_h2_z * hs
                                        + gas_cost * gas + sto_cost * (bc + bd + tc + td)
                                        + green.go_buy_price_eur_per_mwh * gob
                                        - green.go_sell_price_eur_per_mwh * gos
                                        + green.green_h2_premium_eur_per_mwh * hbg)).sum())
-        objective_by_zone[z] = z_cost
+        objective_by_zone[u] = z_cost
 
-        site_z = float(site_da.sel(zone=z))
+        site_z = float(site_da.sel(unit=u))
         out = pd.DataFrame({"hour": np.arange(H)})
         for svc in _BALANCES:
-            out[f"Site {svc} demand (MW)"] = site_z * np.asarray(da[f"demand_{svc}"].sel(zone=z).values).reshape(-1)
+            out[f"Site {svc} demand (MW)"] = site_z * np.asarray(da[f"demand_{svc}"].sel(unit=u).values).reshape(-1)
             out[f"Site {svc} demand shift (MW)"] = v(f"shift_{svc}") if svc in shift else 0.0
         out["Site wind (MW)"] = v("wind_p")
         out["Site pv (MW)"] = v("pv_p")
@@ -649,14 +639,15 @@ def _solve_sites(zones: list[str], capacities: dict[str, dict], sites: dict[str,
         out["Site legacy chiller -> cooling (MW)"] = v("legacy_cold")
         out["day_of_year"] = np.repeat(days, HOURS_PER_DAY)
         out["day_weight"] = weight_flat
-        out.attrs.update({"objective": z_cost, "p_elec": p_elec_z, "p_h2": p_h2_z, "host_zone": host_zones[z],
-                          "sizing": sizings[z], "capacities": {a: sizings[z][a] for a in ASSETS},
-                          "site": site_z, "cut_coeffs": cut_coeffs[z] if cut_coeffs else None,
+        out.attrs.update({"objective": z_cost, "p_elec": p_elec_z, "p_h2": p_h2_z, "host_zone": host_zones[u],
+                          "site_name": units[u][1].name,
+                          "sizing": sizings[u], "capacities": {a: sizings[u][a] for a in ASSETS},
+                          "site": site_z, "cut_coeffs": cut_coeffs[u] if cut_coeffs else None,
                           "green_h2_share": (float((weight_flat * (ely_eff * eg + hbg)).sum()
                                                    / (weight_flat * out["Site hydrogen demand (MW)"]).sum())
                                              if site_z > 0 else None),
-                          "site_coeff": site_coeffs[z] if site_coeffs else None})
-        schedules[z] = out
+                          "site_coeff": site_coeffs[u] if site_coeffs else None})
+        schedules[u] = out
 
     return {
         "objective": float(m.objective.value),
@@ -675,9 +666,10 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
           edf: pd.DataFrame | None = None, hdf: pd.DataFrame | None = None,
           day_selection: str = "first", quiet: bool = False,
           scenario: str | None = None, site: float = 1.0,
-          flex: dict[str, float] | None = None, green_share: float | None = None) -> pd.DataFrame:
+          spec: SiteSpec | None = None) -> pd.DataFrame:
     """Solve one site's LP over a contiguous day range or representative-day sample, priced by the proxy models.
-    ``scenario``, if given, derates the site's OWN wind/PV capacity (rescaled, see
+    ``spec`` gives the site's demand peaks, green hydrogen share and flexibility (default: a default site).
+    ``scenario``, if given, derates the site's OWN wind/PV capacity (see
     ``sizing_and_profiles``) -- pass the same scenario name used to build ``edf``/``hdf``."""
     representative = rep_days_per_month is not None
     if representative:
@@ -698,8 +690,9 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
         block_len = len(days) * HOURS_PER_DAY
 
     capacities = capacities if capacities is not None else DEFAULT_SITE_CAPACITIES
-    result = _solve_sites([zone], {zone: capacities}, {zone: site}, days, day_weights, block_len,
-                          return_duals, edf, hdf, quiet, scenario, flex, green_share)
+    spec = spec if spec is not None else SiteSpec(name="Site 1")
+    result = _solve_sites({zone: (zone, spec)}, {zone: capacities}, {zone: site}, days, day_weights, block_len,
+                          return_duals, edf, hdf, quiet, scenario)
     out = result["schedules"][zone]
     H = len(out)
     if not representative:
@@ -712,19 +705,19 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
     return out
 
 
-def solve_joint(zones: list[str], capacities: dict[str, dict], rep_days_per_month: int,
+def solve_joint(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, dict], rep_days_per_month: int,
                 return_duals: bool = True,
                 edf: pd.DataFrame | None = None, hdf: pd.DataFrame | None = None,
                 day_selection: str = "first", quiet: bool = False,
-                scenario: str | None = None, sites: dict[str, float] | None = None,
-                flex: dict[str, float] | None = None, green_share: float | None = None) -> dict:
-    """Solve every zone's site LP jointly (representative-day horizon only) for a given trial capacity
-    vector and site choice (``sites[z]`` = 1 if a site is built in zone ``z``, default all 1).
-    ``scenario``, if given, derates every zone's own wind/PV capacity (rescaled, see
-    ``sizing_and_profiles``) -- pass the same scenario name used to build ``edf``/``hdf``."""
+                scenario: str | None = None, sites: dict[str, float] | None = None) -> dict:
+    """Solve every unit's site LP jointly (representative-day horizon only) for a given trial capacity
+    vector and site choice. ``units[u] = (zone, spec)`` places site ``spec`` in ``zone``; ``sites[u]``
+    = 1 if that placement is built (default all 1). ``scenario``, if given, derates every unit's own
+    wind/PV capacity (see ``sizing_and_profiles``) -- pass the same scenario name used to
+    build ``edf``/``hdf``."""
     days, day_weights = _sample_days(rep_days_per_month, day_selection)
-    result = _solve_sites(zones, capacities, sites or {}, days, day_weights, HOURS_PER_DAY,
-                          return_duals, edf, hdf, quiet, scenario, flex, green_share)
+    result = _solve_sites(units, capacities, sites or {}, days, day_weights, HOURS_PER_DAY,
+                          return_duals, edf, hdf, quiet, scenario)
     for out in result["schedules"].values():
         out.attrs.update({"annualized_hours": TOTAL_YEAR_HOURS, "rep_days_per_month": rep_days_per_month,
                           "sampled_days": days})
