@@ -36,19 +36,19 @@ SERVICES = ["electricity", "space_heat", "process_heat", "steam", "cooling", "hy
 HEAT_SERVICES = ["space_heat", "process_heat", "steam"]
 
 DEMAND_PEAKS_MW: dict[str, dict[str, float]] = {
-    "AT": {"electricity": 7.512, "space_heat": 3.2528, "process_heat": 6.0096, "steam": 4.5072, "cooling": 3.2571, "hydrogen": 1.5024},
-    "BE": {"electricity": 7.512, "space_heat": 2.6614, "process_heat": 6.0096, "steam": 4.5072, "cooling": 2.1664, "hydrogen": 1.5024},
-    "CZ": {"electricity": 7.512, "space_heat": 3.2528, "process_heat": 6.0096, "steam": 4.5072, "cooling": 2.7117, "hydrogen": 1.5024},
-    "DE": {"electricity": 7.512, "space_heat": 2.9571, "process_heat": 6.0096, "steam": 4.5072, "cooling": 2.53, "hydrogen": 1.5024},
-    "FR": {"electricity": 7.512, "space_heat": 2.2671, "process_heat": 6.0096, "steam": 4.5072, "cooling": 4.3477, "hydrogen": 1.5024},
-    "HR": {"electricity": 7.512, "space_heat": 2.2671, "process_heat": 6.0096, "steam": 4.5072, "cooling": 10.8915, "hydrogen": 1.5024},
-    "HU": {"electricity": 7.512, "space_heat": 2.6614, "process_heat": 6.0096, "steam": 4.5072, "cooling": 7.256, "hydrogen": 1.5024},
-    "LU": {"electricity": 7.512, "space_heat": 2.8585, "process_heat": 6.0096, "steam": 4.5072, "cooling": 2.3482, "hydrogen": 1.5024},
-    "NL": {"electricity": 7.512, "space_heat": 2.6614, "process_heat": 6.0096, "steam": 4.5072, "cooling": 2.1664, "hydrogen": 1.5024},
-    "PL": {"electricity": 7.512, "space_heat": 3.2528, "process_heat": 6.0096, "steam": 4.5072, "cooling": 2.8935, "hydrogen": 1.5024},
-    "RO": {"electricity": 7.512, "space_heat": 2.76, "process_heat": 6.0096, "steam": 4.5072, "cooling": 9.0738, "hydrogen": 1.5024},
-    "SI": {"electricity": 7.512, "space_heat": 2.6614, "process_heat": 6.0096, "steam": 4.5072, "cooling": 5.0748, "hydrogen": 1.5024},
-    "SK": {"electricity": 7.512, "space_heat": 3.0557, "process_heat": 6.0096, "steam": 4.5072, "cooling": 4.3477, "hydrogen": 1.5024},
+    "AT": {"electricity": 7.5, "space_heat": 3.3, "process_heat": 6.0, "steam": 4.5, "cooling": 3.3, "hydrogen": 1.5},
+    "BE": {"electricity": 7.5, "space_heat": 2.7, "process_heat": 6.0, "steam": 4.5, "cooling": 2.2, "hydrogen": 1.5},
+    "CZ": {"electricity": 7.5, "space_heat": 3.3, "process_heat": 6.0, "steam": 4.5, "cooling": 2.7, "hydrogen": 1.5},
+    "DE": {"electricity": 7.5, "space_heat": 3.0, "process_heat": 6.0, "steam": 4.5, "cooling": 2.5, "hydrogen": 1.5},
+    "FR": {"electricity": 7.5, "space_heat": 2.3, "process_heat": 6.0, "steam": 4.5, "cooling": 4.3, "hydrogen": 1.5},
+    "HR": {"electricity": 7.5, "space_heat": 2.3, "process_heat": 6.0, "steam": 4.5, "cooling": 10.9, "hydrogen": 1.5},
+    "HU": {"electricity": 7.5, "space_heat": 2.7, "process_heat": 6.0, "steam": 4.5, "cooling": 7.3, "hydrogen": 1.5},
+    "LU": {"electricity": 7.5, "space_heat": 2.9, "process_heat": 6.0, "steam": 4.5, "cooling": 2.3, "hydrogen": 1.5},
+    "NL": {"electricity": 7.5, "space_heat": 2.7, "process_heat": 6.0, "steam": 4.5, "cooling": 2.2, "hydrogen": 1.5},
+    "PL": {"electricity": 7.5, "space_heat": 3.3, "process_heat": 6.0, "steam": 4.5, "cooling": 2.9, "hydrogen": 1.5},
+    "RO": {"electricity": 7.5, "space_heat": 2.8, "process_heat": 6.0, "steam": 4.5, "cooling": 9.1, "hydrogen": 1.5},
+    "SI": {"electricity": 7.5, "space_heat": 2.7, "process_heat": 6.0, "steam": 4.5, "cooling": 5.1, "hydrogen": 1.5},
+    "SK": {"electricity": 7.5, "space_heat": 3.1, "process_heat": 6.0, "steam": 4.5, "cooling": 4.3, "hydrogen": 1.5},
 }
 
 THERMAL_ASSET_SERVICES = {
