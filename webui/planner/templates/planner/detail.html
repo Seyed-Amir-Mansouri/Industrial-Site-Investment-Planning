@@ -62,7 +62,7 @@
 
 {% if run.status == "done" %}
 <div class="grid kpis" style="margin-bottom:18px">
-  <div class="kpi"><div class="label">Chosen site{{ summary.sites|length|pluralize }}</div><div class="value">{% if summary.sites %}{{ summary.sites|join:", " }}{% else %}—{% endif %}</div><div class="sub">{{ run.params.n_sites|default:1 }} of {% if run.params.all_countries %}all eligible{% else %}{{ run.params.countries|length }}{% endif %} candidate countries</div></div>
+  <div class="kpi"><div class="label">Chosen site{{ summary.sites|length|pluralize }}</div><div class="value">{% if summary.sites %}{{ summary.sites|join:", " }}{% else %}—{% endif %}</div><div class="sub">{{ summary.sites|length }} site{{ summary.sites|length|pluralize }} across {% if run.params.all_countries %}all eligible{% else %}{{ run.params.countries|length }}{% endif %} candidate countries</div></div>
   <div class="kpi"><div class="label">Objective</div><div class="value">€{{ summary.objective_eur|floatformat:0 }}</div><div class="sub">annualized CAPEX + risk-adjusted energy cost</div></div>
   <div class="kpi"><div class="label">Raw CAPEX</div><div class="value">€{{ summary.raw_capex_eur|floatformat:0 }}</div><div class="sub">{% if run.params.budget %}{% widthratio summary.raw_capex_eur run.params.budget 100 %}% of budget{% endif %}</div></div>
   <div class="kpi"><div class="label">Iterations</div><div class="value">{{ summary.iterations }}</div><div class="sub">{% if summary.converged %}converged{% else %}stopped at limit{% endif %}</div></div>
@@ -96,14 +96,14 @@
 {% if summary.green_h2 %}
 <div class="card">
   <h2>Green hydrogen</h2>
-  <p class="lede" style="margin-bottom:12px">How each chosen site meets its green (RFNBO) hydrogen requirement of {{ run.params.green_h2_share_pct|default:42 }}% of annual hydrogen demand, and what it trades on the Guarantee of Origin market. All values in MWh per year.</p>
+  <p class="lede" style="margin-bottom:12px">How each site meets its own minimum green (RFNBO) share of annual hydrogen demand, and what it trades on the Guarantee of Origin market. All values in MWh per year.</p>
   <div style="overflow-x:auto">
   <table>
-    <thead><tr><th>Site</th><th>Scenario</th><th class="num">Probability</th><th class="num">H2 demand</th><th class="num">Green H2 produced</th><th class="num">Green H2 bought</th><th class="num">Green share</th><th class="num">GOs bought</th><th class="num">GOs sold</th></tr></thead>
+    <thead><tr><th>Site</th><th>Country</th><th>Scenario</th><th class="num">Probability</th><th class="num">H2 demand</th><th class="num">Green H2 produced</th><th class="num">Green H2 bought</th><th class="num">Green share</th><th class="num">GOs bought</th><th class="num">GOs sold</th></tr></thead>
     <tbody>
       {% for g in summary.green_h2_expected %}
       <tr>
-        <td><strong>{{ g.country }}</strong></td><td><strong>Expected</strong></td><td class="num">100%</td>
+        <td><strong>{{ g.site }}</strong></td><td><strong>{{ g.country }}</strong></td><td><strong>Expected</strong></td><td class="num">100%</td>
         <td class="num"><strong>{{ g.h2_demand_mwh|floatformat:0 }}</strong></td>
         <td class="num"><strong>{{ g.green_h2_produced_mwh|floatformat:0 }}</strong></td>
         <td class="num"><strong>{{ g.green_h2_bought_mwh|floatformat:0 }}</strong></td>
@@ -114,7 +114,7 @@
       {% endfor %}
       {% for g in summary.green_h2 %}
       <tr>
-        <td>{{ g.country }}</td><td>{{ g.scenario }}</td><td class="num">{% widthratio g.probability 1 100 %}%</td>
+        <td>{% firstof g.site g.country %}</td><td>{{ g.country }}</td><td>{{ g.scenario }}</td><td class="num">{% widthratio g.probability 1 100 %}%</td>
         <td class="num">{{ g.h2_demand_mwh|floatformat:0 }}</td>
         <td class="num">{{ g.green_h2_produced_mwh|floatformat:0 }}</td>
         <td class="num">{{ g.green_h2_bought_mwh|floatformat:0 }}</td>
@@ -135,16 +135,17 @@
     <p class="lede" style="margin-bottom:12px">MW built at each chosen site, per technology. Heat pumps, boilers and chillers are in MW of heat or cooling output.</p>
     <div style="overflow-x:auto">
     <table>
-      <thead><tr><th>Site</th>{% for a in assets %}<th class="num">{{ asset_labels|lookup:a }}</th>{% endfor %}</tr></thead>
+      <thead><tr><th>Site</th><th>Country</th>{% for a in assets %}<th class="num">{{ asset_labels|lookup:a }}</th>{% endfor %}</tr></thead>
       <tbody>
-        {% for row in summary.capacities %}{% if row.site == "1" or not row.site %}
+        {% for row in summary.site_rows %}
         <tr>
-          <td><strong>{{ row.country }}</strong></td>
+          <td><strong>{{ row.site }}</strong></td>
+          <td>{{ row.country }}</td>
           {% for a in assets %}<td class="num">{{ row|lookup:a|floatformat:1 }}</td>{% endfor %}
         </tr>
-        {% endif %}{% endfor %}
+        {% endfor %}
         <tr>
-          <td><strong>Total</strong></td>
+          <td><strong>Total</strong></td><td></td>
           {% for a in assets %}<td class="num"><strong>{{ summary.totals_mw|lookup:a|floatformat:1 }}</strong></td>{% endfor %}
         </tr>
       </tbody>
@@ -157,11 +158,11 @@
     <p class="lede" style="margin-bottom:12px">How many of each product size were selected.</p>
     {% if summary.units %}
     <table>
-      <thead><tr><th>Country</th><th>Technology</th><th class="num">Size (MW)</th><th class="num">Units</th></tr></thead>
+      <thead><tr><th>Site</th><th>Technology</th><th class="num">Size (MW)</th><th class="num">Units</th></tr></thead>
       <tbody>
         {% for u in summary.units %}
         <tr>
-          <td>{{ u.country }}</td>
+          <td>{% if u.site %}{{ u.site }} ({{ u.country }}){% else %}{{ u.country }}{% endif %}</td>
           <td>{{ asset_labels|lookup:u.asset }}</td>
           <td class="num">{{ u.candidate_mw|floatformat:1 }}</td>
           <td class="num">{{ u.units }}</td>
@@ -187,7 +188,7 @@
   </div>
   {% for m in map_markers %}
   <template id="cp-tip-{{ m.code }}">
-    <strong>{{ m.code }} — {% if m.site %}site, {{ m.total|floatformat:1 }} MW{% else %}not chosen{% endif %}</strong>
+    <strong>{{ m.code }} — {% if m.site %}{{ m.site_names|join:", " }}, {{ m.total|floatformat:1 }} MW{% else %}not chosen{% endif %}</strong>
     {% for a in assets %}{% with v=m.values|lookup:a %}{% if v > 0 %}<div>{{ asset_labels|lookup:a }}: {{ v|floatformat:1 }} MW</div>{% endif %}{% endwith %}{% endfor %}
   </template>
   {% endfor %}
@@ -211,11 +212,16 @@
     <tbody>
       <tr><th style="width:260px">Candidate countries</th><td>{% if run.params.all_countries %}All eligible{% else %}{{ run.params.countries|join:", " }}{% endif %}</td></tr>
       <tr><th>Sites to build</th><td>{{ run.params.n_sites|default:1 }}</td></tr>
+      {% for sp in run.params.sites %}
+      <tr><th>{{ sp.name }}</th><td>green H2 ≥ {% widthratio sp.green_share 1 100 %}% · flexibility ±{% widthratio sp.flex_fraction 1 100 %}% · daily peaks {% for k, v in sp.peaks_mw.items %}{{ k }} {{ v|floatformat:"-2" }}{% if not forloop.last %}, {% endif %}{% endfor %} MW</td></tr>
+      {% endfor %}
       <tr><th>Budget</th><td>€{{ run.params.budget|floatformat:0 }}</td></tr>
       <tr><th>Excluded technologies</th><td>{% if run.params.disabled_assets %}{{ run.params.disabled_assets|join:", " }}{% else %}none{% endif %}</td></tr>
       <tr><th>Max units per product</th><td>{% if run.params.max_units_per_candidate %}{{ run.params.max_units_per_candidate }}{% else %}unbounded{% endif %}</td></tr>
+      {% if not run.params.sites %}
       <tr><th>Minimum green hydrogen share</th><td>{{ run.params.green_h2_share_pct|default:42 }}%</td></tr>
       <tr><th>Demand flexibility</th><td>±{{ run.params.demand_flex_pct|default:10 }}% per hour, net zero per day</td></tr>
+      {% endif %}
       <tr><th>Discount rate</th><td>{{ run.params.discount_rate_pct }}%</td></tr>
       <tr><th>Candidate catalog</th><td>{% if run.params.catalog_overrides %}set for this run on the New run page{% elif run.params.lifetime_years %}defaults, lifetime overridden to {{ run.params.lifetime_years }} years{% else %}defaults{% endif %}</td></tr>
       <tr><th>Risk measure</th><td>{% if run.params.risk_measure == "cvar" %}CVaR at α = {{ run.params.cvar_alpha }}{% else %}Expected value{% endif %}</td></tr>

@@ -1,5 +1,5 @@
-"""Industrial Site Investor planning: Benders decomposition CLI choosing site location(s), technologies and
-capacities under a CAPEX budget and wind/PV uncertainty scenarios."""
+"""Industrial Site Investor planning: Benders decomposition CLI placing each site in a candidate country and
+choosing its technologies and capacities under a CAPEX budget and wind/PV uncertainty scenarios."""
 from __future__ import annotations
 
 import argparse
@@ -82,6 +82,11 @@ def green_h2_summary(schedule: pd.DataFrame) -> dict[str, float]:
             "go_bought_mwh": annual("Site GOs bought (MWh/h)"), "go_sold_mwh": annual("Site GOs sold (MWh/h)")}
 
 
+def _unit_id(site: str, country: str) -> str:
+    """Label of one site placed in one candidate country."""
+    return f"{site}@{country}"
+
+
 def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_tol: float,
                 capex_cfg: hp.CapexAssumptions, rep_days_per_month: int,
                 quiet_solver: bool = True, on_iteration=None, cvar_alpha: float | None = None,
@@ -90,26 +95,40 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                 scenario_probs: dict[str, float] | None = None,
                 workers: int | None = None,
                 max_units_per_candidate: int | None = None,
-                n_sites: int = 1,
-                flex: dict[str, float] | None = None,
-                green_share: float | None = None):
-    """Run the Benders loop: master MILP proposes site locations and capacities, joint subproblems (one per scenario) price them and return cuts, repeat to convergence.
+                sites: list[hp.SiteSpec] | None = None):
+    """Run the Benders loop: master MILP proposes where each site goes and its capacities, joint subproblems (one per scenario) price them and return cuts, repeat to convergence.
 
-    Each iteration adds two cuts per scenario: one at the trial point itself, so the master can't
-    propose the same plan again without paying its true recourse cost, and one at a Pareto core
-    point that starts inside the feasible region (every country a fractional site, every asset a
-    mid-grid size within its site cap) and moves halfway toward each trial point. If HiGHS presolve
-    fails on the master, it is re-solved once with presolve off."""
+    Every site in ``sites`` (default: one default site) is placed in exactly one of ``countries``;
+    several sites may share a country. Internally each (site, country) pair is a unit with its own
+    capacities and its own on/off placement. Each iteration adds two cuts per scenario: one at the
+    trial point itself, so the master can't propose the same plan again without paying its true
+    recourse cost, and one at a Pareto core point that starts inside the feasible region (every
+    unit a fractional placement, every asset a mid-grid size within its site cap) and moves halfway
+    toward each trial point. If HiGHS presolve fails on the master, it is re-solved once with
+    presolve off."""
     scenario_probs = scenario_probs if scenario_probs is not None else SCENARIO_PROBS
-    site_max_mw, cand_mw, cand_capex, host_zone = hp.build_candidates(countries, capex_cfg)
+    sites = sites if sites is not None else hp.default_sites(1)
+    cand_mw_c, cand_capex_c, host_zone = hp.build_candidates(countries, capex_cfg)
     crf = capex_cfg.capital_recovery_factors()
 
+    units = {_unit_id(sp.name, c): (host_zone[c], sp) for sp in sites for c in countries}
+    unit_ids = list(units)
+    unit_country = {_unit_id(sp.name, c): c for sp in sites for c in countries}
+    site_units = {sp.name: [_unit_id(sp.name, c) for c in countries] for sp in sites}
+    cand_mw = {u: cand_mw_c[unit_country[u]] for u in unit_ids}
+    cand_capex = {u: cand_capex_c[unit_country[u]] for u in unit_ids}
+    site_caps = {sp.name: hp.site_max_mw(sp, capex_cfg) for sp in sites}
+    site_max_mw = {u: dict(site_caps[units[u][1].name]) for u in unit_ids}
+    for u in unit_ids:
+        for a in disabled_assets or []:
+            site_max_mw[u][a] = 0.0
+
     if budget is not None:
-        cheapest_total = n_sites * sum(min(cand.capex_eur for cand in capex_cfg.catalog[a]) for a in hp.ASSETS
-                                       if not (disabled_assets and a in disabled_assets))
+        cheapest_total = len(sites) * sum(min(cand.capex_eur for cand in capex_cfg.catalog[a]) for a in hp.ASSETS
+                                          if not (disabled_assets and a in disabled_assets))
         if cheapest_total > budget:
             print(f"NOTE: budget {budget:,.0f} EUR is below the cheapest all-assets-built "
-                 f"combination ({cheapest_total:,.0f} EUR) for {n_sites} site(s) -- expect some "
+                 f"combination ({cheapest_total:,.0f} EUR) for {len(sites)} site(s) -- expect some "
                  f"assets to come back skipped (0 MW) in the result.")
 
     print(f"Building enriched price frames for {len(scenario_probs)} capacity scenarios "
@@ -117,23 +136,19 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     price_frames = {s: (ohp.enriched_elec_df(scenario=s), ohp.enriched_h2_df(scenario=s))
                     for s in scenario_probs}
 
-    for c in countries:
-        for a in disabled_assets or []:
-            site_max_mw[c][a] = 0.0
-
-    m = hp.build_master(countries, cand_mw, cand_capex, budget, crf, capex_cfg.theta_lower_bound_eur,
+    m = hp.build_master(unit_ids, cand_mw, cand_capex, budget, crf, capex_cfg.theta_lower_bound_eur,
                         scenario_probs=scenario_probs, cvar_alpha=cvar_alpha, site_max_mw=site_max_mw,
-                        max_units_per_candidate=max_units_per_candidate, n_sites=n_sites)
+                        max_units_per_candidate=max_units_per_candidate, site_units=site_units)
 
-    core_cap = {c: {a: min(float(sum([0.0] + list(cand_mw[c][a])) / (len(cand_mw[c][a]) + 1)),
-                           0.5 * site_max_mw[c][a])
-                    for a in hp.ASSETS} for c in countries}
-    core_site = {c: n_sites / len(countries) for c in countries}
+    core_cap = {u: {a: min(float(sum([0.0] + list(cand_mw[u][a])) / (len(cand_mw[u][a]) + 1)),
+                           0.5 * site_max_mw[u][a])
+                    for a in hp.ASSETS} for u in unit_ids}
+    core_site = {u: 1.0 / len(countries) for u in unit_ids}
 
     best_ub, best_capacities, best_capex, best_capex_by_asset = float("inf"), None, None, None
     best_units, best_sites, best_green = None, None, None
     log = []
-    per_country_log = {c: [] for c in countries}
+    per_unit_log = {u: [] for u in unit_ids}
     gap = float("inf")
 
     n_workers = workers if workers is not None else min(4, os.cpu_count() or 1)
@@ -152,8 +167,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
             master_s = time.time() - t_master
             if status != "ok":
                 raise RuntimeError(f"master solve failed at iteration {it}: {status}/{cond}")
-            cap_star = hp.extract_capacities(m, countries, cand_mw)
-            site_star = hp.extract_sites(m, countries)
+            cap_star = hp.extract_capacities(m, unit_ids, cand_mw)
+            site_star = hp.extract_sites(m, unit_ids)
             lb = float(m.solver_model.getInfo().mip_dual_bound)
             master_mip_gap = float(m.solver_model.getInfo().mip_gap)
             master_cut_off = (cond == "time_limit")
@@ -161,101 +176,76 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
             t_sub = time.time()
             sub_build_s = sub_solve_s = 0.0
             n_cuts = 0
-            zones = [host_zone[c] for c in countries]
-            caps_by_zone = {host_zone[c]: cap_star[c] for c in countries}
-            sites_by_zone = {host_zone[c]: site_star[c] for c in countries}
-            caps_core_by_zone = {host_zone[c]: core_cap[c] for c in countries}
-            sites_core_by_zone = {host_zone[c]: core_site[c] for c in countries}
 
-            if executor is not None:
-                trial_futures = {s: executor.submit(ohp.solve_joint, zones, caps_by_zone, rep_days_per_month,
-                                                    return_duals=True, edf=price_frames[s][0],
-                                                    hdf=price_frames[s][1], quiet=quiet_solver, scenario=s,
-                                                    sites=sites_by_zone, flex=flex, green_share=green_share)
-                                 for s in scenario_probs}
-                core_futures = {s: executor.submit(ohp.solve_joint, zones, caps_core_by_zone, rep_days_per_month,
-                                                   return_duals=True, edf=price_frames[s][0],
-                                                   hdf=price_frames[s][1], quiet=quiet_solver, scenario=s,
-                                                   sites=sites_core_by_zone, flex=flex, green_share=green_share)
-                                for s in scenario_probs}
-                results = {s: f.result() for s, f in trial_futures.items()}
-                results_core = {s: f.result() for s, f in core_futures.items()}
-            else:
-                results = {}
-                for s in scenario_probs:
-                    edf_s, hdf_s = price_frames[s]
-                    results[s] = ohp.solve_joint(zones, caps_by_zone, rep_days_per_month,
-                                                 return_duals=True, edf=edf_s, hdf=hdf_s,
-                                                 quiet=quiet_solver, scenario=s, sites=sites_by_zone,
-                                                 flex=flex, green_share=green_share)
-                results_core = {}
-                for s in scenario_probs:
-                    edf_s, hdf_s = price_frames[s]
-                    results_core[s] = ohp.solve_joint(zones, caps_core_by_zone, rep_days_per_month,
-                                                      return_duals=True, edf=edf_s, hdf=hdf_s,
-                                                      quiet=quiet_solver, scenario=s, sites=sites_core_by_zone,
-                                                      flex=flex, green_share=green_share)
+            def solve_all(caps, placed):
+                if executor is not None:
+                    futures = {s: executor.submit(ohp.solve_joint, units, caps, rep_days_per_month,
+                                                  return_duals=True, edf=price_frames[s][0],
+                                                  hdf=price_frames[s][1], quiet=quiet_solver, scenario=s,
+                                                  sites=placed)
+                               for s in scenario_probs}
+                    return {s: f.result() for s, f in futures.items()}
+                return {s: ohp.solve_joint(units, caps, rep_days_per_month, return_duals=True,
+                                           edf=price_frames[s][0], hdf=price_frames[s][1],
+                                           quiet=quiet_solver, scenario=s, sites=placed)
+                        for s in scenario_probs}
 
-            for s in scenario_probs:
-                sub_build_s += results[s]["build_seconds"]
-                sub_solve_s += results[s]["solve_seconds"]
+            results = solve_all(cap_star, site_star)
+            results_core = solve_all(core_cap, core_site)
 
             total_Q = 0.0
             Q_total_by_scenario: dict[str, float] = {}
-            Q_by_country = {c: 0.0 for c in countries}
-            Q_by_country_by_scenario: dict[str, dict[str, float]] = {}
+            Q_by_unit = {u: 0.0 for u in unit_ids}
+            Q_by_unit_by_scenario: dict[str, dict[str, float]] = {}
             for s, prob in scenario_probs.items():
                 result = results[s]
+                sub_build_s += result["build_seconds"]
+                sub_solve_s += result["solve_seconds"]
                 total_Q += prob * float(result["objective"])
                 Q_total_by_scenario[s] = float(result["objective"])
-                Q_s = {c: result["objective_by_zone"][host_zone[c]] for c in countries}
-                Q_by_country_by_scenario[s] = Q_s
-                for c in countries:
-                    Q_by_country[c] += prob * Q_s[c]
-
-                hp.add_optimality_cut(m, countries, it, Q_s,
-                                      {c: result["cut_coeffs"][host_zone[c]] for c in countries},
-                                      cap_star, cand_mw, scenario=s,
-                                      lam={c: result["site_coeffs"][host_zone[c]] for c in countries},
-                                      site_star=site_star, tag="trial")
+                Q_s = {u: result["objective_by_zone"][u] for u in unit_ids}
+                Q_by_unit_by_scenario[s] = Q_s
+                for u in unit_ids:
+                    Q_by_unit[u] += prob * Q_s[u]
+                hp.add_optimality_cut(m, unit_ids, it, Q_s, result["cut_coeffs"], cap_star, cand_mw,
+                                      scenario=s, lam=result["site_coeffs"], site_star=site_star, tag="trial")
                 n_cuts += 1
 
                 result_core = results_core[s]
                 sub_build_s += result_core["build_seconds"]
                 sub_solve_s += result_core["solve_seconds"]
-                Q_cut = {c: result_core["objective_by_zone"][host_zone[c]] for c in countries}
-                mu_cut = {c: result_core["cut_coeffs"][host_zone[c]] for c in countries}
-                lam_cut = {c: result_core["site_coeffs"][host_zone[c]] for c in countries}
-                hp.add_optimality_cut(m, countries, it, Q_cut, mu_cut, core_cap, cand_mw, scenario=s,
-                                      lam=lam_cut, site_star=core_site)
+                hp.add_optimality_cut(m, unit_ids, it, result_core["objective_by_zone"], result_core["cut_coeffs"],
+                                      core_cap, cand_mw, scenario=s, lam=result_core["site_coeffs"],
+                                      site_star=core_site)
                 n_cuts += 1
             sub_s = time.time() - t_sub
 
-            for c in countries:
+            for u in unit_ids:
                 for a in hp.ASSETS:
-                    core_cap[c][a] = _snap(0.5 * core_cap[c][a] + 0.5 * cap_star[c][a])
-                core_site[c] = _snap(0.5 * core_site[c] + 0.5 * site_star[c])
+                    core_cap[u][a] = _snap(0.5 * core_cap[u][a] + 0.5 * cap_star[u][a])
+                core_site[u] = _snap(0.5 * core_site[u] + 0.5 * site_star[u])
 
-            capex_star = hp.extract_capex(m, countries, cand_capex)
-            for c in countries:
-                per_country_log[c].append({"iter": it, "objective": Q_by_country[c],
-                                           "objective_by_scenario": {s: Q_by_country_by_scenario[s][c]
-                                                                     for s in scenario_probs},
-                                           "capex": sum(capex_star[c].values()), "capacities": dict(cap_star[c]),
-                                           "site": site_star[c]})
-            raw_capex = sum(capex_star[c][a] for c in countries for a in hp.ASSETS)
-            annualized_capex = sum(capex_star[c][a] * crf[a] for c in countries for a in hp.ASSETS)
+            capex_star = hp.extract_capex(m, unit_ids, cand_capex)
+            for u in unit_ids:
+                per_unit_log[u].append({"iter": it, "objective": Q_by_unit[u],
+                                        "objective_by_scenario": {s: Q_by_unit_by_scenario[s][u]
+                                                                  for s in scenario_probs},
+                                        "capex": sum(capex_star[u].values()), "capacities": dict(cap_star[u]),
+                                        "site": site_star[u]})
+            raw_capex = sum(capex_star[u][a] for u in unit_ids for a in hp.ASSETS)
+            annualized_capex = sum(capex_star[u][a] * crf[a] for u in unit_ids for a in hp.ASSETS)
             if cvar_alpha is not None:
                 ub = annualized_capex + hp.cvar_value(Q_total_by_scenario, scenario_probs, cvar_alpha)
             else:
                 ub = annualized_capex + total_Q
             if ub < best_ub:
                 best_ub, best_capacities, best_capex, best_capex_by_asset = ub, cap_star, raw_capex, capex_star
-                best_units = hp.extract_units(m, countries)
+                best_units = hp.extract_units(m, unit_ids)
                 best_sites = site_star
-                best_green = [{"country": c, "scenario": s, "probability": scenario_probs[s],
-                               **green_h2_summary(results[s]["schedules"][host_zone[c]])}
-                              for c in countries if site_star[c] > 0.5 for s in scenario_probs]
+                best_green = [{"site": units[u][1].name, "country": unit_country[u], "scenario": s,
+                               "probability": scenario_probs[s],
+                               **green_h2_summary(results[s]["schedules"][u])}
+                              for u in unit_ids if site_star[u] > 0.5 for s in scenario_probs]
             gap = (best_ub - lb) / max(abs(best_ub), 1e-6)
             log.append({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
                         "master_seconds": round(master_s, 2),
@@ -272,8 +262,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
             if on_iteration is not None:
                 on_iteration({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
                              "best_capacities": best_capacities, "best_capex_by_asset": best_capex_by_asset,
-                             "best_sites": best_sites,
-                             "host_zone": host_zone, "log": list(log), "per_country_log": per_country_log})
+                             "best_sites": best_sites, "units": units, "log": list(log),
+                             "per_unit_log": per_unit_log})
             if gap <= gap_tol:
                 print(f"converged (gap {gap:.4f} <= tol {gap_tol}) after {it} iteration(s)")
                 break
@@ -284,8 +274,10 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
         if executor is not None:
             executor.shutdown(wait=True)
 
-    return (best_capacities, best_capex, best_ub, pd.DataFrame(log), host_zone, price_frames,
-           per_country_log, best_capex_by_asset, best_units, best_sites, best_green)
+    return {"capacities": best_capacities, "capex": best_capex, "objective": best_ub, "log": pd.DataFrame(log),
+            "units": units, "unit_country": unit_country, "host_zone": host_zone, "price_frames": price_frames,
+            "per_unit_log": per_unit_log, "capex_by_asset": best_capex_by_asset, "unit_counts": best_units,
+            "placed": best_sites, "green": best_green}
 
 
 def main() -> None:
@@ -294,18 +286,20 @@ def main() -> None:
     group.add_argument("--countries", type=str, default=None,
                        help="comma-separated 2-letter country codes, e.g. DE,FR,PL")
     group.add_argument("--all", action="store_true", help="plan every eligible country")
-    ap.add_argument("--green-h2-share-pct", type=float, default=None,
-                    help="minimum green (RFNBO) share of each site's annual hydrogen demand, %%: own "
-                         "electrolyser on hourly-matched additional renewables (own wind/PV or bought "
-                         "GOs) or bought certified green H2. Default: GreenH2Params.green_share (42%%); "
-                         "0 = no requirement")
-    ap.add_argument("--demand-flex-pct", type=float, default=None,
-                    help="hourly demand flexibility, %% of each hour's demand every service may shift up "
-                         "or down (shifts net to zero over each day); applies to all six demands. "
-                         "Default: SiteDemandAssumptions.flex_fraction (10%% each); 0 = rigid demand")
+    ap.add_argument("--sites-file", type=str, default=None,
+                    help='JSON file defining the sites to build, each with its own demand peaks, green '
+                         'H2 share and flexibility: {"sites": [{"name": "Site 1", "peaks_mw": {...}, '
+                         '"green_share": 0.42, "flex_fraction": 0.1}, ...]}; overrides --n-sites, '
+                         "--green-h2-share-pct and --demand-flex-pct")
     ap.add_argument("--n-sites", type=int, default=1,
-                    help="how many industrial sites to build, each in a different candidate country "
-                         "(default 1); the optimizer picks where")
+                    help="without --sites-file: how many sites with the default settings to build "
+                         "(default 1); the optimizer picks a country for each, and sites may share one")
+    ap.add_argument("--green-h2-share-pct", type=float, default=None,
+                    help="without --sites-file: minimum green (RFNBO) share of each site's annual "
+                         "hydrogen demand, %%, default 42; 0 = no requirement")
+    ap.add_argument("--demand-flex-pct", type=float, default=None,
+                    help="without --sites-file: hourly demand flexibility of each site, %% of each "
+                         "hour's demand (shifts net to zero over each day), default 10; 0 = rigid")
     ap.add_argument("--budget", type=float, default=None,
                     help=f"total CAPEX budget across every site, EUR, raw/unannualized "
                          f"(default {hp.CapexAssumptions().default_budget_eur:,.0f})")
@@ -318,7 +312,7 @@ def main() -> None:
     ap.add_argument("--output", type=str, default=str(OUT / "plan"), help="output file prefix")
     ap.add_argument("--export-schedules", action="store_true",
                     help="also re-solve at the final chosen capacities and dump each "
-                         "chosen site's representative-day schedule")
+                         "site's representative-day schedule")
     ap.add_argument("--rep-days-per-month", type=int, default=7,
                     help="solve every joint subproblem on N days/month (1-29, weighted to "
                          "approximate the full year), default 7")
@@ -381,7 +375,14 @@ def main() -> None:
         countries = eligible_countries()
         print(f"No --countries/--all given -- defaulting to all {len(countries)} eligible countries.")
 
-    print(f"Candidate site countries: {countries} | sites to build: {args.n_sites}")
+    if args.sites_file:
+        sites = hp.load_sites(Path(args.sites_file))
+    else:
+        sites = hp.default_sites(args.n_sites,
+                                 green_share=None if args.green_h2_share_pct is None else args.green_h2_share_pct / 100,
+                                 flex_fraction=None if args.demand_flex_pct is None else args.demand_flex_pct / 100)
+
+    print(f"Candidate countries: {countries} | sites to build: {len(sites)} (each in one country; sites may share one)")
     crfs = capex_cfg.capital_recovery_factors()
     crf_str = ", ".join(f"{a}={crfs[a]:.4f}({capex_cfg.lifetime_years[a]:.0f}yr)" for a in hp.ASSETS)
     print(f"Budget: {budget:,.0f} EUR (raw/unannualized) | CRF @ {capex_cfg.discount_rate:.1%} discount: "
@@ -395,18 +396,16 @@ def main() -> None:
     print(f"Subproblems: {args.rep_days_per_month} representative day(s)/month "
          f"({args.rep_days_per_month * 12} days solved, weighted to approximate the full year)")
     tech = hp.SITE_TECH
-    flex = (hp.SITE_DEMAND.flex_fraction if args.demand_flex_pct is None
-            else {svc: args.demand_flex_pct / 100 for svc in hp.SERVICES})
     green = hp.GREEN_H2
-    green_share = green.green_share if args.green_h2_share_pct is None else args.green_h2_share_pct / 100
-    print(f"Green H2: >= {green_share:.0%} of H2 demand, hourly-matched additional renewables | GOs buy "
-          f"{green.go_buy_price_eur_per_mwh:g} / sell {green.go_sell_price_eur_per_mwh:g} EUR/MWh | "
-          f"certified green H2 premium {green.green_h2_premium_eur_per_mwh:g} EUR/MWh")
-    print("Demand flexibility (+/- share of each hour's demand, net zero per day): "
-          + ", ".join(f"{k}={v:.0%}" for k, v in flex.items()))
-    print(f"Site demand (MWh/yr) from {hp.demand.SITE_DEMAND_CSV.relative_to(ROOT)}:")
-    for c in countries:
-        print(f"  {c}: " + ", ".join(f"{k}={v:,.0f}" for k, v in hp.annual_demand_mwh(c).items()))
+    print(f"Green H2: hourly-matched additional renewables | GOs buy {green.go_buy_price_eur_per_mwh:g} / sell "
+          f"{green.go_sell_price_eur_per_mwh:g} EUR/MWh | certified green H2 premium "
+          f"{green.green_h2_premium_eur_per_mwh:g} EUR/MWh")
+    print(f"Sites (daily peaks MW x per-unit curves in {hp.demand.SITE_DEMAND_CSV.relative_to(ROOT)}):")
+    for sp in sites:
+        annual = hp.annual_demand_mwh(sp.peaks_mw)
+        print(f"  {sp.name}: green H2 >= {sp.green_share:.0%}, flexibility +/-{sp.flex_fraction:.0%} | peaks "
+              + ", ".join(f"{k}={v:g}" for k, v in sp.peaks_mw.items())
+              + " | MWh/yr " + ", ".join(f"{k}={v:,.0f}" for k, v in annual.items()))
     print(f"Backup: gas boiler heat {tech.gas_heat_cost_eur_per_mwh_th:.1f} EUR/MWh_th, legacy chiller "
           f"COP {tech.legacy_chiller_cop:g} | grid import fee {tech.grid_import_fee_eur_per_mwh:g} EUR/MWh, "
           f"H2 import fee {tech.h2_import_fee_eur_per_mwh:g} EUR/MWh")
@@ -420,66 +419,73 @@ def main() -> None:
              f"{scenario_probs}")
 
     t0 = time.time()
-    (best_capacities, best_capex, best_ub, log_df, host_zone, price_frames,
-    per_country_log, best_capex_by_asset, best_units, best_sites, best_green) = run_benders(
+    res = run_benders(
         countries, budget, args.max_iters, args.gap_tol, capex_cfg,
         rep_days_per_month=args.rep_days_per_month,
         cvar_alpha=args.cvar_alpha, master_time_limit=args.master_time_limit,
         disabled_assets=disabled_assets, scenario_probs=scenario_probs, workers=args.workers,
         max_units_per_candidate=(args.max_units_per_candidate
                                  if args.max_units_per_candidate > 0 else None),
-        n_sites=args.n_sites, flex=flex, green_share=green_share)
+        sites=sites)
     elapsed = time.time() - t0
+    units, unit_country, host_zone = res["units"], res["unit_country"], res["host_zone"]
+    chosen = {units[u][1].name: u for u in units if res["placed"][u] > 0.5}
 
     print(f"\nDone in {elapsed:.1f}s. Final capacities:")
     rows = []
-    for c in countries:
-        row = {"country": c, "host_zone": host_zone[c], "site": int(best_sites[c])}
-        row.update(best_capacities[c])
+    for sp in sites:
+        u = chosen[sp.name]
+        row = {"site": sp.name, "country": unit_country[u], "host_zone": host_zone[unit_country[u]]}
+        row.update(res["capacities"][u])
         rows.append(row)
     cap_df = pd.DataFrame(rows)
     print(cap_df.to_string(index=False))
-    print(f"\nChosen site(s): {', '.join(c for c in countries if best_sites[c])}")
-    print(f"Total raw CAPEX: {best_capex:,.0f} EUR (budget {budget:,.0f} EUR, "
-         f"{best_capex / budget:.1%} used)")
+    print(f"\nChosen site(s): {', '.join(f'{sp.name} -> {unit_country[chosen[sp.name]]}' for sp in sites)}")
+    print(f"Total raw CAPEX: {res['capex']:,.0f} EUR (budget {budget:,.0f} EUR, "
+         f"{res['capex'] / budget:.1%} used)")
     risk_label = (f"EXPECTED" if args.cvar_alpha is None else f"CVaR_{args.cvar_alpha:.2f}")
     print(f"Best objective (annualized CAPEX + {risk_label} 1yr operating cost across "
-         f"{len(scenario_probs)} scenarios, EUR, lower=better): {best_ub:,.0f}")
+         f"{len(scenario_probs)} scenarios, EUR, lower=better): {res['objective']:,.0f}")
 
     out_prefix = Path(args.output)
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
     cap_df.to_csv(f"{out_prefix}_capacities.csv", index=False)
-    log_df.to_csv(f"{out_prefix}_convergence.csv", index=False)
+    res["log"].to_csv(f"{out_prefix}_convergence.csv", index=False)
+    pd.DataFrame([{"site": sp.name, "green_share": sp.green_share, "flex_fraction": sp.flex_fraction,
+                   **{f"peak_{k}_mw": v for k, v in sp.peaks_mw.items()},
+                   **{f"annual_{k}_mwh": v for k, v in hp.annual_demand_mwh(sp.peaks_mw).items()}}
+                  for sp in sites]).to_csv(f"{out_prefix}_sites.csv", index=False)
     units_rows = []
-    for c in countries:
+    for sp in sites:
+        u = chosen[sp.name]
         for a in hp.ASSETS:
-            for k, (cand, n) in enumerate(zip(capex_cfg.catalog[a], best_units[c][a])):
+            for k, (cand, n) in enumerate(zip(capex_cfg.catalog[a], res["unit_counts"][u][a])):
                 if n > 0:
-                    units_rows.append({"country": c, "asset": a, "candidate": k, "candidate_mw": cand.mw,
-                                       "units": int(n), "total_mw": cand.mw * int(n)})
+                    units_rows.append({"site": sp.name, "country": unit_country[u], "asset": a, "candidate": k,
+                                       "candidate_mw": cand.mw, "units": int(n), "total_mw": cand.mw * int(n)})
     pd.DataFrame(units_rows).to_csv(f"{out_prefix}_units.csv", index=False)
-    green_df = pd.DataFrame(best_green)
+    green_df = pd.DataFrame(res["green"])
     green_df.to_csv(f"{out_prefix}_green_h2.csv", index=False)
-    for c, g in green_df.groupby("country"):
+    targets = {sp.name: sp.green_share for sp in sites}
+    for name, g in green_df.groupby("site", sort=False):
         share = float((g["green_share"] * g["probability"]).sum())
-        print(f"Green H2 at {c}: expected share {share:.1%} of H2 demand (target {green_share:.0%}), "
-              f"GOs bought {float((g['go_bought_mwh'] * g['probability']).sum()):,.0f} / sold "
-              f"{float((g['go_sold_mwh'] * g['probability']).sum()):,.0f} MWh/yr")
-    print(f"\nwrote {out_prefix}_capacities.csv, {out_prefix}_convergence.csv, {out_prefix}_units.csv, "
-          f"{out_prefix}_green_h2.csv")
+        print(f"Green H2 at {name} ({g['country'].iloc[0]}): expected share {share:.1%} of H2 demand "
+              f"(target {targets[name]:.0%}), GOs bought {float((g['go_bought_mwh'] * g['probability']).sum()):,.0f} "
+              f"/ sold {float((g['go_sold_mwh'] * g['probability']).sum()):,.0f} MWh/yr")
+    print(f"\nwrote {out_prefix}_capacities.csv, {out_prefix}_sites.csv, {out_prefix}_convergence.csv, "
+          f"{out_prefix}_units.csv, {out_prefix}_green_h2.csv")
 
     if args.export_schedules:
-        site_countries = [c for c in countries if best_sites[c]]
-        zones = [host_zone[c] for c in site_countries]
-        caps_by_zone = {host_zone[c]: best_capacities[c] for c in site_countries}
-        for s, (edf_s, hdf_s) in price_frames.items():
-            final = ohp.solve_joint(zones, caps_by_zone, args.rep_days_per_month,
-                                    return_duals=False, edf=edf_s, hdf=hdf_s, quiet=True, scenario=s,
-                                    flex=flex, green_share=green_share)
-            for c in site_countries:
-                final["schedules"][host_zone[c]].to_csv(f"{out_prefix}_schedule_{c}_{s}.csv", index=False)
-        print(f"wrote {out_prefix}_schedule_<country>_<scenario>.csv for {len(site_countries)} site(s) "
-             f"x {len(price_frames)} scenarios")
+        chosen_units = {u: units[u] for u in chosen.values()}
+        caps = {u: res["capacities"][u] for u in chosen_units}
+        for s, (edf_s, hdf_s) in res["price_frames"].items():
+            final = ohp.solve_joint(chosen_units, caps, args.rep_days_per_month,
+                                    return_duals=False, edf=edf_s, hdf=hdf_s, quiet=True, scenario=s)
+            for u in chosen_units:
+                slug = units[u][1].name.replace(" ", "_")
+                final["schedules"][u].to_csv(f"{out_prefix}_schedule_{slug}_{unit_country[u]}_{s}.csv", index=False)
+        print(f"wrote {out_prefix}_schedule_<site>_<country>_<scenario>.csv for {len(chosen_units)} site(s) "
+             f"x {len(res['price_frames'])} scenarios")
 
 
 if __name__ == "__main__":

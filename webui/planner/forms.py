@@ -16,6 +16,7 @@ ASSET_LABELS = {
 }
 MWH_ASSETS = {"battery_mw", "tank_mw"}
 MAX_CANDIDATES_PER_ASSET = 8
+MAX_SITES = 6
 
 
 class PlanRunForm(forms.Form):
@@ -24,14 +25,9 @@ class PlanRunForm(forms.Form):
     all_countries = forms.BooleanField(required=False, initial=True, label="All eligible countries")
     countries = forms.MultipleChoiceField(required=False, label="Candidate site countries",
                                           widget=forms.CheckboxSelectMultiple)
-    n_sites = forms.IntegerField(min_value=1, max_value=13, initial=1, label="Sites to build",
-                                 help_text="The optimizer picks this many countries to build a site in.")
-    green_h2_share_pct = forms.FloatField(
-        min_value=0, max_value=100, initial=42, label="Minimum green hydrogen share (%)",
-        help_text="Share of each site's annual hydrogen demand that must be green (RFNBO). 0 = no requirement.")
-    demand_flex_pct = forms.FloatField(
-        min_value=0, max_value=50, initial=10, label="Demand flexibility (%)",
-        help_text="How far each hour's demand may move up or down; shifts net to zero over each day. 0 = rigid.")
+    n_sites = forms.IntegerField(min_value=1, max_value=MAX_SITES, initial=1, label="Sites to build",
+                                 help_text="Each site has its own settings in step 3. The optimizer picks a "
+                                           "country for each site; several sites may share a country.")
     budget = forms.FloatField(min_value=1e6, initial=1_500_000_000, label="Total CAPEX budget (EUR)",
                               help_text="Raw, unannualized budget across all sites.")
     disabled_assets = forms.MultipleChoiceField(
@@ -68,13 +64,22 @@ class PlanRunForm(forms.Form):
         self.scenario_countries = sorted(next(iter(self.defaults.values()))["wind"])
         self.fields["countries"].choices = [(c, country_label(c)) for c in services.eligible_countries()]
 
-        self.peak_defaults = services.demand_peak_defaults()
+        self.site_defaults = services.site_defaults()
         self.demand_services = services.demand_services()
         self.demand_service_labels = [services.SERVICE_LABELS[s] for s in self.demand_services]
-        for country, values in self.peak_defaults.items():
+        for i in range(MAX_SITES):
+            self.fields[f"site_name__{i}"] = forms.CharField(
+                max_length=40, required=False, initial=f"Site {i + 1}", label="Name")
+            self.fields[f"site_green__{i}"] = forms.FloatField(
+                min_value=0, max_value=100, initial=round(self.site_defaults["green_share"] * 100, 4),
+                label="Minimum green hydrogen share (%)")
+            self.fields[f"site_flex__{i}"] = forms.FloatField(
+                min_value=0, max_value=50, initial=round(self.site_defaults["flex_fraction"] * 100, 4),
+                label="Demand flexibility (%)")
             for service in self.demand_services:
-                self.fields[f"peak__{country}__{service}"] = forms.FloatField(
-                    min_value=0, initial=round(values[service], 4), label=f"{country} {service} peak (MW)")
+                self.fields[f"site_peak__{i}__{service}"] = forms.FloatField(
+                    min_value=0, initial=round(self.site_defaults["peaks_mw"][service], 4),
+                    label=f"{services.SERVICE_LABELS[service]} (MW)")
 
         self.catalog_defaults = services.capex_assumptions_defaults()
         self.assets = self.catalog_defaults["assets"]
@@ -124,10 +129,12 @@ class PlanRunForm(forms.Form):
         return self._table_rows("disabled_assets", self.ASSET_TABLE_COLUMNS)
 
     @property
-    def demand_peak_rows(self) -> list[dict]:
-        """One row per country with its peak MW field for every demand."""
-        return [{"country": country, "fields": [self[f"peak__{country}__{s}"] for s in self.demand_services]}
-                for country in self.peak_defaults]
+    def site_rows(self) -> list[dict]:
+        """One card per possible site: its name, green share, flexibility and daily peak fields."""
+        return [{"index": i, "name": self[f"site_name__{i}"], "green": self[f"site_green__{i}"],
+                 "flex": self[f"site_flex__{i}"],
+                 "peaks": [self[f"site_peak__{i}__{svc}"] for svc in self.demand_services]}
+                for i in range(MAX_SITES)]
 
     @property
     def catalog_rows(self) -> list[dict]:
@@ -173,10 +180,10 @@ class PlanRunForm(forms.Form):
         data = super().clean()
         if not data.get("all_countries") and not data.get("countries"):
             self.add_error("countries", "Select at least one country or choose all countries.")
-        n_candidates = (len(services.eligible_countries()) if data.get("all_countries")
-                        else len(data.get("countries") or []))
-        if data.get("n_sites") and n_candidates and data["n_sites"] > n_candidates:
-            self.add_error("n_sites", f"Only {n_candidates} candidate countries are selected.")
+        n_sites = data.get("n_sites") or 0
+        names = [(data.get(f"site_name__{i}") or "").strip() or f"Site {i + 1}" for i in range(n_sites)]
+        if len(set(names)) != len(names):
+            self.add_error(None, f"Each site needs its own name; got {', '.join(names)}.")
         included = [s for s in self.defaults if data.get(f"scenario_include__{s}")]
         if not included:
             self.add_error(None, "Select at least one uncertainty scenario.")
@@ -225,12 +232,11 @@ class PlanRunForm(forms.Form):
                 candidates.append(candidate)
             catalog_overrides[asset] = sorted(candidates, key=lambda c: c["mw"])
 
-        demand_peak_overrides = {}
-        for country, values in self.peak_defaults.items():
-            for service in self.demand_services:
-                mw = d[f"peak__{country}__{service}"]
-                if abs(mw - round(values[service], 4)) > 1e-9:
-                    demand_peak_overrides.setdefault(country, {})[service] = mw
+        sites = [{"name": (d.get(f"site_name__{i}") or "").strip() or f"Site {i + 1}",
+                  "peaks_mw": {svc: d[f"site_peak__{i}__{svc}"] for svc in self.demand_services},
+                  "green_share": d[f"site_green__{i}"] / 100,
+                  "flex_fraction": d[f"site_flex__{i}"] / 100}
+                 for i in range(d["n_sites"])]
 
         included = [s for s in self.defaults if d.get(f"scenario_include__{s}")]
         total = sum(d[f"scenario_prob__{s}"] for s in included)
@@ -246,15 +252,13 @@ class PlanRunForm(forms.Form):
             "all_countries": d["all_countries"],
             "countries": sorted(d["countries"]),
             "n_sites": d["n_sites"],
-            "green_h2_share_pct": d["green_h2_share_pct"],
-            "demand_flex_pct": d["demand_flex_pct"],
+            "sites": sites,
             "budget": d["budget"],
             "disabled_assets": list(d["disabled_assets"]),
             "max_units_per_candidate": d["max_units_per_candidate"],
             "scenarios": included,
             "scenario_overrides": overrides,
             "catalog_overrides": catalog_overrides,
-            "demand_peak_overrides": demand_peak_overrides,
             "discount_rate_pct": d["discount_rate_pct"],
             "risk_measure": d["risk_measure"],
             "cvar_alpha": d["cvar_alpha"],

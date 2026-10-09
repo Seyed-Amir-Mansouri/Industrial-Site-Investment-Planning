@@ -8,7 +8,7 @@ import numpy as np
 from economic_dispatch import model as ed_model
 from economic_dispatch.config import RunConfig
 
-from .config import ASSETS, THERMAL_ASSET_SERVICES, CapexAssumptions
+from .config import ASSETS, THERMAL_ASSET_SERVICES, CapexAssumptions, SiteSpec
 from .demand import peak_demand_mw
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -27,7 +27,7 @@ def candidate_site_zones(zones_db=DEFAULT_ZONES_DB, networks_db=DEFAULT_NETWORKS
 
 def build_candidates(countries: list[str], capex_cfg: CapexAssumptions | None = None,
                      zones_db=DEFAULT_ZONES_DB, networks_db=DEFAULT_NETWORKS_DB):
-    """Per-country candidate MW/CAPEX grids, per-site MW caps, and host zones for the given countries.
+    """Per-country candidate MW/CAPEX grids and host zones for the given countries.
 
     Assets may have different numbers of products in the catalog; shorter lists are padded with
     zero-MW, zero-CAPEX products so every asset has the same grid length in the master, and a
@@ -49,11 +49,15 @@ def build_candidates(countries: list[str], capex_cfg: CapexAssumptions | None = 
     cand_mw = {c: dict(cand_mw_shared) for c in countries}
     cand_capex = {c: dict(cand_capex_shared) for c in countries}
 
-    site_max_mw = {}
-    for c in countries:
-        caps = dict(capex_cfg.site_max_mw)
-        for a, services in THERMAL_ASSET_SERVICES.items():
-            caps[a] = capex_cfg.thermal_oversize_factor * peak_demand_mw(c, services)
-        site_max_mw[c] = caps
     host_zone = {c: site_zones[c] for c in countries}
-    return site_max_mw, cand_mw, cand_capex, host_zone
+    return cand_mw, cand_capex, host_zone
+
+
+def site_max_mw(spec: SiteSpec, capex_cfg: CapexAssumptions | None = None) -> dict[str, float]:
+    """Largest MW of each asset one site may host: ``capex_cfg.site_max_mw`` for the market-facing
+    assets, and ``thermal_oversize_factor`` times the site's own peak demand for each thermal asset."""
+    capex_cfg = capex_cfg or CapexAssumptions()
+    caps = dict(capex_cfg.site_max_mw)
+    for a, services in THERMAL_ASSET_SERVICES.items():
+        caps[a] = capex_cfg.thermal_oversize_factor * peak_demand_mw(spec.peaks_mw, services)
+    return caps

@@ -159,18 +159,6 @@
         {% for e in form.n_sites.errors %}<div class="error">{{ e }}</div>{% endfor %}
       </div>
       <div class="field">
-        <label>{{ form.green_h2_share_pct.label }}</label>
-        {{ form.green_h2_share_pct }}
-        <div class="help">{{ form.green_h2_share_pct.help_text }}</div>
-        {% for e in form.green_h2_share_pct.errors %}<div class="error">{{ e }}</div>{% endfor %}
-      </div>
-      <div class="field">
-        <label>{{ form.demand_flex_pct.label }}</label>
-        {{ form.demand_flex_pct }}
-        <div class="help">{{ form.demand_flex_pct.help_text }}</div>
-        {% for e in form.demand_flex_pct.errors %}<div class="error">{{ e }}</div>{% endfor %}
-      </div>
-      <div class="field">
         <label>{{ form.max_units_per_candidate.label }}</label>
         {{ form.max_units_per_candidate }}
         <div class="help">{{ form.max_units_per_candidate.help_text }}</div>
@@ -243,27 +231,33 @@
   <div class="card">
     <div class="section-head">
       <div>
-        <h2><span class="step">3</span>Site demand peaks</h2>
-        <p class="lede">Daily peak demand (MW) of a site in each country. Hourly demand is the per-unit yearly curve in <code>inputs/site_demand.csv</code> (the same in every country) times these peaks. Changes apply to this run only; defaults come from <code>DEMAND_PEAKS_MW</code> in <code>site_investor_planning/config.py</code>.</p>
+        <h2><span class="step">3</span>Sites</h2>
+        <p class="lede">One card per site to build. Each site has its own daily peak demand (MW), minimum green hydrogen share and demand flexibility. Hourly demand is the per-unit yearly curve in <code>inputs/site_demand.csv</code> (shared by all sites) times the site's peaks. The optimizer picks a country for every site, and several sites may share a country.</p>
       </div>
       <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
     </div>
-    <div style="overflow-x:auto">
-    <table class="catalog-table peak-table">
-      <thead>
-        <tr><th>Country</th>{% for label in form.demand_service_labels %}<th>{{ label }}</th>{% endfor %}</tr>
-      </thead>
-      <tbody>
-        {% for row in form.demand_peak_rows %}
-        <tr data-country-row="{{ row.country }}">
-          <td><strong>{{ row.country }}</strong></td>
-          {% for f in row.fields %}<td>{{ f }}{% for e in f.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>{% endfor %}
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <div style="display:flex;flex-direction:column;gap:0;">
+      {% for site in form.site_rows %}
+      <div class="catalog-card site-card" data-site-index="{{ site.index }}">
+        <div class="section-head" style="margin-bottom:10px;">
+          <label class="prob-field" style="font-weight:600;color:var(--ink)">{{ site.name }}</label>
+          <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+            <label class="prob-field">Green H2 (%) {{ site.green }}</label>
+            <label class="prob-field">Flexibility (±%) {{ site.flex }}</label>
+            <button type="button" class="btn ghost small" data-reset="site">Reset site</button>
+          </div>
+        </div>
+        {% for e in site.green.errors %}<div class="error">{{ e }}</div>{% endfor %}
+        {% for e in site.flex.errors %}<div class="error">{{ e }}</div>{% endfor %}
+        <div style="overflow-x:auto">
+        <table class="catalog-table">
+          <thead><tr>{% for label in form.demand_service_labels %}<th>{{ label }} (MW)</th>{% endfor %}</tr></thead>
+          <tbody><tr>{% for f in site.peaks %}<td>{{ f }}{% for e in f.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>{% endfor %}</tr></tbody>
+        </table>
+        </div>
+      </div>
+      {% endfor %}
     </div>
-    <p class="help" data-no-country-note hidden>Select at least one country in step 1 to edit its peaks.</p>
   </div>
 
   <div class="card">
@@ -389,13 +383,12 @@
       const all = allBox.checked;
       const picked = new Set(Array.from(countryInputs).filter(c => c.checked).map(c => c.value));
       const rows = document.querySelectorAll('[data-country-row]');
-      let shown = 0;
-      rows.forEach(r => {
-        const show = all || picked.has(r.dataset.countryRow);
-        r.hidden = !show;
-        if (show && r.closest('.peak-table')) shown += 1;
-      });
-      document.querySelectorAll('[data-no-country-note]').forEach(n => { n.hidden = shown > 0; });
+      rows.forEach(r => { r.hidden = !(all || picked.has(r.dataset.countryRow)); });
+    }
+    const nSitesInput = document.querySelector('input[name="n_sites"]');
+    function syncSites() {
+      const n = Math.max(1, parseInt(nSitesInput.value, 10) || 1);
+      document.querySelectorAll('.site-card').forEach(card => { card.hidden = Number(card.dataset.siteIndex) >= n; });
     }
     function syncRisk() {
       const cvar = document.querySelector('input[name="risk_measure"]:checked').value === 'cvar';
@@ -429,12 +422,13 @@
     }
     function syncAll() {
       syncCountries();
+      syncSites();
       syncRisk();
       syncProbTotal();
       syncCatalogRows();
     }
 
-    const RESET_SCOPES = { scenario: '.scenario-card', 'catalog-asset': '.catalog-card' };
+    const RESET_SCOPES = { scenario: '.scenario-card', 'catalog-asset': '.catalog-card', site: '.site-card' };
     document.addEventListener('click', function (e) {
       const reset = e.target.closest('[data-reset]');
       if (reset) {
@@ -471,6 +465,7 @@
 
     allBox.addEventListener('change', syncCountries);
     countryInputs.forEach(c => c.addEventListener('change', syncCountryRows));
+    nSitesInput.addEventListener('input', syncSites);
     riskRadios.forEach(r => r.addEventListener('change', syncRisk));
     probInputs.forEach(p => p.addEventListener('input', syncProbTotal));
     includeInputs.forEach(c => c.addEventListener('change', syncProbTotal));

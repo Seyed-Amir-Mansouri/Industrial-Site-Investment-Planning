@@ -29,11 +29,10 @@ def _execute(run_pk: int) -> None:
         override_path = prefix.parent / "scenario_overrides.json"
         override_path.write_text(json.dumps({"scenarios": overrides}, indent=2), encoding="utf-8")
         env[services.SCENARIO_OVERRIDES_ENV] = str(override_path)
-    peak_overrides = run.params.get("demand_peak_overrides")
-    if peak_overrides:
-        peak_path = prefix.parent / "demand_peak_overrides.json"
-        peak_path.write_text(json.dumps({"peaks": peak_overrides}, indent=2), encoding="utf-8")
-        env[services.DEMAND_PEAK_OVERRIDES_ENV] = str(peak_path)
+    sites = run.params.get("sites")
+    if sites:
+        (prefix.parent / services.SITES_FILE_NAME).write_text(json.dumps({"sites": sites}, indent=2),
+                                                               encoding="utf-8")
     catalog_overrides = run.params.get("catalog_overrides")
     if catalog_overrides:
         catalog_path = prefix.parent / "catalog_overrides.json"

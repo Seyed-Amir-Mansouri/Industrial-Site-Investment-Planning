@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 RUNS_DIR = PROJECT_ROOT / "outputs" / "webui"
 SCENARIO_OVERRIDES_ENV = "PLANNER_SCENARIO_OVERRIDES"
 CATALOG_OVERRIDES_ENV = "PLANNER_CATALOG_OVERRIDES"
-DEMAND_PEAK_OVERRIDES_ENV = "PLANNER_DEMAND_PEAK_OVERRIDES"
+SITES_FILE_NAME = "sites.json"
 
 
 @lru_cache(maxsize=1)
@@ -36,12 +36,12 @@ def demand_services() -> list[str]:
 
 
 @lru_cache(maxsize=1)
-def demand_peak_defaults() -> dict[str, dict[str, float]]:
-    """Default peak MW per eligible country and demand, from ``DEMAND_PEAKS_MW`` in ``site_investor_planning/config.py``."""
+def site_defaults() -> dict:
+    """The settings a new site starts from: daily peaks (MW), green hydrogen share and flexibility."""
     import site_investor_planning as hp
 
-    peaks = hp.default_peaks_mw()
-    return {c: peaks[c] for c in eligible_countries() if c in peaks}
+    spec = hp.SiteSpec(name="Site 1")
+    return {"peaks_mw": dict(spec.peaks_mw), "green_share": spec.green_share, "flex_fraction": spec.flex_fraction}
 
 
 @lru_cache(maxsize=1)
@@ -51,10 +51,8 @@ def site_assumptions():
     tech = hp.SITE_TECH
     return {
         "services": list(hp.SERVICES),
-        "demand_rows": [{"country": c, "values": list(hp.annual_demand_mwh(c).values())}
-                        for c in eligible_countries()],
-        "peak_rows": [{"country": c, "values": [v[s] for s in hp.SERVICES]}
-                      for c, v in demand_peak_defaults().items()],
+        "default_peaks": [site_defaults()["peaks_mw"][s] for s in hp.SERVICES],
+        "default_annual": list(hp.annual_demand_mwh(site_defaults()["peaks_mw"]).values()),
         "cop": [{"asset": a, "service": svc, "cop": tech.cop(a, svc)}
                 for a, services in hp.THERMAL_ASSET_SERVICES.items() for svc in services],
         "electrolyser_efficiency": 0.68,
@@ -64,11 +62,11 @@ def site_assumptions():
         "legacy_chiller_cop": tech.legacy_chiller_cop,
         "grid_import_fee": tech.grid_import_fee_eur_per_mwh,
         "h2_import_fee": tech.h2_import_fee_eur_per_mwh,
-        "green_share": hp.GREEN_H2.green_share,
+        "green_share": site_defaults()["green_share"],
         "go_buy_price": hp.GREEN_H2.go_buy_price_eur_per_mwh,
         "go_sell_price": hp.GREEN_H2.go_sell_price_eur_per_mwh,
         "green_h2_premium": hp.GREEN_H2.green_h2_premium_eur_per_mwh,
-        "flex": [{"service": svc, "pct": frac * 100} for svc, frac in hp.SITE_DEMAND.flex_fraction.items()],
+        "flex_pct": site_defaults()["flex_fraction"] * 100,
     }
 
 
@@ -139,23 +137,28 @@ def country_map_markers(params: dict, summary: dict) -> list[dict]:
     from . import geo
 
     assets = capex_assumptions_defaults()["assets"]
-    by_country = {row["country"]: row for row in summary.get("capacities", [])}
     codes = eligible_countries() if params.get("all_countries") else params.get("countries", [])
+    by_country = {}
+    for row in summary.get("site_rows", []):
+        entry = by_country.setdefault(row["country"], {"values": {a: 0.0 for a in assets}, "sites": []})
+        entry["sites"].append(row["site"])
+        for a in assets:
+            entry["values"][a] += float(row.get(a, 0) or 0)
 
     rows = []
     for code in codes:
         centroid = geo.COUNTRY_CENTROIDS.get(code)
         if centroid is None:
             continue
-        row = by_country.get(code, {})
-        values = {a: float(row.get(a, 0) or 0) for a in assets}
+        entry = by_country.get(code, {"values": {a: 0.0 for a in assets}, "sites": []})
         rows.append({
             "code": code,
             "lat": centroid[0],
             "lon": centroid[1],
-            "total": sum(values.values()),
-            "values": values,
-            "site": bool(int(float(row.get("site", 0) or 0))),
+            "total": sum(entry["values"].values()),
+            "values": entry["values"],
+            "site": bool(entry["sites"]),
+            "site_names": entry["sites"],
         })
 
     max_total = max((r["total"] for r in rows), default=0.0)
@@ -223,12 +226,11 @@ def build_command(params: dict, output_prefix: Path) -> list[str]:
         cmd.append("--all")
     else:
         cmd += ["--countries", ",".join(params["countries"])]
-    if params.get("green_h2_share_pct") is not None:
-        cmd += ["--green-h2-share-pct", str(params["green_h2_share_pct"])]
-    if params.get("demand_flex_pct") is not None:
-        cmd += ["--demand-flex-pct", str(params["demand_flex_pct"])]
-    cmd += ["--n-sites", str(params.get("n_sites", 1)),
-            "--budget", f"{params['budget']:.0f}",
+    if params.get("sites"):
+        cmd += ["--sites-file", str(Path(output_prefix).parent / SITES_FILE_NAME)]
+    else:
+        cmd += ["--n-sites", str(params.get("n_sites", 1))]
+    cmd += ["--budget", f"{params['budget']:.0f}",
             "--max-units-per-candidate", str(params["max_units_per_candidate"]),
             "--discount-rate", f"{params['discount_rate_pct'] / 100:.6f}",
             "--rep-days-per-month", str(params["rep_days_per_month"]),
@@ -285,11 +287,11 @@ def parse_summary(output_prefix: Path, log: str) -> dict:
     done = _DONE_RE.search(log)
     capex = _CAPEX_RE.search(log)
     objective = _OBJ_RE.search(log)
-    sites = [r["country"] for r in capacities if float(r.get("site", 0) or 0) > 0.5]
-    if not sites and (m := _SITES_RE.search(log)):
-        sites = [c.strip() for c in m.group(1).split(",") if c.strip()]
+    site_rows = _site_rows(capacities)
+    sites = [f"{r['site']} → {r['country']}" for r in site_rows]
     return {
         "sites": sites,
+        "site_rows": site_rows,
         "elapsed_seconds": float(done.group(1)) if done else None,
         "iterations": len(convergence),
         "converged": bool(re.search(r"converged \(gap", log)),
@@ -304,13 +306,30 @@ def parse_summary(output_prefix: Path, log: str) -> dict:
     }
 
 
+def _site_rows(capacities: list[dict]) -> list[dict]:
+    """One row per built site: its name, country and capacities. Reads both the per-site results
+    (``site`` holds the site name) and older per-country results (``site`` is a 0/1 flag)."""
+    rows = []
+    for r in capacities:
+        flag = r.get("site", "")
+        try:
+            built = float(flag) > 0.5
+            name = r["country"]
+        except (TypeError, ValueError):
+            built, name = True, flag
+        if built:
+            rows.append({**r, "site": name})
+    return rows
+
+
 def _expected_green(rows: list[dict]) -> list[dict]:
     """Probability-weighted green hydrogen totals per chosen site."""
     keys = ["h2_demand_mwh", "green_h2_produced_mwh", "green_h2_bought_mwh", "green_share",
             "go_bought_mwh", "go_sold_mwh"]
     out = {}
     for row in rows:
-        acc = out.setdefault(row["country"], {"country": row["country"], **{k: 0.0 for k in keys}})
+        site = row.get("site") or row["country"]
+        acc = out.setdefault(site, {"site": site, "country": row["country"], **{k: 0.0 for k in keys}})
         for k in keys:
             acc[k] += float(row[k]) * float(row["probability"])
     return list(out.values())

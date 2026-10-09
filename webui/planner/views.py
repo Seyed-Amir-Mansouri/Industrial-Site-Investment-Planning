@@ -69,12 +69,15 @@ def compare(request):
     rows = []
     econ_a, econ_b, econ_rows = {}, {}, []
     if run_a and run_b:
-        caps_a = {r["country"]: r for r in run_a.summary.get("capacities", [])}
-        caps_b = {r["country"]: r for r in run_b.summary.get("capacities", [])}
+        def mw_by_country(summary):
+            out = {}
+            for r in summary.get("site_rows", summary.get("capacities", [])):
+                out[r["country"]] = out.get(r["country"], 0.0) + sum(float(r.get(a, 0) or 0) for a in ASSET_LABELS)
+            return out
+
+        caps_a, caps_b = mw_by_country(run_a.summary), mw_by_country(run_b.summary)
         for country in sorted(set(caps_a) | set(caps_b)):
-            ra, rb = caps_a.get(country, {}), caps_b.get(country, {})
-            mw_a = sum(float(ra.get(a, 0) or 0) for a in ASSET_LABELS)
-            mw_b = sum(float(rb.get(a, 0) or 0) for a in ASSET_LABELS)
+            mw_a, mw_b = caps_a.get(country, 0.0), caps_b.get(country, 0.0)
             rows.append({"country": country, "mw_a": mw_a, "mw_b": mw_b, "delta": mw_b - mw_a})
 
         econ_a = services.economics(run_a.params, run_a.summary)
