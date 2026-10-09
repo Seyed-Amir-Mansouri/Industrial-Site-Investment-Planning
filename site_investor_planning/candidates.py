@@ -27,17 +27,25 @@ def candidate_site_zones(zones_db=DEFAULT_ZONES_DB, networks_db=DEFAULT_NETWORKS
 
 def build_candidates(countries: list[str], capex_cfg: CapexAssumptions | None = None,
                      zones_db=DEFAULT_ZONES_DB, networks_db=DEFAULT_NETWORKS_DB):
-    """Per-country candidate MW/CAPEX grids, per-site MW caps, and host zones for the given countries."""
+    """Per-country candidate MW/CAPEX grids, per-site MW caps, and host zones for the given countries.
+
+    Assets may have different numbers of products in the catalog; shorter lists are padded with
+    zero-MW, zero-CAPEX products so every asset has the same grid length in the master, and a
+    padded product can never add capacity or cost."""
     capex_cfg = capex_cfg or CapexAssumptions()
     site_zones = candidate_site_zones(zones_db, networks_db)
     missing = [c for c in countries if c not in site_zones]
     if missing:
         raise ValueError(f"no candidate site for {missing} -- eligible countries: {sorted(site_zones)}")
 
-    cand_mw_shared = {a: np.asarray([cand.mw for cand in capex_cfg.catalog[a]], dtype=float)
-                      for a in ASSETS}
-    cand_capex_shared = {a: np.asarray([cand.capex_eur for cand in capex_cfg.catalog[a]], dtype=float)
-                         for a in ASSETS}
+    n_k = max(len(capex_cfg.catalog[a]) for a in ASSETS)
+
+    def padded(values: list[float]) -> np.ndarray:
+        """Candidate values padded with zeros to the longest asset's product count."""
+        return np.asarray(values + [0.0] * (n_k - len(values)), dtype=float)
+
+    cand_mw_shared = {a: padded([cand.mw for cand in capex_cfg.catalog[a]]) for a in ASSETS}
+    cand_capex_shared = {a: padded([cand.capex_eur for cand in capex_cfg.catalog[a]]) for a in ASSETS}
     cand_mw = {c: dict(cand_mw_shared) for c in countries}
     cand_capex = {c: dict(cand_capex_shared) for c in countries}
 

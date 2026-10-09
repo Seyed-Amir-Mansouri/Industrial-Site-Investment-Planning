@@ -12,8 +12,8 @@ Assets and the internal demand each one serves:
 Thermal assets are sized in MW of useful output (MW_th / MW_cold), the electrolyser in MW of
 electrical input. ``HEAT_SERVICES`` are the demands the existing gas boiler backs up.
 
-Catalog sources: wind (real turbine classes: Vestas V100-2.0, GE 2.75-120, Vestas V150-4.2,
-Siemens Gamesa SG 5.8-170), PV (fixed-tilt, 40yr), battery (Li-ion, 2h, 20yr), electrolyser (PEM,
+Each asset has one default product, which the master may build any number of times (up to
+the site cap). Catalog sources: wind (Vestas V100-2.0 turbine class), PV (fixed-tilt, 40yr), battery (Li-ion, 2h, 20yr), electrolyser (PEM,
 25yr) and H2 tank (compressed, ~16.7h, 30yr) follow the 2030 candidate-product table in
 ``Help/Candidates (Edited).docx``. Heat pump (20yr), industrial heat pump (25yr), electric boiler
 (25yr) and electric chiller (20yr) are indicative 2030 installed costs in the range of public technology catalogues (e.g. the Danish
@@ -50,66 +50,30 @@ class AssetCandidate(NamedTuple):
 CANDIDATE_CATALOG: dict[str, list[AssetCandidate]] = {
     "wind_mw": [
         AssetCandidate(mw=2.0, capex_eur=2_900_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=2.75, capex_eur=3_795_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=4.2, capex_eur=5_376_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=5.0, capex_eur=6_640_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=5.8, capex_eur=7_076_000.0, lifetime_years=30.0),
     ],
     "pv_mw": [
         AssetCandidate(mw=1.0, capex_eur=650_000.0, lifetime_years=40.0),
-        AssetCandidate(mw=2.5, capex_eur=1_400_000.0, lifetime_years=40.0),
-        AssetCandidate(mw=5.0, capex_eur=2_500_000.0, lifetime_years=40.0),
-        AssetCandidate(mw=10.0, capex_eur=4_600_000.0, lifetime_years=40.0),
-        AssetCandidate(mw=20.0, capex_eur=8_400_000.0, lifetime_years=40.0),
     ],
     "battery_mw": [
         AssetCandidate(mw=1.0, mwh=2.0, capex_eur=640_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=2.0, mwh=4.0, capex_eur=1_130_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=5.0, mwh=10.0, capex_eur=2_700_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=10.0, mwh=20.0, capex_eur=5_100_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=20.0, mwh=40.0, capex_eur=9_600_000.0, lifetime_years=20.0),
     ],
     "heat_pump_mw": [
         AssetCandidate(mw=0.5, capex_eur=450_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=1.0, capex_eur=800_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=2.0, capex_eur=1_500_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=5.0, capex_eur=3_500_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=10.0, capex_eur=6_500_000.0, lifetime_years=20.0),
     ],
     "industrial_heat_pump_mw": [
         AssetCandidate(mw=1.0, capex_eur=1_000_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=2.5, capex_eur=2_250_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=5.0, capex_eur=4_000_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=10.0, capex_eur=7_500_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=20.0, capex_eur=14_000_000.0, lifetime_years=25.0),
     ],
     "electric_boiler_mw": [
         AssetCandidate(mw=1.0, capex_eur=150_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=5.0, capex_eur=500_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=10.0, capex_eur=850_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=20.0, capex_eur=1_500_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=40.0, capex_eur=2_800_000.0, lifetime_years=25.0),
     ],
     "electric_chiller_mw": [
         AssetCandidate(mw=0.5, capex_eur=200_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=1.0, capex_eur=350_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=2.0, capex_eur=650_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=5.0, capex_eur=1_500_000.0, lifetime_years=20.0),
-        AssetCandidate(mw=10.0, capex_eur=2_800_000.0, lifetime_years=20.0),
     ],
     "electrolyser_mw": [
         AssetCandidate(mw=1.0, capex_eur=1_300_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=2.5, capex_eur=2_750_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=5.0, capex_eur=5_210_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=10.0, capex_eur=9_500_000.0, lifetime_years=25.0),
-        AssetCandidate(mw=20.0, capex_eur=17_000_000.0, lifetime_years=25.0),
     ],
     "tank_mw": [
         AssetCandidate(mw=0.5, mwh=8.3, capex_eur=540_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=1.0, mwh=16.7, capex_eur=950_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=2.0, mwh=33.3, capex_eur=1_733_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=5.0, mwh=83.3, capex_eur=4_000_000.0, lifetime_years=30.0),
-        AssetCandidate(mw=10.0, mwh=166.7, capex_eur=7_333_000.0, lifetime_years=30.0),
     ],
 }
 
@@ -190,7 +154,7 @@ class CapexAssumptions:
     own peak demand for their service, since their output can't be sold.
     """
 
-    catalog: dict[str, list[AssetCandidate]] = field(default_factory=lambda: CANDIDATE_CATALOG)
+    catalog: dict[str, list[AssetCandidate]] = field(default_factory=lambda: dict(CANDIDATE_CATALOG))
 
     discount_rate: float = 0.05
     default_budget_eur: float = 500_000_000.0

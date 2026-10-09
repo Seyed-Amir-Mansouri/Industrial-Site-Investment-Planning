@@ -18,16 +18,30 @@ import site_investor_planning as hp
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "outputs"
 
+CATALOG_OVERRIDES_ENV = "PLANNER_CATALOG_OVERRIDES"
+
+
+def load_catalog_override(capex_cfg: hp.CapexAssumptions, path: Path) -> None:
+    """Replace per-asset candidate lists in-place from a {"catalog": {asset: [candidate, ...]}} JSON file."""
+    overrides = json.loads(path.read_text(encoding="utf-8"))["catalog"]
+    unknown = [a for a in overrides if a not in hp.ASSETS]
+    if unknown:
+        raise ValueError(f"catalog override has unknown asset key(s) {unknown} -- choices: {hp.ASSETS}")
+    for asset, candidates in overrides.items():
+        capex_cfg.catalog[asset] = [hp.AssetCandidate(**c) for c in candidates]
+    capex_cfg.lifetime_years = capex_cfg._lifetime_years_from_catalog()
+
 
 def load_scenario_probs(path: Path | None = None) -> dict[str, float]:
-    """Read {scenario: probability} from the saved scenario JSON."""
+    """Read {scenario: probability} from the saved scenario JSON, keeping only scenarios with a positive
+    probability (the rest stay defined for the dispatch runs but are left out of planning)."""
     if path is None:
         data = ohp.load_uncertainty_scenarios()
         source = ROOT / "inputs" / "uncertainty_scenarios.json"
     else:
         data = json.loads(path.read_text())["scenarios"]
         source = path
-    probs = {name: float(sc["probability"]) for name, sc in data.items()}
+    probs = {name: float(sc["probability"]) for name, sc in data.items() if float(sc["probability"]) > 0}
     total = sum(probs.values())
     if abs(total - 1.0) > 1e-4:
         raise ValueError(f"{source}'s scenario probabilities sum to {total:.6f}, not 1.0")
@@ -91,7 +105,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     crf = capex_cfg.capital_recovery_factors()
 
     if budget is not None:
-        cheapest_total = n_sites * sum(min(cand_capex[countries[0]][a]) for a in hp.ASSETS
+        cheapest_total = n_sites * sum(min(cand.capex_eur for cand in capex_cfg.catalog[a]) for a in hp.ASSETS
                                        if not (disabled_assets and a in disabled_assets))
         if cheapest_total > budget:
             print(f"NOTE: budget {budget:,.0f} EUR is below the cheapest all-assets-built "
@@ -328,11 +342,14 @@ def main() -> None:
                          "Pass 1 to force sequential (e.g. for debugging).")
     ap.add_argument("--max-units-per-candidate", type=int, default=0,
                     help="max buildable units of each individual candidate product per "
-                         "country/asset (there are 5 real candidate products per asset in the "
-                         "catalog); default 0 = unbounded. Pass e.g. 3 to cap each product at 3 units.")
+                         "site/asset (the default catalog has one product per asset, built as many "
+                         "times as needed); default 0 = unbounded. Pass e.g. 3 to cap each product at 3 units.")
     args = ap.parse_args()
 
     capex_cfg = hp.CapexAssumptions()
+    override_path = os.environ.get(CATALOG_OVERRIDES_ENV)
+    if override_path:
+        load_catalog_override(capex_cfg, Path(override_path))
     if args.discount_rate is not None:
         capex_cfg.discount_rate = args.discount_rate
     if args.lifetime_years is not None:
@@ -369,10 +386,9 @@ def main() -> None:
     crf_str = ", ".join(f"{a}={crfs[a]:.4f}({capex_cfg.lifetime_years[a]:.0f}yr)" for a in hp.ASSETS)
     print(f"Budget: {budget:,.0f} EUR (raw/unannualized) | CRF @ {capex_cfg.discount_rate:.1%} discount: "
          f"{crf_str}")
-    n_candidates = len(capex_cfg.catalog[hp.ASSETS[0]])
     units_note = ("unbounded" if args.max_units_per_candidate <= 0
                  else f"max {args.max_units_per_candidate} units/candidate")
-    print(f"Candidates: {n_candidates} products/asset ({units_note}, per site):")
+    print(f"Candidates ({units_note}, per site):")
     for a in hp.ASSETS:
         cand_str = ", ".join(f"{c.mw:g}MW/{c.capex_eur:,.0f}EUR" for c in capex_cfg.catalog[a])
         print(f"  {a}: {cand_str}")

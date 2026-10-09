@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 RUNS_DIR = PROJECT_ROOT / "outputs" / "webui"
 SCENARIO_OVERRIDES_ENV = "PLANNER_SCENARIO_OVERRIDES"
+CATALOG_OVERRIDES_ENV = "PLANNER_CATALOG_OVERRIDES"
 
 
 @lru_cache(maxsize=1)
@@ -145,11 +146,14 @@ def country_map_markers(params: dict, summary: dict) -> list[dict]:
 
 
 def economics(params: dict, summary: dict) -> dict:
+    """CAPEX, annualized CAPEX and operating cost of a finished run, priced with that run's own catalog."""
     import site_investor_planning as hp
 
-    cfg = hp.CapexAssumptions(discount_rate=params.get("discount_rate_pct", 5) / 100)
-    if params.get("lifetime_years"):
-        cfg.lifetime_years = {a: params["lifetime_years"] for a in hp.ASSETS}
+    catalog = dict(hp.CANDIDATE_CATALOG)
+    for asset, candidates in (params.get("catalog_overrides") or {}).items():
+        if asset in catalog and candidates:
+            catalog[asset] = [hp.AssetCandidate(**c) for c in candidates]
+    cfg = hp.CapexAssumptions(catalog=catalog, discount_rate=params.get("discount_rate_pct", 5) / 100)
     crfs = cfg.capital_recovery_factors()
 
     capex_by_asset = {a: 0.0 for a in hp.ASSETS}
@@ -187,8 +191,10 @@ def scenario_probabilities() -> dict[str, float]:
 
 @lru_cache(maxsize=1)
 def scenario_defaults() -> dict[str, dict]:
+    """The planning scenarios (positive default probability) from ``inputs/uncertainty_scenarios.json``."""
     path = PROJECT_ROOT / "inputs" / "uncertainty_scenarios.json"
-    return json.loads(path.read_text(encoding="utf-8"))["scenarios"]
+    scenarios = json.loads(path.read_text(encoding="utf-8"))["scenarios"]
+    return {name: sc for name, sc in scenarios.items() if float(sc["probability"]) > 0}
 
 
 def build_command(params: dict, output_prefix: Path) -> list[str]:
@@ -212,8 +218,6 @@ def build_command(params: dict, output_prefix: Path) -> list[str]:
             "--workers", str(params["workers"]),
             "--cvar-alpha", str(params["cvar_alpha"]) if params["risk_measure"] == "cvar" else "off",
             "--output", str(output_prefix)]
-    if params.get("lifetime_years"):
-        cmd += ["--lifetime-years", str(params["lifetime_years"])]
     if params.get("disabled_assets"):
         cmd += ["--disabled-assets", ",".join(params["disabled_assets"])]
     if params.get("scenarios") and set(params["scenarios"]) != set(scenario_probabilities()):
