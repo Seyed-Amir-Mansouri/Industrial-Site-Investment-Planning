@@ -513,6 +513,7 @@
         const name = card.querySelector('input[name^="custom_name__"]');
         name.focus();
         name.select();
+        syncFills(card);
         syncCountryRows();
         syncProbTotal();
         return;
@@ -537,14 +538,24 @@
     countryInputs.forEach(c => c.addEventListener('change', syncCountryRows));
     nSitesInput.addEventListener('input', syncSites);
     riskRadios.forEach(r => r.addEventListener('change', syncRisk));
+    function syncFills(card) {
+      card.querySelectorAll('[data-fill]').forEach(fill => {
+        const values = Array.from(card.querySelectorAll('input[name^="custom_' + fill.dataset.fill + '__"]'))
+          .map(i => i.value);
+        fill.value = values.length && values.every(v => v === values[0]) ? values[0] : '';
+      });
+    }
     scenarioList.addEventListener('input', function (e) {
+      const card = e.target.closest('.custom-scenario');
       const fill = e.target.closest('[data-fill]');
       if (fill && fill.value !== '') {
-        const card = fill.closest('.custom-scenario');
         card.querySelectorAll('input[name^="custom_' + fill.dataset.fill + '__"]').forEach(i => { i.value = fill.value; });
+      } else if (card && /^custom_(wind|solar)__/.test(e.target.name || '')) {
+        syncFills(card);
       }
       syncProbTotal();
     });
+    scenarioList.querySelectorAll('.custom-scenario').forEach(syncFills);
     scenarioList.addEventListener('change', syncProbTotal);
     syncAll();
   })();
