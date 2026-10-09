@@ -7,8 +7,8 @@ hour (8736 per country) with columns ``country``, ``hour`` and one column per se
 a share of the column's annual peak (1.0 = the peak hour). Without a ``country`` column, the same
 shapes apply in every country.
 
-``inputs/site_demand_peaks.csv`` holds the peaks: one row per country with the same service
-columns, in MW (MW_th for heat and cooling, MW_LHV for hydrogen). A run can override any of them
+``DEMAND_PEAKS_MW`` in ``config.py`` holds the default peaks: per country and service, in MW
+(MW_th for heat and cooling, MW_LHV for hydrogen). A run can override any of them
 through a JSON file named by the ``PLANNER_DEMAND_PEAK_OVERRIDES`` environment variable, shaped
 ``{"peaks": {country: {service: MW}}}``. A site's hourly MW demand is its shape times its peak.
 """
@@ -23,11 +23,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .config import SERVICES
+from .config import DEMAND_PEAKS_MW, SERVICES
 
 ROOT = Path(__file__).resolve().parent.parent
 SITE_DEMAND_CSV = ROOT / "inputs" / "site_demand.csv"
-SITE_DEMAND_PEAKS_CSV = ROOT / "inputs" / "site_demand_peaks.csv"
 DEMAND_PEAK_OVERRIDES_ENV = "PLANNER_DEMAND_PEAK_OVERRIDES"
 
 HOURS_PER_DAY = 24
@@ -52,14 +51,13 @@ class SiteDemandAssumptions:
 SITE_DEMAND = SiteDemandAssumptions()
 
 
-@lru_cache(maxsize=1)
 def default_peaks_mw() -> dict[str, dict[str, float]]:
-    """Peak MW of every service per country, from ``SITE_DEMAND_PEAKS_CSV``."""
-    df = pd.read_csv(SITE_DEMAND_PEAKS_CSV)
-    missing = [c for c in ["country", *SERVICES] if c not in df.columns]
+    """Default peak MW of every service per country, from ``DEMAND_PEAKS_MW`` in ``config.py``."""
+    missing = {c: [s for s in SERVICES if s not in v] for c, v in DEMAND_PEAKS_MW.items()}
+    missing = {c: m for c, m in missing.items() if m}
     if missing:
-        raise ValueError(f"{SITE_DEMAND_PEAKS_CSV} is missing column(s) {missing}")
-    return {row["country"]: {s: float(row[s]) for s in SERVICES} for _, row in df.iterrows()}
+        raise ValueError(f"DEMAND_PEAKS_MW is missing service(s) {missing}")
+    return {c: {s: float(v[s]) for s in SERVICES} for c, v in DEMAND_PEAKS_MW.items()}
 
 
 @lru_cache(maxsize=1)
@@ -106,7 +104,7 @@ def year_profiles(country: str) -> dict[str, np.ndarray]:
             raise ValueError(f"{SITE_DEMAND_CSV} has no demand profiles for country {country!r}")
     peaks = peaks_mw().get(country)
     if peaks is None:
-        raise ValueError(f"{SITE_DEMAND_PEAKS_CSV} has no demand peaks for country {country!r}")
+        raise ValueError(f"DEMAND_PEAKS_MW in config.py has no demand peaks for country {country!r}")
     df = df.sort_values("hour")
     return {s: df[s].to_numpy(dtype=float) * peaks[s] for s in SERVICES}
 

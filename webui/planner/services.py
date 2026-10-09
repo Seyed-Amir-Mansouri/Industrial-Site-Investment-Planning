@@ -37,7 +37,7 @@ def demand_services() -> list[str]:
 
 @lru_cache(maxsize=1)
 def demand_peak_defaults() -> dict[str, dict[str, float]]:
-    """Default peak MW per eligible country and demand, from ``inputs/site_demand_peaks.csv``."""
+    """Default peak MW per eligible country and demand, from ``DEMAND_PEAKS_MW`` in ``site_investor_planning/config.py``."""
     import site_investor_planning as hp
 
     peaks = hp.default_peaks_mw()

@@ -79,8 +79,8 @@ The site's hourly demand is a per-unit profile times a peak, from two files:
   ```
 
   If you drop the `country` column, one 8736-row profile applies in every country.
-- `inputs/site_demand_peaks.csv` holds the **peaks** in MW (MW of heat or cooling for the
-  thermal demands, MW_LHV for hydrogen): one row per country with the same demand columns.
+- `DEMAND_PEAKS_MW` in `site_investor_planning/config.py` holds the default **peaks** in MW (MW
+  of heat or cooling for the thermal demands, MW_LHV for hydrogen) for each country and demand.
 
 A site built in a country gets that country's profile times its peaks. To change how big a
 demand is, edit its peak; to change its shape over the year, edit the profile. The New run page
@@ -292,7 +292,7 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      `site_investor_planning/config.py` stay as they are. The run page prices its cost
      breakdown with the run's own catalog.
   3. **Site demand peaks:** a table of every candidate country's peak demand (MW) for each
-     of the six demands, filled with the defaults from `inputs/site_demand_peaks.csv`. Edits
+     of the six demands, filled with the defaults from `DEMAND_PEAKS_MW` in `site_investor_planning/config.py`. Edits
      apply to this run only.
   4. **Uncertainty scenarios:** one card per scenario. Each card has an include tick box,
      the scenario's probability in percent and a short description. Open a card to see
@@ -365,7 +365,7 @@ says otherwise.
 |---|---|---|---|
 | `zones_2030.parquet`, `networks_2030.parquet`, `marginal_price_electricity_2030.parquet`, `marginal_price_hydrogen_2030.parquet`, `crossborder_electricity_2030.parquet`, `crossborder_hydrogen_2030.parquet`, `hydro_*_2030.parquet`, `smr_production_2030.parquet` | `inputs/` | In git | Dispatch engine and planner |
 | `uncertainty_scenarios.json` | `inputs/` | In git | Planner (scenario probabilities and country error factors) |
-| `site_demand.csv`, `site_demand_peaks.csv` | `inputs/` | In git | Planner (per-unit hourly site demand profiles and peak MW per country) |
+| `site_demand.csv` | `inputs/` | In git | Planner (per-unit hourly site demand profiles per country; peaks are in `site_investor_planning/config.py`) |
 | `elec_adjacency.json`, `h2_adjacency.json` | `inputs/` | In git (rewritten by `build_dataset.py`) | Price models |
 | `electricity_model.joblib`, `hydrogen_model.joblib` and the `*_metrics.csv` files | `data_exchange/02_train_output__benders_input/` | In git (written by `train_model.py`) | Planner |
 | `elec_samples.parquet`, `h2_samples.parquet` | `data_exchange/01_dispatch_output__train_input/` | Downloaded automatically by `webui\app.bat` from the project's Google Drive. You can also build them with steps 1 and 2. | Planner (`optimize_site_investor.py`) and `train_model.py` |
