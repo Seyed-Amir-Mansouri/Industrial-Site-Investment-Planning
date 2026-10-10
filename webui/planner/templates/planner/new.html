@@ -3,7 +3,7 @@
 {% block head %}
 <style>
   #run-form .card { padding: 34px 36px; }
-  #run-form .step { display: inline-block; min-width: 54px; margin-right: 16px; font: 400 34px/1 var(--serif);
+  #run-form .step { display: inline-block; min-width: 54px; margin-right: 16px; font: 300 32px/1 var(--serif);
                     color: var(--gold); letter-spacing: -.02em; font-variant-numeric: lining-nums; }
   #run-form .section-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; flex-wrap: wrap;
                             margin-bottom: 26px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
@@ -60,7 +60,7 @@
                              padding: 20px 22px; background: var(--surface); transition: border-color .2s, opacity .2s; }
   #run-form .scenario-card:hover, #run-form .catalog-card:hover { border-color: var(--gold-line); }
   #run-form .scenario-card:has(input[name^="scenario_include__"]:not(:checked)) { opacity: .5; }
-  #run-form .scenario-card .scenario-title { display: flex; align-items: center; gap: 12px; font: 500 17px var(--serif); }
+  #run-form .scenario-card .scenario-title { display: flex; align-items: center; gap: 12px; font: 600 17px var(--serif); }
   #run-form .scenario-card .scenario-title input[type="text"] { font: 500 15px var(--sans); max-width: 260px; }
   #run-form .scenario-card input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--gold); cursor: pointer; }
   #run-form .prob-field { display: inline-flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12.5px; font-weight: 600; }
@@ -70,7 +70,7 @@
   #run-form .scenario-card table td, #run-form .scenario-card table th { padding: 8px 10px; }
 
   #run-form .catalog-card + .catalog-card { margin-top: 14px; }
-  #run-form .catalog-card h3 { font: 500 18px var(--serif); }
+  #run-form .catalog-card h3 { font: 600 18px var(--serif); }
   #run-form .catalog-card .prob-field input[type="number"] { width: 96px; text-align: right; }
   #run-form .catalog-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
   #run-form .catalog-table th { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--line); }
@@ -82,7 +82,7 @@
   #run-form button[data-add-candidate]:disabled { opacity: .4; cursor: not-allowed; }
 
   #run-form .site-card .section-head, #run-form .catalog-card .section-head { border-bottom: 0; padding-bottom: 0; margin-bottom: 14px; }
-  #run-form .site-card input[name^="site_name__"] { font: 500 18px var(--serif); background: transparent; border-color: transparent; max-width: 320px; }
+  #run-form .site-card input[name^="site_name__"] { font: 600 18px var(--serif); background: transparent; border-color: transparent; max-width: 320px; }
   #run-form .site-card input[name^="site_name__"]:hover, #run-form .site-card input[name^="site_name__"]:focus { border-color: var(--gold-line); }
 
   #run-form .total { padding: 7px 14px; border-radius: 999px; font-weight: 700; font-size: 12px; letter-spacing: .03em; border: 1px solid transparent; }
@@ -96,7 +96,7 @@
                           background: color-mix(in srgb, var(--surface-2) 88%, transparent); backdrop-filter: blur(14px);
                           border: 1px solid var(--gold-line); border-radius: 999px; box-shadow: 0 24px 48px -24px rgba(0,0,0,.6);
                           padding: 10px 12px 10px 26px; margin-top: 10px; }
-  #run-form .footer-bar::before { content: "Ready when you are"; margin-right: auto; font: 500 16px var(--serif); color: var(--ink-2); }
+  #run-form .footer-bar::before { content: "Ready when you are"; margin-right: auto; font: 600 16px var(--serif); color: var(--ink-2); }
 
   @media (max-width: 760px) {
     #run-form .card { padding: 24px 18px; }

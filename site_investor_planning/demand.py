@@ -3,9 +3,10 @@
 ``inputs/site_demand.csv`` holds the per-unit curves: 8736 rows (``hour`` 0-8735, the model year)
 and one column per service: ``electricity``, ``space_heat``, ``process_heat`` (low/medium-temperature),
 ``steam`` (high-temperature heat / steam), ``cooling`` and ``hydrogen``. Each value is that hour's
-demand as a share of the site's daily peak (1.0 = a normal day's peak hour; a day can go above or
-below it). The curves are shared by every site. The shipped file repeats one daily curve for the
-whole year.
+demand as a share of the site's daily peak (1.0 = a typical day's peak hour; a day can go above or
+below it). The curves are shared by every site. The shipped curves follow a Central European year
+starting on a Monday: weekday shifts, weekends and public holidays, a Christmas slowdown, a two-week
+summer maintenance stop, and weather-driven space heating and cooling.
 
 Each site's daily peaks, green hydrogen share and flexibility come from its ``SiteSpec``. A run's
 sites can be read from a JSON file shaped ``{"sites": [{"name": .., "peaks_mw": {service: MW},
