@@ -3,6 +3,7 @@
 {% block content %}
 <div class="page-head">
   <div>
+    <div class="eyebrow">Portfolio</div>
     <h1>Planning runs</h1>
     <p class="lede">Each run picks where to build the industrial site and which technologies and capacities serve its electricity, heat, cooling and hydrogen demand, for your chosen countries, budget and economics.</p>
   </div>
@@ -39,8 +40,8 @@
         <td><span class="badge {{ run.status }}">{{ run.get_status_display }}</span></td>
         <td>{% if run.params.all_countries %}All eligible{% else %}{{ run.params.countries|join:", " }}{% endif %}</td>
         <td>{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }}{% elif run.params.risk_measure == "deterministic" %}Deterministic{% else %}Expected value{% endif %}</td>
-        <td class="num">€{{ run.params.budget|floatformat:0 }}</td>
-        <td class="num">{% if run.summary.objective_eur %}{{ run.summary.objective_eur|floatformat:0 }}{% else %}—{% endif %}</td>
+        <td class="num">€{{ run.params.budget|floatformat:"0g" }}</td>
+        <td class="num">{% if run.summary.objective_eur %}{{ run.summary.objective_eur|floatformat:"0g" }}{% else %}—{% endif %}</td>
         <td class="num">{% if run.summary.elapsed_seconds %}{{ run.summary.elapsed_seconds|floatformat:1 }} s{% else %}—{% endif %}</td>
         <td>{{ run.created_at|date:"d M Y, H:i" }}</td>
       </tr>
@@ -48,8 +49,9 @@
     </tbody>
   </table>
   {% else %}
-  <div style="padding:40px;text-align:center;color:var(--muted)">
-    No runs yet. <a href="{% url 'new_run' %}">Start your first plan</a>.
+  <div style="padding:64px 24px;text-align:center;color:var(--muted)">
+    <div style="font:400 28px var(--serif);color:var(--ink);margin-bottom:8px">No runs yet</div>
+    <a href="{% url 'new_run' %}">Start your first plan →</a>
   </div>
   {% endif %}
 </div>

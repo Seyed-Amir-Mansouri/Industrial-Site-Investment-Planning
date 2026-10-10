@@ -4,13 +4,14 @@
 {% block content %}
 <div class="page-head">
   <div>
+    <div class="eyebrow">Reference</div>
     <h1>Candidate catalog & assumptions</h1>
     <p class="lede">The product sizes, costs, and scenarios the optimizer chooses from. Edit these in <code>site_investor_planning/config.py</code>, <code>site_investor_planning/demand.py</code> and <code>inputs/uncertainty_scenarios.json</code>.</p>
   </div>
 </div>
 
 <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-bottom:18px">
-  <div class="kpi"><div class="label">Default budget</div><div class="value">€{{ defaults.budget|floatformat:0 }}</div></div>
+  <div class="kpi"><div class="label">Default budget</div><div class="value">€{{ defaults.budget|floatformat:"0g" }}</div></div>
   <div class="kpi"><div class="label">Discount rate</div><div class="value">{% widthratio defaults.discount_rate 1 100 %}%</div></div>
 </div>
 
@@ -22,7 +23,7 @@
     <thead><tr><th></th>{% for key in site.services %}<th class="num">{{ service_labels|lookup:key }}</th>{% endfor %}</tr></thead>
     <tbody>
       <tr><td><strong>Daily peak (MW)</strong></td>{% for v in site.default_peaks %}<td class="num">{{ v|floatformat:"-4" }}</td>{% endfor %}</tr>
-      <tr><td><strong>Annual demand (MWh / year)</strong></td>{% for v in site.default_annual %}<td class="num">{{ v|floatformat:0 }}</td>{% endfor %}</tr>
+      <tr><td><strong>Annual demand (MWh / year)</strong></td>{% for v in site.default_annual %}<td class="num">{{ v|floatformat:"0g" }}</td>{% endfor %}</tr>
     </tbody>
   </table>
   </div>
@@ -41,7 +42,7 @@
       {% for row in site.cop %}
       <tr><th style="width:320px">{{ asset_labels|lookup:row.asset }} → {{ service_labels|lookup:row.service|lower }}: COP / efficiency</th><td class="num">{{ row.cop|floatformat:"-2" }}</td></tr>
       {% endfor %}
-      <tr><th>Backup gas boiler heat cost</th><td class="num">€{{ site.gas_heat_cost|floatformat:1 }} / MWh<sub>th</sub> (gas €{{ site.gas_price|floatformat:0 }}/MWh, CO₂ €{{ site.co2_price|floatformat:0 }}/t)</td></tr>
+      <tr><th>Backup gas boiler heat cost</th><td class="num">€{{ site.gas_heat_cost|floatformat:1 }} / MWh<sub>th</sub> (gas €{{ site.gas_price|floatformat:"0g" }}/MWh, CO₂ €{{ site.co2_price|floatformat:"0g" }}/t)</td></tr>
       <tr><th>Legacy chiller COP (cooling backup)</th><td class="num">{{ site.legacy_chiller_cop|floatformat:"-1" }}</td></tr>
       <tr><th>Grid import fee</th><td class="num">€{{ site.grid_import_fee|floatformat:"-1" }} / MWh</td></tr>
       <tr><th>Hydrogen import fee</th><td class="num">€{{ site.h2_import_fee|floatformat:"-1" }} / MWh</td></tr>
@@ -71,7 +72,7 @@
       <tr>
         <td class="num">{{ c.mw|floatformat:"-2" }}</td>
         {% if asset == "battery_mw" or asset == "tank_mw" %}<td class="num">{{ c.mwh|floatformat:"-1" }}</td>{% endif %}
-        <td class="num">{{ c.capex_eur|floatformat:0 }}</td>
+        <td class="num">{{ c.capex_eur|floatformat:"0g" }}</td>
         <td class="num">{% widthratio c.capex_eur c.mw 1 %}</td>
         <td class="num">{{ c.lifetime_years|floatformat:"-1" }}</td>
       </tr>

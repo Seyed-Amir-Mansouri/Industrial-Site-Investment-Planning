@@ -3,23 +3,31 @@
 {% block title %}Compare · Site Investment Planner{% endblock %}
 {% block head %}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  .compare-form label { display: flex; flex-direction: column; gap: 9px; font: 700 10.5px var(--sans); letter-spacing: .14em;
+                        text-transform: uppercase; color: var(--muted); }
+  .lux-select { width: 100%; padding: 12px 15px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--surface-3);
+                color: var(--ink); font: 500 14px var(--sans); text-transform: none; letter-spacing: 0; }
+  .lux-select:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 4px var(--gold-soft); }
+</style>
 {% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
+    <div class="eyebrow">Side by side</div>
     <h1>Compare runs</h1>
     <p class="lede">Put two completed runs side by side to see how the problem setup changes the plan.</p>
   </div>
 </div>
 
-<form method="get" class="card" style="display:flex;gap:14px;align-items:end;flex-wrap:wrap">
-  <label style="flex:1;min-width:240px"><strong>Run A</strong>
-    <select name="a" style="width:100%;padding:9px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink)">
+<form method="get" class="card compare-form" style="display:flex;gap:18px;align-items:end;flex-wrap:wrap">
+  <label style="flex:1;min-width:240px">Run A
+    <select name="a" class="lux-select">
       <option value="">— select —</option>
       {% for r in done_runs %}<option value="{{ r.pk }}" {% if run_a and run_a.pk == r.pk %}selected{% endif %}>{{ r.display_name }}</option>{% endfor %}
     </select></label>
-  <label style="flex:1;min-width:240px"><strong>Run B</strong>
-    <select name="b" style="width:100%;padding:9px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink)">
+  <label style="flex:1;min-width:240px">Run B
+    <select name="b" class="lux-select">
       <option value="">— select —</option>
       {% for r in done_runs %}<option value="{{ r.pk }}" {% if run_b and run_b.pk == r.pk %}selected{% endif %}>{{ r.display_name }}</option>{% endfor %}
     </select></label>
@@ -29,23 +37,23 @@
 {% if run_a and run_b %}
 <div class="grid kpis" style="margin-bottom:18px">
   <div class="kpi"><div class="label">Objective A → B</div>
-    <div class="value">€{{ run_a.summary.objective_eur|floatformat:0 }}</div>
-    <div class="sub">→ €{{ run_b.summary.objective_eur|floatformat:0 }}</div></div>
+    <div class="value">€{{ run_a.summary.objective_eur|floatformat:"0g" }}</div>
+    <div class="sub">→ €{{ run_b.summary.objective_eur|floatformat:"0g" }}</div></div>
   <div class="kpi"><div class="label">Raw CAPEX A → B</div>
-    <div class="value">€{{ run_a.summary.raw_capex_eur|floatformat:0 }}</div>
-    <div class="sub">→ €{{ run_b.summary.raw_capex_eur|floatformat:0 }}</div></div>
+    <div class="value">€{{ run_a.summary.raw_capex_eur|floatformat:"0g" }}</div>
+    <div class="sub">→ €{{ run_b.summary.raw_capex_eur|floatformat:"0g" }}</div></div>
   <div class="kpi"><div class="label">Solve time A → B</div>
     <div class="value">{{ run_a.summary.elapsed_seconds|floatformat:1 }} s</div>
     <div class="sub">→ {{ run_b.summary.elapsed_seconds|floatformat:1 }} s</div></div>
   <div class="kpi"><div class="label">Annualized CAPEX A → B</div>
-    <div class="value">€{{ econ_a.annualized_capex_eur|floatformat:0 }}</div>
-    <div class="sub">→ €{{ econ_b.annualized_capex_eur|floatformat:0 }}</div></div>
+    <div class="value">€{{ econ_a.annualized_capex_eur|floatformat:"0g" }}</div>
+    <div class="sub">→ €{{ econ_b.annualized_capex_eur|floatformat:"0g" }}</div></div>
   <div class="kpi"><div class="label">Operating cost A → B</div>
-    <div class="value">€{{ econ_a.operating_cost_eur|floatformat:0 }}</div>
-    <div class="sub">→ €{{ econ_b.operating_cost_eur|floatformat:0 }}</div></div>
+    <div class="value">€{{ econ_a.operating_cost_eur|floatformat:"0g" }}</div>
+    <div class="sub">→ €{{ econ_b.operating_cost_eur|floatformat:"0g" }}</div></div>
   <div class="kpi"><div class="label">CAPEX per MW A → B</div>
-    <div class="value">€{{ econ_a.capex_per_mw_eur|floatformat:0 }}</div>
-    <div class="sub">→ €{{ econ_b.capex_per_mw_eur|floatformat:0 }}</div></div>
+    <div class="value">€{{ econ_a.capex_per_mw_eur|floatformat:"0g" }}</div>
+    <div class="sub">→ €{{ econ_b.capex_per_mw_eur|floatformat:"0g" }}</div></div>
 </div>
 
 <div class="card">
@@ -73,9 +81,9 @@
       {% for row in econ_rows %}
       <tr>
         <td>{{ asset_labels|lookup:row.asset }}</td>
-        <td class="num">€{{ row.annualized_a|floatformat:0 }}</td>
-        <td class="num">€{{ row.annualized_b|floatformat:0 }}</td>
-        <td class="num" style="color:{% if row.delta > 0 %}var(--ok){% elif row.delta < 0 %}var(--bad){% else %}var(--muted){% endif %}">€{{ row.delta|floatformat:0 }}</td>
+        <td class="num">€{{ row.annualized_a|floatformat:"0g" }}</td>
+        <td class="num">€{{ row.annualized_b|floatformat:"0g" }}</td>
+        <td class="num" style="color:{% if row.delta > 0 %}var(--ok){% elif row.delta < 0 %}var(--bad){% else %}var(--muted){% endif %}">€{{ row.delta|floatformat:"0g" }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -97,20 +105,25 @@
     const el = document.getElementById('cap-rows');
     if (!el || typeof Chart === 'undefined') return;
     const rows = JSON.parse(el.textContent);
+    window.sipChartDefaults();
+    const c = window.sipChart();
     new Chart(document.getElementById('capchart'), {
       type: 'bar',
       data: {
         labels: rows.map(r => r.country),
         datasets: [
-          { label: '{{ run_a.display_name|escapejs }}', data: rows.map(r => r.mw_a), backgroundColor: '#1d4ed8' },
-          { label: '{{ run_b.display_name|escapejs }}', data: rows.map(r => r.mw_b), backgroundColor: '#15803d' },
+          { label: '{{ run_a.display_name|escapejs }}', data: rows.map(r => r.mw_a), backgroundColor: c.series[0],
+            borderRadius: 4, borderSkipped: 'start', maxBarThickness: 28 },
+          { label: '{{ run_b.display_name|escapejs }}', data: rows.map(r => r.mw_b), backgroundColor: c.series[1],
+            borderRadius: 4, borderSkipped: 'start', maxBarThickness: 28 },
         ],
       },
       options: {
         plugins: { legend: { position: 'bottom' } },
-        scales: { y: { title: { display: true, text: 'MW' } } },
+        scales: { x: { grid: { display: false } }, y: { title: { display: true, text: 'MW' } } },
       },
     });
+    window.addEventListener('sip-theme', () => location.reload());
   })();
 </script>
 {% endblock %}

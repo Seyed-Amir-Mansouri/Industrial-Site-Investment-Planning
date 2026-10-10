@@ -21,7 +21,10 @@
     --group-electricity: #3987e5; --group-space-heat: #d95926; --group-process-heat: #199e70;
     --group-steam: #c98500; --group-cooling: #d55181; --group-hydrogen: #008300;
   }
-  #country-map { height: 420px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
+  #country-map { height: 460px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-3); overflow: hidden; }
+  .leaflet-control-attribution { background: color-mix(in srgb, var(--surface) 80%, transparent) !important; color: var(--muted) !important; }
+  .leaflet-control-attribution a { color: var(--gold) !important; }
+  .leaflet-bar a { background: var(--surface-2) !important; color: var(--ink) !important; border-color: var(--line) !important; }
   .leaflet-container { font: inherit; background: var(--bg); }
   .cp-marker { border-radius: 50%; border: 2px solid var(--surface); box-shadow: 0 1px 3px rgba(15,23,42,.35);
                display: flex; align-items: center; justify-content: center; cursor: pointer; }
@@ -29,9 +32,10 @@
   .cp-marker-label { font-size: 10px; font-weight: 700; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.45);
                       pointer-events: none; }
   .cp-marker.empty .cp-marker-label { color: var(--muted); text-shadow: none; }
-  .cp-tooltip { position: fixed; z-index: 9999; pointer-events: none; background: var(--surface);
-                border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; box-shadow: var(--shadow);
-                font-size: 12px; max-width: 240px; }
+  .cp-tooltip { position: fixed; z-index: 9999; pointer-events: none; background: var(--surface-2); color: var(--ink);
+                border: 1px solid var(--gold-line); border-radius: 12px; padding: 10px 12px; box-shadow: var(--shadow);
+                font-size: 12px; max-width: 260px; }
+  .cp-tooltip strong { font: 500 14px var(--serif); display: block; margin-bottom: 4px; }
   .map-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 14px; }
   .map-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
   .map-legend .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
@@ -40,6 +44,7 @@
 {% block content %}
 <div class="page-head">
   <div>
+    <div class="eyebrow">Run #{{ run.pk }}</div>
     <h1>{{ run.display_name }}</h1>
     <p class="lede">
       <span class="badge {{ run.status }}">{{ run.get_status_display }}</span>
@@ -63,10 +68,10 @@
 {% if run.status == "done" %}
 <div class="grid kpis" style="margin-bottom:18px">
   <div class="kpi"><div class="label">Chosen site{{ summary.sites|length|pluralize }}</div><div class="value">{% if summary.sites %}{{ summary.sites|join:", " }}{% else %}—{% endif %}</div><div class="sub">{{ summary.sites|length }} site{{ summary.sites|length|pluralize }} across {% if run.params.all_countries %}all eligible{% else %}{{ run.params.countries|length }}{% endif %} candidate countries</div></div>
-  <div class="kpi"><div class="label">Objective</div><div class="value">€{{ summary.objective_eur|floatformat:0 }}</div><div class="sub">annualized CAPEX + risk-adjusted energy cost</div></div>
-  <div class="kpi"><div class="label">Raw CAPEX</div><div class="value">€{{ summary.raw_capex_eur|floatformat:0 }}</div><div class="sub">{% if run.params.budget %}{% widthratio summary.raw_capex_eur run.params.budget 100 %}% of budget{% endif %}</div></div>
+  <div class="kpi"><div class="label">Objective</div><div class="value">€{{ summary.objective_eur|floatformat:"0g" }}</div><div class="sub">annualized CAPEX + risk-adjusted energy cost</div></div>
+  <div class="kpi"><div class="label">Raw CAPEX</div><div class="value">€{{ summary.raw_capex_eur|floatformat:"0g" }}</div><div class="sub">{% if run.params.budget %}{% widthratio summary.raw_capex_eur run.params.budget 100 %}% of budget{% endif %}</div></div>
   <div class="kpi"><div class="label">Iterations</div><div class="value">{{ summary.iterations }}</div><div class="sub">{% if summary.converged %}converged{% else %}stopped at limit{% endif %}</div></div>
-  <div class="kpi"><div class="label">Solve time</div><div class="value">{{ summary.elapsed_seconds|floatformat:1 }} s</div><div class="sub">{{ summary.elapsed_seconds|floatformat:0 }} seconds total</div></div>
+  <div class="kpi"><div class="label">Solve time</div><div class="value">{{ summary.elapsed_seconds|floatformat:1 }} s</div><div class="sub">{{ summary.elapsed_seconds|floatformat:"0g" }} seconds total</div></div>
   <div class="kpi"><div class="label">Risk measure</div><div class="value">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }}{% elif run.params.risk_measure == "deterministic" %}Deterministic{% else %}Expected{% endif %}</div><div class="sub">{{ run.params.scenarios|length }} scenarios</div></div>
 </div>
 
@@ -74,9 +79,9 @@
   <h2>Economics</h2>
   <p class="lede" style="margin-bottom:12px">Capital cost annualized at {{ run.params.discount_rate_pct }}% over each technology's own lifetime, versus the risk-adjusted operating cost.</p>
   <div class="grid kpis" style="margin-bottom:16px">
-    <div class="kpi"><div class="label">Annualized CAPEX</div><div class="value">€{{ economics.annualized_capex_eur|floatformat:0 }}</div><div class="sub">per year, over asset lifetimes</div></div>
-    <div class="kpi"><div class="label">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }} operating cost{% elif run.params.risk_measure == "deterministic" %}Operating cost{% else %}Expected operating cost{% endif %}</div><div class="value">€{{ economics.operating_cost_eur|floatformat:0 }}</div><div class="sub">objective − annualized CAPEX</div></div>
-    <div class="kpi"><div class="label">CAPEX per MW</div><div class="value">€{{ economics.capex_per_mw_eur|floatformat:0 }}</div><div class="sub">raw CAPEX ÷ total MW built</div></div>
+    <div class="kpi"><div class="label">Annualized CAPEX</div><div class="value">€{{ economics.annualized_capex_eur|floatformat:"0g" }}</div><div class="sub">per year, over asset lifetimes</div></div>
+    <div class="kpi"><div class="label">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }} operating cost{% elif run.params.risk_measure == "deterministic" %}Operating cost{% else %}Expected operating cost{% endif %}</div><div class="value">€{{ economics.operating_cost_eur|floatformat:"0g" }}</div><div class="sub">objective − annualized CAPEX</div></div>
+    <div class="kpi"><div class="label">CAPEX per MW</div><div class="value">€{{ economics.capex_per_mw_eur|floatformat:"0g" }}</div><div class="sub">raw CAPEX ÷ total MW built</div></div>
   </div>
   <table>
     <thead><tr><th>Technology</th><th class="num">Raw CAPEX</th><th class="num">Annualized CAPEX</th><th class="num">CRF</th></tr></thead>
@@ -84,8 +89,8 @@
       {% for a in assets %}
       <tr>
         <td>{{ asset_labels|lookup:a }}</td>
-        <td class="num">€{{ economics.by_asset|lookup:a|lookup:"capex_eur"|floatformat:0 }}</td>
-        <td class="num">€{{ economics.by_asset|lookup:a|lookup:"annualized_eur"|floatformat:0 }}</td>
+        <td class="num">€{{ economics.by_asset|lookup:a|lookup:"capex_eur"|floatformat:"0g" }}</td>
+        <td class="num">€{{ economics.by_asset|lookup:a|lookup:"annualized_eur"|floatformat:"0g" }}</td>
         <td class="num">{{ economics.by_asset|lookup:a|lookup:"crf"|floatformat:4 }}</td>
       </tr>
       {% endfor %}
@@ -104,23 +109,23 @@
       {% for g in summary.green_h2_expected %}
       <tr>
         <td><strong>{{ g.site }}</strong></td><td><strong>{{ g.country }}</strong></td><td><strong>Weighted</strong></td><td class="num">100%</td>
-        <td class="num"><strong>{{ g.h2_demand_mwh|floatformat:0 }}</strong></td>
-        <td class="num"><strong>{{ g.green_h2_produced_mwh|floatformat:0 }}</strong></td>
-        <td class="num"><strong>{{ g.green_h2_bought_mwh|floatformat:0 }}</strong></td>
+        <td class="num"><strong>{{ g.h2_demand_mwh|floatformat:"0g" }}</strong></td>
+        <td class="num"><strong>{{ g.green_h2_produced_mwh|floatformat:"0g" }}</strong></td>
+        <td class="num"><strong>{{ g.green_h2_bought_mwh|floatformat:"0g" }}</strong></td>
         <td class="num"><strong>{% widthratio g.green_share 1 100 %}%</strong></td>
-        <td class="num"><strong>{{ g.go_bought_mwh|floatformat:0 }}</strong></td>
-        <td class="num"><strong>{{ g.go_sold_mwh|floatformat:0 }}</strong></td>
+        <td class="num"><strong>{{ g.go_bought_mwh|floatformat:"0g" }}</strong></td>
+        <td class="num"><strong>{{ g.go_sold_mwh|floatformat:"0g" }}</strong></td>
       </tr>
       {% endfor %}
       {% for g in summary.green_h2 %}
       <tr>
         <td>{% firstof g.site g.country %}</td><td>{{ g.country }}</td><td>{{ run.params.scenario_labels|lookup:g.scenario|default:g.scenario }}</td><td class="num">{% widthratio g.probability 1 100 %}%</td>
-        <td class="num">{{ g.h2_demand_mwh|floatformat:0 }}</td>
-        <td class="num">{{ g.green_h2_produced_mwh|floatformat:0 }}</td>
-        <td class="num">{{ g.green_h2_bought_mwh|floatformat:0 }}</td>
+        <td class="num">{{ g.h2_demand_mwh|floatformat:"0g" }}</td>
+        <td class="num">{{ g.green_h2_produced_mwh|floatformat:"0g" }}</td>
+        <td class="num">{{ g.green_h2_bought_mwh|floatformat:"0g" }}</td>
         <td class="num">{% widthratio g.green_share 1 100 %}%</td>
-        <td class="num">{{ g.go_bought_mwh|floatformat:0 }}</td>
-        <td class="num">{{ g.go_sold_mwh|floatformat:0 }}</td>
+        <td class="num">{{ g.go_bought_mwh|floatformat:"0g" }}</td>
+        <td class="num">{{ g.go_sold_mwh|floatformat:"0g" }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -129,7 +134,7 @@
 </div>
 {% endif %}
 
-<div class="grid" style="grid-template-columns:1.2fr 1fr;gap:18px;align-items:start">
+<div class="grid" style="grid-template-columns:minmax(0,1fr);gap:22px;align-items:start">
   <div class="card">
     <h2>Installed capacity by site (MW)</h2>
     <p class="lede" style="margin-bottom:12px">MW built at each chosen site, per technology. Heat pumps, boilers and chillers are in MW of heat or cooling output.</p>
@@ -215,7 +220,7 @@
       {% for sp in run.params.sites %}
       <tr><th>{{ sp.name }}</th><td>green H2 ≥ {% widthratio sp.green_share 1 100 %}% · flexibility ±{% widthratio sp.flex_fraction 1 100 %}% · daily peaks {% for k, v in sp.peaks_mw.items %}{{ k }} {{ v|floatformat:"-2" }}{% if not forloop.last %}, {% endif %}{% endfor %} MW</td></tr>
       {% endfor %}
-      <tr><th>Budget</th><td>€{{ run.params.budget|floatformat:0 }}</td></tr>
+      <tr><th>Budget</th><td>€{{ run.params.budget|floatformat:"0g" }}</td></tr>
       <tr><th>Excluded technologies</th><td>{% if run.params.disabled_assets %}{{ run.params.disabled_assets|join:", " }}{% else %}none{% endif %}</td></tr>
       <tr><th>Max units per product</th><td>{% if run.params.max_units_per_candidate %}{{ run.params.max_units_per_candidate }}{% else %}unbounded{% endif %}</td></tr>
       {% if not run.params.sites %}
@@ -247,10 +252,14 @@
 
     const map = L.map(mapEl, { scrollWheelZoom: false, minZoom: 3, maxZoom: 10 })
       .setView([{{ map_center.0 }}, {{ map_center.1 }}], {{ map_zoom }});
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+    const tone = window.sipTheme() === 'dark' ? 'Dark' : 'Light';
+    const esri = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_' + tone + '_Gray_';
+    L.tileLayer(esri + 'Base/MapServer/tile/{z}/{y}/{x}', {
       attribution: 'Tiles &copy; <a href="https://www.esri.com/">Esri</a>',
-      maxNativeZoom: 19,
+      maxNativeZoom: 16,
     }).addTo(map);
+    L.tileLayer(esri + 'Reference/MapServer/tile/{z}/{y}/{x}', { maxNativeZoom: 16 }).addTo(map);
+    window.addEventListener('sip-theme', () => location.reload());
     setTimeout(() => map.invalidateSize(), 0);
     window.addEventListener('load', () => map.invalidateSize());
 
@@ -294,18 +303,25 @@
     const el = document.getElementById('conv-data');
     if (!el || typeof Chart === 'undefined') return;
     const rows = JSON.parse(el.textContent).filter(r => r.iter > 1);
+    window.sipChartDefaults();
+    const c = window.sipChart();
     new Chart(document.getElementById('conv'), {
       type: 'line',
       data: {
         labels: rows.map(r => 'Iter ' + r.iter),
         datasets: [
-          { label: 'Lower bound', data: rows.map(r => r.lb), borderColor: '#6366f1', tension: .25 },
-          { label: 'Best upper bound', data: rows.map(r => r.best_ub), borderColor: '#15803d', tension: .25 }
+          { label: 'Lower bound', data: rows.map(r => r.lb), borderColor: c.series[0], backgroundColor: c.series[0],
+            borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, tension: .25 },
+          { label: 'Best upper bound', data: rows.map(r => r.best_ub), borderColor: c.series[1], backgroundColor: c.series[1],
+            borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, tension: .25 }
         ]
       },
-      options: { plugins: { legend: { position: 'bottom' } },
-                 scales: { y: { ticks: { callback: v => '€' + Number(v).toLocaleString() } } } }
+      options: { interaction: { mode: 'index', intersect: false },
+                 plugins: { legend: { position: 'bottom' } },
+                 scales: { x: { grid: { display: false } },
+                           y: { ticks: { callback: v => '€' + Number(v).toLocaleString() } } } }
     });
+    window.addEventListener('sip-theme', () => location.reload());
   })();
 </script>
 {% endif %}
