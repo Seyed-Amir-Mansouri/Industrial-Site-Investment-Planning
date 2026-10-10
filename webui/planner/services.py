@@ -99,21 +99,19 @@ def eligible_countries() -> list[str]:
 ASSET_GROUPS = {
     "electricity": ["wind_mw", "pv_mw", "battery_mw"],
     "space_heat": ["heat_pump_mw"],
+    "space_cool": ["ac_chiller_mw"],
     "process_heat": ["industrial_heat_pump_mw"],
     "steam": ["electric_boiler_mw"],
-    "cooling": ["electric_chiller_mw"],
+    "process_cool": ["electric_chiller_mw"],
     "hydrogen": ["electrolyser_mw", "tank_mw"],
 }
 GROUP_LABELS = {
-    "electricity": "Electricity", "space_heat": "Space heating", "process_heat": "Low/medium-temp process heat",
-    "steam": "High-temp heat and steam", "cooling": "Cooling", "hydrogen": "Hydrogen",
+    "electricity": "Electricity", "space_heat": "Space heating", "space_cool": "Space cooling",
+    "process_heat": "Process heat (up to 150 °C)", "steam": "Steam (above 150 °C)",
+    "process_cool": "Process cooling", "hydrogen": "Hydrogen",
 }
 GROUP_MAP_TOKENS = {g: f"--group-{g.replace('_', '-')}" for g in ASSET_GROUPS}
-SERVICE_LABELS = {
-    "electricity": "Electricity", "space_heat": "Space heating",
-    "process_heat": "Low/medium-temperature process heat", "steam": "High-temperature heat / steam",
-    "cooling": "Cooling", "hydrogen": "Hydrogen",
-}
+SERVICE_LABELS = GROUP_LABELS
 MARKER_MIN_DIAMETER = 18
 MARKER_MAX_DIAMETER = 56
 

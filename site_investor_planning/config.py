@@ -4,13 +4,15 @@ Assets and the internal demand each one serves:
 
 - electricity: wind, PV, battery
 - space heating: heat pump
-- low/medium-temperature process heat (up to ~150 C): industrial heat pump
-- high-temperature process heat / steam: electric (electrode / resistance) boiler
-- cooling: electric chiller
+- space cooling (air conditioning of buildings): AC chiller
+- process heat (up to ~150 C): industrial heat pump
+- steam (above ~150 C): electric (electrode / resistance) boiler
+- process cooling (machines, products, cold stores): process chiller
 - hydrogen: electrolyser, H2 tank
 
 Thermal assets are sized in MW of useful output (MW_th / MW_cold), the electrolyser in MW of
-electrical input. ``HEAT_SERVICES`` are the demands the existing gas boiler backs up.
+electrical input. ``HEAT_SERVICES`` are the demands the existing gas boiler backs up and
+``COOL_SERVICES`` the ones the existing legacy chiller backs up.
 
 Every site to build is a ``SiteSpec``: its own daily peak demand per service (MW_th for heat and
 cooling, MW_LHV for hydrogen), green hydrogen share and demand flexibility. A site's hourly demand
@@ -21,7 +23,7 @@ Each asset has one default product, which the master may build any number of tim
 the site cap). Catalog sources: wind (Vestas V100-2.0 turbine class), PV (fixed-tilt, 40yr), battery (Li-ion, 2h, 20yr), electrolyser (PEM,
 25yr) and H2 tank (compressed, ~16.7h, 30yr) follow the 2030 candidate-product table in
 ``Help/Candidates (Edited).docx``. Heat pump (20yr), industrial heat pump (25yr), electric boiler
-(25yr) and electric chiller (20yr) are indicative 2030 installed costs in the range of public technology catalogues (e.g. the Danish
+(25yr), process chiller (20yr) and AC chiller (20yr) are indicative 2030 installed costs in the range of public technology catalogues (e.g. the Danish
 Energy Agency's); replace them with vendor quotes for a real site.
 """
 from __future__ import annotations
@@ -30,22 +32,34 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 ASSETS = ["wind_mw", "pv_mw", "battery_mw",
-          "heat_pump_mw", "industrial_heat_pump_mw", "electric_boiler_mw", "electric_chiller_mw",
-          "electrolyser_mw", "tank_mw"]
+          "heat_pump_mw", "ac_chiller_mw", "industrial_heat_pump_mw", "electric_boiler_mw",
+          "electric_chiller_mw", "electrolyser_mw", "tank_mw"]
 
-SERVICES = ["electricity", "space_heat", "process_heat", "steam", "cooling", "hydrogen"]
+SERVICES = ["electricity", "space_heat", "space_cool", "process_heat", "steam", "process_cool", "hydrogen"]
 HEAT_SERVICES = ["space_heat", "process_heat", "steam"]
+COOL_SERVICES = ["space_cool", "process_cool"]
+
+SERVICE_LABELS = {
+    "electricity": "Electricity",
+    "space_heat": "Space heating",
+    "space_cool": "Space cooling",
+    "process_heat": "Process heat (up to 150 °C)",
+    "steam": "Steam (above 150 °C)",
+    "process_cool": "Process cooling",
+    "hydrogen": "Hydrogen",
+}
 
 DEFAULT_SITE_PEAKS_MW: dict[str, float] = {
-    "electricity": 6.604, "space_heat": 1.0466, "process_heat": 5.2832, "steam": 3.9624,
-    "cooling": 1.884, "hydrogen": 1.3208,
+    "electricity": 6.604, "space_heat": 1.0466, "space_cool": 2.9316, "process_heat": 5.2832,
+    "steam": 3.9624, "process_cool": 1.9164, "hydrogen": 1.3208,
 }
 
 THERMAL_ASSET_SERVICES = {
     "heat_pump_mw": ["space_heat"],
+    "ac_chiller_mw": ["space_cool"],
     "industrial_heat_pump_mw": ["process_heat"],
     "electric_boiler_mw": ["steam"],
-    "electric_chiller_mw": ["cooling"],
+    "electric_chiller_mw": ["process_cool"],
 }
 
 
@@ -69,6 +83,9 @@ CANDIDATE_CATALOG: dict[str, list[AssetCandidate]] = {
     ],
     "heat_pump_mw": [
         AssetCandidate(mw=0.5, capex_eur=450_000.0, lifetime_years=20.0),
+    ],
+    "ac_chiller_mw": [
+        AssetCandidate(mw=0.5, capex_eur=175_000.0, lifetime_years=20.0),
     ],
     "industrial_heat_pump_mw": [
         AssetCandidate(mw=1.0, capex_eur=1_000_000.0, lifetime_years=25.0),
@@ -94,7 +111,7 @@ class SiteTechParams:
 
     COPs/efficiencies are useful output per MWh of electricity in. The existing backup plant (sunk,
     no CAPEX, unlimited capacity) is a gas boiler for every heat demand and a legacy chiller running
-    on site electricity for cooling, which keeps every subproblem feasible whatever the master
+    on site electricity for both cooling demands, which keeps every subproblem feasible whatever the master
     proposes. The site buys and sells electricity and hydrogen at the modeled market price and pays
     the import fees (network charges, levies) on every MWh it buys.
     """
@@ -103,6 +120,7 @@ class SiteTechParams:
     industrial_heat_pump_cop: float = 2.5
     electric_boiler_efficiency: float = 0.99
     electric_chiller_cop: float = 4.5
+    ac_chiller_cop: float = 3.5
 
     gas_price_eur_per_mwh: float = 35.0
     co2_price_eur_per_t: float = 90.0
@@ -124,7 +142,8 @@ class SiteTechParams:
         return {("heat_pump_mw", "space_heat"): self.heat_pump_cop,
                 ("industrial_heat_pump_mw", "process_heat"): self.industrial_heat_pump_cop,
                 ("electric_boiler_mw", "steam"): self.electric_boiler_efficiency,
-                ("electric_chiller_mw", "cooling"): self.electric_chiller_cop}[(asset, service)]
+                ("electric_chiller_mw", "process_cool"): self.electric_chiller_cop,
+                ("ac_chiller_mw", "space_cool"): self.ac_chiller_cop}[(asset, service)]
 
 
 SITE_TECH = SiteTechParams()

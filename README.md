@@ -28,7 +28,7 @@ Retrain with `python train_model.py`.
 ## 2. Industrial Site Investor planning (`site_investor_planning/`, `optimize_site_investor.py`)
 
 You define one or more industrial **sites**, each with its own internal demand for
-electricity, heat, cooling and hydrogen, its own minimum green hydrogen share and its own demand
+electricity, heating, cooling and hydrogen, its own minimum green hydrogen share and its own demand
 flexibility. For every site the planner decides **where** to build it (which candidate country;
 several sites may share one), **which technologies** to install there, and **how big** each one
 should be, using the price models above as a price-taker market signal.
@@ -36,14 +36,15 @@ should be, using the price models above as a price-taker market signal.
 | Demand | Main asset(s) | Backup when the new assets don't cover it |
 |---|---|---|
 | Electricity | Solar PV, wind, battery | Grid import |
-| Space heating | Heat pump | Existing gas boiler |
-| Low/medium-temperature process heat | Industrial heat pump | Existing gas boiler |
-| High-temperature process heat / steam | Electric boiler | Existing gas boiler |
-| Cooling | Electric chiller | Existing legacy chiller (on site electricity) |
+| Space heating (keeping buildings warm) | Heat pump | Existing gas boiler |
+| Space cooling (air conditioning of buildings) | AC chiller | Existing legacy chiller (on site electricity) |
+| Process heat (up to 150 °C: washing, drying, pasteurising) | Industrial heat pump | Existing gas boiler |
+| Steam (above 150 °C: steam networks, sterilising, reactors) | Electric boiler | Existing gas boiler |
+| Process cooling (machines, products, cold stores) | Process chiller | Existing legacy chiller (on site electricity) |
 | Hydrogen | Electrolyser, hydrogen storage | Hydrogen market import |
 
-- `optimize_site_investor.py` is the site's operating LP. Every hour, six separate balances
-  must hold, one per demand, each served by its own asset(s). The heat pumps, boiler and chiller draw electricity at their COP.
+- `optimize_site_investor.py` is the site's operating LP. Every hour, seven separate balances
+  must hold, one per demand, each served by its own asset(s). The heat pumps, boiler and chillers draw electricity at their COP.
   The site buys any electricity or hydrogen deficit at the modeled market price plus an
   import fee, and sells any surplus at the market price. Gas boilers and a legacy chiller
   are already on site (no CAPEX, unlimited capacity), so every demand is always met, whatever
@@ -73,15 +74,15 @@ too, since `solve_joint` has no contiguous-range mode.
 A site's hourly demand is one per-unit curve per demand times the site's daily peak:
 
 - `inputs/site_demand.csv` holds the **per-unit curves** for the whole year: 8736 rows (`hour`
-  0–8735), each value that hour's demand as a share of the site's daily peak (1.0 = a normal
-  day's peak hour; a day can be set higher or lower). The curves are shared by every site. The
-  shipped file repeats one daily curve every day, so edit individual days to make them differ:
+  0–8735), each value that hour's demand as a share of the site's peak setting (1.0 = a typical
+  day's peak hour; a day can be higher or lower). Space cooling is zero on most days, so its 1.0
+  is the hottest hour of the year instead. The curves are shared by every site:
 
   ```
-  hour,electricity,space_heat,process_heat,steam,cooling,hydrogen
+  hour,electricity,space_heat,space_cool,process_heat,steam,process_cool,hydrogen
   ```
 
-- Each site's **daily peaks** (MW of heat or cooling for the thermal demands, MW_LHV for
+- Each site's **peaks** (MW of heat or cooling for the thermal demands, MW_LHV for
   hydrogen), **minimum green hydrogen share** and **flexibility** belong to the site, not the
   country: a site keeps its demand wherever it is built. New sites start from
   `DEFAULT_SITE_PEAKS_MW`, a 42% green share and ±10% flexibility (`SiteSpec` in
@@ -102,14 +103,17 @@ Without a file, `--n-sites N` builds N sites with the default settings, and
 them. The planner prints each site's settings and annual totals at the start of a run and writes
 them to `_sites.csv`; the web New run page edits every site on its own card.
 
-`process_heat` is low/medium-temperature process heat and `steam` is high-temperature process
-heat / steam. The shipped curves are synthetic: electricity, process heat, steam and hydrogen
-run at full load from 6:00 to 22:00 and 60% at night; space heating at full load from 6:00 to
-20:00 and 70% otherwise; cooling peaks at 14:00 and drops to about 54% at night. The default
-peaks were set so the annual totals match the earlier synthetic demand (50 GWh electricity,
-40 GWh process heat, 30 GWh steam, 10 GWh hydrogen, 8 GWh space heating and 13.2 GWh cooling per
-year, the German values of the earlier per-country demand). There are no seasons or weekends in
-the shipped curves: every day is the same until you edit it.
+`process_heat` is process heat up to about 150 °C, `steam` is heat or steam above it,
+`space_cool` is air conditioning of buildings and `process_cool` is cooling of machines, products
+and cold stores. The shipped curves are a synthetic Central European year starting on a Monday.
+Electricity, process heat, steam, process cooling and hydrogen follow two shifts on weekdays,
+with quieter weekends and public holidays, a slowdown over Christmas and a two-week maintenance
+stop in August (steam and hydrogen run more continuously). Space heating follows the outdoor
+temperature, high in winter and close to zero in summer; space cooling appears only on warm days,
+mostly on summer afternoons. The default peaks keep the annual totals of the earlier synthetic
+demand: 50 GWh electricity, 8 GWh space heating, 1.4 GWh space cooling, 40 GWh process heat,
+30 GWh steam, 11.8 GWh process cooling and 10 GWh hydrogen per year (the two cooling demands
+together are the earlier 13.2 GWh of cooling).
 
 Every demand is also **flexible**: each hour it may move up or down by up to the site's
 flexibility share of its original value (10% by default), as long as the shifts net to zero over
@@ -144,13 +148,13 @@ green load, the wind/PV claimed for it, GOs bought and sold, and green hydrogen 
   lifetime. The optimizer builds it as many times as needed (up to the site cap), so capacity
   comes in steps of that product's size. More products can be added per run on the New run
   page. Wind, PV, battery, electrolyser and H2 tank come from
-  `Help/Candidates (Edited).docx`'s 2030 candidate-product table. The heat pump, industrial
-  heat pump, electric boiler and electric chiller entries are indicative 2030 costs in the
+  `Help/Candidates (Edited).docx`'s 2030 candidate-product table. The heat pump, AC chiller,
+  industrial heat pump, electric boiler and process chiller entries are indicative 2030 costs in the
   range of public technology catalogues (e.g. the Danish Energy Agency's). Replace them with
   vendor quotes for a real site. Thermal assets are sized in MW of heat or cooling output.
-- `SiteTechParams`: COPs and efficiencies (heat pump 3.0, industrial heat pump 2.5, electric
-  boiler 0.99, chiller 4.5), the backup gas boiler's cost (gas 35 EUR/MWh + CO2 90 EUR/t at 90%
-  efficiency, about 59 EUR/MWh of heat), the legacy chiller's COP (3.0) and the grid and
+- `SiteTechParams`: COPs and efficiencies (heat pump 3.0, AC chiller 3.5, industrial heat pump
+  2.5, electric boiler 0.99, process chiller 4.5), the backup gas boiler's cost (gas 35 EUR/MWh + CO2 90 EUR/t at 90%
+  efficiency, about 59 EUR/MWh of heat), the legacy chiller's COP (3.0, backing up both cooling demands) and the grid and
   hydrogen import fees (15 and 0 EUR/MWh).
 - `CapexAssumptions.site_max_mw`: the most MW of wind, PV, battery, electrolyser and H2 tank
   one site may host. Heat pumps, boilers and chillers are instead capped at 1.25 times the
@@ -175,7 +179,7 @@ Full, current list also always available via `python plan_capacity.py --help`.
 |---|---|---|
 | `--budget EUR` | 1,500,000,000 | Raw/unannualized CAPEX budget, shared across every site. |
 | `--discount-rate R` | 0.05 | Discount rate for the capital recovery factor |
-| `--lifetime-years N` | catalog's own (30/40/20yr wind/PV/battery, 20/25/25/20yr heat pump/industrial heat pump/electric boiler/chiller, 25/30yr electrolyser/tank) | Overrides every asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
+| `--lifetime-years N` | catalog's own (30/40/20yr wind/PV/battery, 20/20/25/25/20yr heat pump/AC chiller/industrial heat pump/electric boiler/process chiller, 25/30yr electrolyser/tank) | Overrides every asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
 
 The master places every site in exactly one candidate country, and several sites may share a
 country. Internally each (site, country) pair is a separate candidate with its own capacities;
@@ -190,7 +194,7 @@ longer.
 |---|---|---|
 | `--scenarios S,S,...` | `p100` (the Baseline) | Scenarios to plan over, probabilities renormalized to sum to 1. Scenarios other than the Baseline are defined in the `PLANNER_SCENARIO_OVERRIDES` file the web app writes. One scenario is planned deterministically; two or more use CVaR. |
 | `--cvar-alpha A` | 0.8 | CVaR confidence level (0–1), used only with two or more scenarios. |
-| `--disabled-assets A,A,...` | none | Exclude asset keys at every site (max MW = 0), e.g. `battery_mw,tank_mw`. Keys: `wind_mw`, `pv_mw`, `battery_mw`, `heat_pump_mw`, `industrial_heat_pump_mw`, `electric_boiler_mw`, `electric_chiller_mw`, `electrolyser_mw`, `tank_mw`. |
+| `--disabled-assets A,A,...` | none | Exclude asset keys at every site (max MW = 0), e.g. `battery_mw,tank_mw`. Keys: `wind_mw`, `pv_mw`, `battery_mw`, `heat_pump_mw`, `ac_chiller_mw`, `industrial_heat_pump_mw`, `electric_boiler_mw`, `electric_chiller_mw` (process chiller), `electrolyser_mw`, `tank_mw`. |
 
 **Subproblem**
 | Flag | Default | What it does |

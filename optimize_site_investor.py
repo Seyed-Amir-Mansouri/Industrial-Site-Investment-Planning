@@ -1,5 +1,5 @@
 """Industrial Site Investor operating LP: one or more industrial sites meeting their own electricity,
-heat, steam, cooling and hydrogen demand, trading surplus/deficit at the trained price proxy's prices."""
+heat, steam, space and process cooling and hydrogen demand, trading surplus/deficit at the trained price proxy's prices."""
 from __future__ import annotations
 
 import argparse
@@ -25,7 +25,7 @@ from economic_dispatch import data_loader as ed_dl
 from price_model.multivariate import predict as model_predict
 from price_model.neighbors import add_neighbor_features, add_candidate_neighbor_prices, load_adjacency
 from price_model import api as price_api
-from site_investor_planning.config import (ASSETS, GREEN_H2, HEAT_SERVICES, SERVICES, SITE_TECH,
+from site_investor_planning.config import (ASSETS, COOL_SERVICES, GREEN_H2, HEAT_SERVICES, SERVICES, SITE_TECH,
                                           THERMAL_ASSET_SERVICES, SiteSpec)
 from site_investor_planning.demand import site_demand
 
@@ -129,7 +129,7 @@ _ELEC_ZONE_OVERRIDES = {"BE": "BE00", "NL": "NL00"}
 TANK_EFFICIENCY = 0.99
 
 DEFAULT_SITE_CAPACITIES = {"wind_mw": 10.0, "pv_mw": 10.0, "battery_mw": 5.0,
-                           "heat_pump_mw": 2.0, "industrial_heat_pump_mw": 5.0,
+                           "heat_pump_mw": 2.0, "ac_chiller_mw": 2.0, "industrial_heat_pump_mw": 5.0,
                            "electric_boiler_mw": 5.0, "electric_chiller_mw": 2.0,
                            "electrolyser_mw": 5.0, "tank_mw": 1.0}
 
@@ -367,11 +367,13 @@ def _capacity_bounded(m: linopy.Model, name: str, coords: list[pd.Index], upper_
     return v
 
 
-_THERMAL_VARS = {"heat_pump_mw": "hp", "industrial_heat_pump_mw": "ihp",
+_THERMAL_VARS = {"heat_pump_mw": "hp", "ac_chiller_mw": "ac", "industrial_heat_pump_mw": "ihp",
                  "electric_boiler_mw": "eb", "electric_chiller_mw": "ch"}
-_THERMAL_LABELS = {"heat_pump_mw": "heat pump", "industrial_heat_pump_mw": "industrial heat pump",
-                   "electric_boiler_mw": "electric boiler", "electric_chiller_mw": "electric chiller"}
-_BACKUP_VARS = {**{svc: f"gas_{svc}" for svc in HEAT_SERVICES}, "cooling": "legacy_cold"}
+_THERMAL_LABELS = {"heat_pump_mw": "heat pump", "ac_chiller_mw": "AC chiller",
+                   "industrial_heat_pump_mw": "industrial heat pump",
+                   "electric_boiler_mw": "electric boiler", "electric_chiller_mw": "process chiller"}
+_BACKUP_VARS = {**{svc: f"gas_{svc}" for svc in HEAT_SERVICES},
+                **{svc: f"legacy_{svc}" for svc in COOL_SERVICES}}
 _BALANCES = {svc: f"{svc}_balance" for svc in SERVICES}
 
 
@@ -394,7 +396,7 @@ def _solve_sites(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, d
     over each block.
 
     Each demand has its own hourly balance, served by its own asset(s) and its backup (gas boiler
-    for heat, legacy chiller for cooling, market imports for electricity and hydrogen). The site's
+    for heat, legacy chiller for space and process cooling, market imports for electricity and hydrogen). The site's
     own wind/PV exported to the grid earns Guarantees of Origin it can sell, unless that output is
     claimed for green hydrogen. The electrolyser's green load in each hour must be covered by that
     hour's own (new, hence additional) wind/PV or GOs bought from additional plants, and green
@@ -508,7 +510,7 @@ def _solve_sites(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, d
 
     thermal_elec = sum((1.0 / tech.cop(a, svc)) * q for (a, svc), q in thermal.items())
     m.add_constraints(served("electricity", wind_p + pv_p + batt_dis - batt_ch - ely_p - thermal_elec
-                                            - (1.0 / tech.legacy_chiller_cop) * backup["cooling"]
+                                            - (1.0 / tech.legacy_chiller_cop) * sum(backup[svc] for svc in COOL_SERVICES)
                                             + grid_buy - grid_sell)
                       == da["demand_electricity"] * site_da, name=_BALANCES["electricity"])
     m.add_constraints(served("hydrogen", ely_eff * ely_p + tank_dis - tank_ch + h2_buy - h2_sell)
@@ -636,7 +638,8 @@ def _solve_sites(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, d
             out[f"Site {_THERMAL_LABELS[a]} -> {svc} (MW)"] = v(f"{_THERMAL_VARS[a]}_{svc}")
         for svc in HEAT_SERVICES:
             out[f"Site gas boiler -> {svc} (MW)"] = v(_BACKUP_VARS[svc])
-        out["Site legacy chiller -> cooling (MW)"] = v("legacy_cold")
+        for svc in COOL_SERVICES:
+            out[f"Site legacy chiller -> {svc} (MW)"] = v(_BACKUP_VARS[svc])
         out["day_of_year"] = np.repeat(days, HOURS_PER_DAY)
         out["day_weight"] = weight_flat
         out.attrs.update({"objective": z_cost, "p_elec": p_elec_z, "p_h2": p_h2_z, "host_zone": host_zones[u],

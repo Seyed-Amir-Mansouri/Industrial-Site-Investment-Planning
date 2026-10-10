@@ -10,9 +10,10 @@ ASSET_LABELS = {
     "pv_mw": "Solar PV",
     "battery_mw": "Battery",
     "heat_pump_mw": "Heat pump",
+    "ac_chiller_mw": "AC chiller",
     "industrial_heat_pump_mw": "Industrial heat pump",
     "electric_boiler_mw": "Electric boiler",
-    "electric_chiller_mw": "Electric chiller",
+    "electric_chiller_mw": "Process chiller",
     "electrolyser_mw": "Electrolyser",
     "tank_mw": "H2 storage",
 }

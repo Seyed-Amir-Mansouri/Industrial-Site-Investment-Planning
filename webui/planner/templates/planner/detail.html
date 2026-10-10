@@ -9,17 +9,17 @@
 <style>
   :root {
     --group-electricity: #2a78d6; --group-space-heat: #eb6834; --group-process-heat: #1baf7a;
-    --group-steam: #eda100; --group-cooling: #e87ba4; --group-hydrogen: #008300;
+    --group-steam: #eda100; --group-process-cool: #e87ba4; --group-hydrogen: #008300; --group-space-cool: #4a3aa7;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --group-electricity: #3987e5; --group-space-heat: #d95926; --group-process-heat: #199e70;
-      --group-steam: #c98500; --group-cooling: #d55181; --group-hydrogen: #008300;
+      --group-steam: #c98500; --group-process-cool: #d55181; --group-hydrogen: #008300; --group-space-cool: #9085e9;
     }
   }
   :root[data-theme="dark"] {
     --group-electricity: #3987e5; --group-space-heat: #d95926; --group-process-heat: #199e70;
-    --group-steam: #c98500; --group-cooling: #d55181; --group-hydrogen: #008300;
+    --group-steam: #c98500; --group-process-cool: #d55181; --group-hydrogen: #008300; --group-space-cool: #9085e9;
   }
   #country-map { height: 460px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-3); overflow: hidden; }
   .leaflet-control-attribution { background: color-mix(in srgb, var(--surface) 80%, transparent) !important; color: var(--muted) !important; }
@@ -218,7 +218,7 @@
       <tr><th style="width:260px">Candidate countries</th><td>{% if run.params.all_countries %}All eligible{% else %}{{ run.params.countries|join:", " }}{% endif %}</td></tr>
       <tr><th>Sites to build</th><td>{{ run.params.n_sites|default:1 }}</td></tr>
       {% for sp in run.params.sites %}
-      <tr><th>{{ sp.name }}</th><td>green H2 ≥ {% widthratio sp.green_share 1 100 %}% · flexibility ±{% widthratio sp.flex_fraction 1 100 %}% · daily peaks {% for k, v in sp.peaks_mw.items %}{{ k }} {{ v|floatformat:"-2" }}{% if not forloop.last %}, {% endif %}{% endfor %} MW</td></tr>
+      <tr><th>{{ sp.name }}</th><td>green H2 ≥ {% widthratio sp.green_share 1 100 %}% · flexibility ±{% widthratio sp.flex_fraction 1 100 %}% · peaks {% for k, v in sp.peaks_mw.items %}{{ k }} {{ v|floatformat:"-2" }}{% if not forloop.last %}, {% endif %}{% endfor %} MW</td></tr>
       {% endfor %}
       <tr><th>Budget</th><td>€{{ run.params.budget|floatformat:"0g" }}</td></tr>
       <tr><th>Excluded technologies</th><td>{% if run.params.disabled_assets %}{{ run.params.disabled_assets|join:", " }}{% else %}none{% endif %}</td></tr>
