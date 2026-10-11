@@ -84,6 +84,15 @@ def green_h2_summary(schedule: pd.DataFrame) -> dict[str, float]:
             "go_bought_mwh": annual("Site GOs bought (MWh/h)"), "go_sold_mwh": annual("Site GOs sold (MWh/h)")}
 
 
+def unmet_demand_summary(schedule: pd.DataFrame) -> dict[str, float]:
+    """Annual heat and cooling demand (MWh/yr) of one site's representative-day schedule that the new assets left unmet."""
+    w = schedule["day_weight"]
+    out = {f"unmet_{svc}_mwh": float((schedule[f"Site unmet {svc} demand (MW)"] * w).sum())
+           for svc in hp.THERMAL_SERVICES}
+    out["unmet_total_mwh"] = sum(out.values())
+    return out
+
+
 def _unit_id(site: str, country: str) -> str:
     """Label of one site placed in one candidate country."""
     return f"{site}@{country}"
@@ -155,7 +164,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     core_site = {u: 1.0 / len(countries) for u in unit_ids}
 
     best_ub, best_capacities, best_capex, best_capex_by_asset = float("inf"), None, None, None
-    best_units, best_sites, best_green = None, None, None
+    best_units, best_sites, best_green, best_unmet = None, None, None, None
     log = []
     per_unit_log = {u: [] for u in unit_ids}
     gap = float("inf")
@@ -255,6 +264,10 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                                "probability": scenario_probs[s],
                                **green_h2_summary(results[s]["schedules"][u])}
                               for u in unit_ids if site_star[u] > 0.5 for s in scenario_probs]
+                best_unmet = [{"site": units[u][1].name, "country": unit_country[u], "scenario": s,
+                               "probability": scenario_probs[s],
+                               **unmet_demand_summary(results[s]["schedules"][u])}
+                              for u in unit_ids if site_star[u] > 0.5 for s in scenario_probs]
             gap = (best_ub - lb) / max(abs(best_ub), 1e-6)
             log.append({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
                         "master_seconds": round(master_s, 2),
@@ -286,7 +299,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     return {"capacities": best_capacities, "capex": best_capex, "objective": best_ub, "log": pd.DataFrame(log),
             "units": units, "unit_country": unit_country, "host_zone": host_zone, "price_frames": price_frames,
             "per_unit_log": per_unit_log, "capex_by_asset": best_capex_by_asset, "unit_counts": best_units,
-            "placed": best_sites, "green": best_green}
+            "placed": best_sites, "green": best_green, "unmet": best_unmet}
 
 
 def main() -> None:
@@ -416,8 +429,8 @@ def main() -> None:
         print(f"  {sp.name}: green H2 >= {sp.green_share:.0%}, flexibility +/-{sp.flex_fraction:.0%} | peaks "
               + ", ".join(f"{k}={v:g}" for k, v in sp.peaks_mw.items())
               + " | MWh/yr " + ", ".join(f"{k}={v:,.0f}" for k, v in annual.items()))
-    print(f"Backup: gas boiler heat {tech.gas_heat_cost_eur_per_mwh_th:.1f} EUR/MWh_th, legacy chiller "
-          f"COP {tech.legacy_chiller_cop:g} | grid import fee {tech.grid_import_fee_eur_per_mwh:g} EUR/MWh, "
+    print(f"No existing plant on site: unmet heat/cooling demand penalty "
+          f"{tech.unmet_demand_penalty_eur_per_mwh:,.0f} EUR/MWh | grid import fee {tech.grid_import_fee_eur_per_mwh:g} EUR/MWh, "
           f"H2 import fee {tech.h2_import_fee_eur_per_mwh:g} EUR/MWh")
     print(f"Exchange caps: grid=unlimited, H2 pipeline=unlimited")
     if disabled_assets:
@@ -481,8 +494,13 @@ def main() -> None:
         print(f"Green H2 at {name} ({g['country'].iloc[0]}): expected share {share:.1%} of H2 demand "
               f"(target {targets[name]:.0%}), GOs bought {float((g['go_bought_mwh'] * g['probability']).sum()):,.0f} "
               f"/ sold {float((g['go_sold_mwh'] * g['probability']).sum()):,.0f} MWh/yr")
+    unmet_df = pd.DataFrame(res["unmet"])
+    unmet_df.to_csv(f"{out_prefix}_unmet_demand.csv", index=False)
+    for name, g in unmet_df.groupby("site", sort=False):
+        total = float((g["unmet_total_mwh"] * g["probability"]).sum())
+        print(f"Unmet heat/cooling demand at {name} ({g['country'].iloc[0]}): expected {total:,.0f} MWh/yr")
     print(f"\nwrote {out_prefix}_capacities.csv, {out_prefix}_sites.csv, {out_prefix}_convergence.csv, "
-          f"{out_prefix}_units.csv, {out_prefix}_green_h2.csv")
+          f"{out_prefix}_units.csv, {out_prefix}_green_h2.csv, {out_prefix}_unmet_demand.csv")
 
     if args.export_schedules:
         chosen_units = {u: units[u] for u in chosen.values()}

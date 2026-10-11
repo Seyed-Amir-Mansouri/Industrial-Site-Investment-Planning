@@ -33,22 +33,24 @@ flexibility. For every site the planner decides **where** to build it (which can
 several sites may share one), **which technologies** to install there, and **how big** each one
 should be, using the price models above as a price-taker market signal.
 
-| Demand | Main asset(s) | Backup when the new assets don't cover it |
+| Demand | Main asset(s) | If the new assets don't cover it |
 |---|---|---|
 | Electricity | Solar PV, wind, battery | Grid import |
-| Space heating (keeping buildings warm) | Heat pump | Existing gas boiler |
-| Space cooling (air conditioning of buildings) | AC chiller | Existing legacy chiller (on site electricity) |
-| Process heat (up to 150 °C: washing, drying, pasteurising) | Industrial heat pump | Existing gas boiler |
-| Steam (above 150 °C: steam networks, sterilising, reactors) | Electric boiler | Existing gas boiler |
-| Process cooling (machines, products, cold stores) | Process chiller | Existing legacy chiller (on site electricity) |
+| Space heating (keeping buildings warm) | Heat pump | Unmet, at the unmet-demand penalty |
+| Space cooling (air conditioning of buildings) | AC chiller | Unmet, at the unmet-demand penalty |
+| Process heat (up to 150 °C: washing, drying, pasteurising) | Industrial heat pump | Unmet, at the unmet-demand penalty |
+| Steam (above 150 °C: steam networks, sterilising, reactors) | Electric boiler | Unmet, at the unmet-demand penalty |
+| Process cooling (machines, products, cold stores) | Process chiller | Unmet, at the unmet-demand penalty |
 | Hydrogen | Electrolyser, hydrogen storage | Hydrogen market import |
 
 - `optimize_site_investor.py` is the site's operating LP. Every hour, seven separate balances
   must hold, one per demand, each served by its own asset(s). The heat pumps, boiler and chillers draw electricity at their COP.
   The site buys any electricity or hydrogen deficit at the modeled market price plus an
-  import fee, and sells any surplus at the market price. Gas boilers and a legacy chiller
-  are already on site (no CAPEX, unlimited capacity), so every demand is always met, whatever
-  the new assets are. `solve` runs one site on its own, either over a contiguous day range or
+  import fee, and sells any surplus at the market price. There is no existing plant on
+  site: heat or cooling the new assets can't supply is left unmet and charged a penalty (5,000
+  EUR/MWh by default), so every hour stays solvable whatever the new assets are, and in practice
+  the planner builds enough to cover demand. Each run reports any unmet demand per site in
+  `_unmet_demand.csv`. `solve` runs one site on its own, either over a contiguous day range or
   a representative-day sample. `solve_joint` runs every candidate country's site LP
   together in one model (still independent problems, just solved in one call). It's the only
   mode `plan_capacity.py` uses.
@@ -153,8 +155,7 @@ green load, the wind/PV claimed for it, GOs bought and sold, and green hydrogen 
   range of public technology catalogues (e.g. the Danish Energy Agency's). Replace them with
   vendor quotes for a real site. Thermal assets are sized in MW of heat or cooling output.
 - `SiteTechParams`: COPs and efficiencies (heat pump 3.0, AC chiller 3.5, industrial heat pump
-  2.5, electric boiler 0.99, process chiller 4.5), the backup gas boiler's cost (gas 35 EUR/MWh + CO2 90 EUR/t at 90%
-  efficiency, about 59 EUR/MWh of heat), the legacy chiller's COP (3.0, backing up both cooling demands) and the grid and
+  2.5, electric boiler 0.99, process chiller 4.5), the unmet heat/cooling demand penalty (5,000 EUR/MWh) and the grid and
   hydrogen import fees (15 and 0 EUR/MWh).
 - `CapexAssumptions.site_max_mw`: the most MW of wind, PV, battery, electrolyser and H2 tank
   one site may host. Heat pumps, boilers and chillers are instead capped at 1.25 times the
@@ -227,8 +228,8 @@ errors. The web app passes them to the planner in the run's scenario overrides f
 | `--max-iters N` | 30 | Benders iteration cap |
 | `--gap-tol G` | 0.01 (1%) | Relative Benders convergence gap |
 | `--master-time-limit S` | 180 | Wall-time cap (seconds) per master MILP solve. The master gets genuinely hard to solve to proven optimality as cuts accumulate at large scale, so this bounds it instead; the Benders lower bound is still read from HiGHS's own proven dual bound, so the result stays mathematically rigorous even when the search is cut off early. |
-| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (one row per site: its chosen country and capacities)/`_sites.csv` (each site's settings and annual demand)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each site's green hydrogen and GO totals per scenario)/(with `--export-schedules`) `_schedule_<site>_<country>_<scenario>.csv` |
-| `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each chosen site's representative-day schedule: every demand, asset output, grid and H2 import/export, and backup use |
+| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (one row per site: its chosen country and capacities)/`_sites.csv` (each site's settings and annual demand)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each site's green hydrogen and GO totals per scenario)/`_unmet_demand.csv` (each site's unmet heat and cooling demand per scenario)/(with `--export-schedules`) `_schedule_<site>_<country>_<scenario>.csv` |
+| `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each chosen site's representative-day schedule: every demand, asset output, grid and H2 import/export, and any unmet demand |
 
 Each iteration adds two optimality cuts per scenario: one from the subproblem solved at the
 master's proposed plan (tight there, so the master can't propose the same plan again without
@@ -256,7 +257,7 @@ together), iterating between them:
    solve_joint`)** takes the master's site choice and capacities and solves the
    representative-day site operation (`--rep-days-per-month`), once per capacity-uncertainty
    scenario. It returns each country's operating cost (electricity and hydrogen purchases
-   minus sales, backup gas, GOs bought minus sold, green hydrogen premium) and the dual values
+   minus sales, unmet-demand penalty, GOs bought minus sold, green hydrogen premium) and the dual values
    (shadow prices) on its capacity constraints, demand balances and green hydrogen requirement.
 3. **Cut generation.** Each scenario's per-country costs and duals become a Benders
    optimality cut: a linear lower bound on that scenario's `theta_s` in the master's capacity
@@ -341,7 +342,7 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   solver log.
 - **Compare** puts two completed runs side by side. Pick them from the lists at the top.
   It shows the installed MW by country for each run and the difference between them.
-- **Catalog** shows the site demand, the operating assumptions (COPs, backup costs, import
+- **Catalog** shows the site demand, the operating assumptions (COPs, unmet-demand penalty, import
   fees), the green hydrogen and certificate settings, the demand flexibility, the candidate products and their CAPEX and lifetime assumptions, the discount rate
   and budget defaults, and the uncertainty scenarios with their default probabilities (one
   column per scenario).

@@ -63,10 +63,7 @@ def site_assumptions():
         "cop": [{"asset": a, "service": svc, "cop": tech.cop(a, svc)}
                 for a, services in hp.THERMAL_ASSET_SERVICES.items() for svc in services],
         "electrolyser_efficiency": 0.68,
-        "gas_heat_cost": tech.gas_heat_cost_eur_per_mwh_th,
-        "gas_price": tech.gas_price_eur_per_mwh,
-        "co2_price": tech.co2_price_eur_per_t,
-        "legacy_chiller_cop": tech.legacy_chiller_cop,
+        "unmet_penalty": tech.unmet_demand_penalty_eur_per_mwh,
         "grid_import_fee": tech.grid_import_fee_eur_per_mwh,
         "h2_import_fee": tech.h2_import_fee_eur_per_mwh,
         "green_share": site_defaults()["green_share"],
@@ -299,6 +296,8 @@ def parse_summary(output_prefix: Path, log: str) -> dict:
     capacities = _read_csv(Path(f"{output_prefix}_capacities.csv"))
     units = _read_csv(Path(f"{output_prefix}_units.csv"))
     green = [{k: _maybe_float(v) for k, v in row.items()} for row in _read_csv(Path(f"{output_prefix}_green_h2.csv"))]
+    unmet = [{k: _maybe_float(v) for k, v in row.items()}
+             for row in _read_csv(Path(f"{output_prefix}_unmet_demand.csv"))]
     convergence = _read_csv(Path(f"{output_prefix}_convergence.csv"))
 
     assets = list(capex_assumptions_defaults()["assets"])
@@ -324,6 +323,9 @@ def parse_summary(output_prefix: Path, log: str) -> dict:
         "units": units,
         "green_h2": green,
         "green_h2_expected": _expected_green(green),
+        "unmet_demand": _expected_unmet(unmet),
+        "unmet_labels": [GROUP_LABELS[k[len("unmet_"):-len("_mwh")]] for k in (unmet[0] if unmet else {})
+                         if k.startswith("unmet_") and k != "unmet_total_mwh"],
         "convergence": [{k: _maybe_float(v) for k, v in row.items()} for row in convergence],
         "totals_mw": totals,
     }
@@ -356,6 +358,22 @@ def _expected_green(rows: list[dict]) -> list[dict]:
         for k in keys:
             acc[k] += float(row[k]) * float(row["probability"])
     return list(out.values())
+
+
+def _expected_unmet(rows: list[dict]) -> list[dict]:
+    """Probability-weighted unmet heat and cooling demand (MWh/yr) per chosen site, one value per demand."""
+    services = [s for s in GROUP_LABELS if f"unmet_{s}_mwh" in (rows[0] if rows else {})]
+    out = {}
+    for row in rows:
+        site = row.get("site") or row["country"]
+        acc = out.setdefault(site, {"site": site, "country": row["country"], "total": 0.0,
+                                    "values": {s: 0.0 for s in services}})
+        p = float(row["probability"])
+        for s in services:
+            acc["values"][s] += float(row[f"unmet_{s}_mwh"]) * p
+        acc["total"] += float(row["unmet_total_mwh"]) * p
+    return [{**r, "values": [r["values"][s] for s in services]} for r in out.values()] if out else []
+
 
 
 def _maybe_float(value: str):

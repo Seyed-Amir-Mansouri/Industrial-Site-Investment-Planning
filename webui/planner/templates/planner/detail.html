@@ -134,6 +134,27 @@
 </div>
 {% endif %}
 
+{% if summary.unmet_demand %}
+<div class="card">
+  <h2>Unmet heat and cooling demand</h2>
+  <p class="lede" style="margin-bottom:12px">The site has no existing boiler or chiller, so any heat or cooling the new assets can't supply is left unmet and charged the penalty shown on the Catalog page. Expected MWh per year; 0 means every hour was covered.</p>
+  <div style="overflow-x:auto">
+  <table>
+    <thead><tr><th>Site</th><th>Country</th>{% for label in summary.unmet_labels %}<th class="num">{{ label }}</th>{% endfor %}<th class="num">Total</th></tr></thead>
+    <tbody>
+      {% for r in summary.unmet_demand %}
+      <tr>
+        <td><strong>{{ r.site }}</strong></td><td>{{ r.country }}</td>
+        {% for v in r.values %}<td class="num">{{ v|floatformat:"0g" }}</td>{% endfor %}
+        <td class="num"><strong>{{ r.total|floatformat:"0g" }}</strong></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+
 <div class="grid" style="grid-template-columns:minmax(0,1fr);gap:22px;align-items:start">
   <div class="card">
     <h2>Installed capacity by site (MW)</h2>

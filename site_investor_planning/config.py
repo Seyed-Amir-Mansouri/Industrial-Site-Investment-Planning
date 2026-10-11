@@ -11,8 +11,8 @@ Assets and the internal demand each one serves:
 - hydrogen: electrolyser, H2 tank
 
 Thermal assets are sized in MW of useful output (MW_th / MW_cold), the electrolyser in MW of
-electrical input. ``HEAT_SERVICES`` are the demands the existing gas boiler backs up and
-``COOL_SERVICES`` the ones the existing legacy chiller backs up.
+electrical input. ``THERMAL_SERVICES`` are the heat and cooling demands. There is no existing
+plant on site: heat or cooling the new assets can't cover is left unmet at a penalty.
 
 Every site to build is a ``SiteSpec``: its own daily peak demand per service (MW_th for heat and
 cooling, MW_LHV for hydrogen), green hydrogen share and demand flexibility. A site's hourly demand
@@ -36,8 +36,7 @@ ASSETS = ["wind_mw", "pv_mw", "battery_mw",
           "electric_chiller_mw", "electrolyser_mw", "tank_mw"]
 
 SERVICES = ["electricity", "space_heat", "space_cool", "process_heat", "steam", "process_cool", "hydrogen"]
-HEAT_SERVICES = ["space_heat", "process_heat", "steam"]
-COOL_SERVICES = ["space_cool", "process_cool"]
+THERMAL_SERVICES = ["space_heat", "space_cool", "process_heat", "steam", "process_cool"]
 
 SERVICE_LABELS = {
     "electricity": "Electricity",
@@ -107,12 +106,12 @@ CANDIDATE_CATALOG: dict[str, list[AssetCandidate]] = {
 
 @dataclass(frozen=True)
 class SiteTechParams:
-    """Operating parameters of the site's conversion assets, its existing backup plant and its market access.
+    """Operating parameters of the site's conversion assets, its unmet-demand penalty and its market access.
 
-    COPs/efficiencies are useful output per MWh of electricity in. The existing backup plant (sunk,
-    no CAPEX, unlimited capacity) is a gas boiler for every heat demand and a legacy chiller running
-    on site electricity for both cooling demands, which keeps every subproblem feasible whatever the master
-    proposes. The site buys and sells electricity and hydrogen at the modeled market price and pays
+    COPs/efficiencies are useful output per MWh of electricity in. The site has no existing plant:
+    any heat or cooling the new assets can't supply is left unmet and charged
+    ``unmet_demand_penalty_eur_per_mwh``, which keeps every subproblem feasible whatever the master
+    proposes and in practice makes the planner build enough capacity. The site buys and sells electricity and hydrogen at the modeled market price and pays
     the import fees (network charges, levies) on every MWh it buys.
     """
 
@@ -122,20 +121,10 @@ class SiteTechParams:
     electric_chiller_cop: float = 4.5
     ac_chiller_cop: float = 3.5
 
-    gas_price_eur_per_mwh: float = 35.0
-    co2_price_eur_per_t: float = 90.0
-    gas_emission_t_per_mwh: float = 0.202
-    gas_boiler_efficiency: float = 0.90
-    legacy_chiller_cop: float = 3.0
+    unmet_demand_penalty_eur_per_mwh: float = 5000.0
 
     grid_import_fee_eur_per_mwh: float = 15.0
     h2_import_fee_eur_per_mwh: float = 0.0
-
-    @property
-    def gas_heat_cost_eur_per_mwh_th(self) -> float:
-        """Cost of one MWh of heat from the existing gas boiler (fuel + CO2)."""
-        return (self.gas_price_eur_per_mwh + self.co2_price_eur_per_t * self.gas_emission_t_per_mwh) \
-            / self.gas_boiler_efficiency
 
     def cop(self, asset: str, service: str) -> float:
         """Useful thermal output per MWh of electricity when ``asset`` serves ``service``."""

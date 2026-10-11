@@ -42,8 +42,7 @@
       {% for row in site.cop %}
       <tr><th style="width:320px">{{ asset_labels|lookup:row.asset }} → {{ service_labels|lookup:row.service }}: COP / efficiency</th><td class="num">{{ row.cop|floatformat:"-2" }}</td></tr>
       {% endfor %}
-      <tr><th>Backup gas boiler heat cost</th><td class="num">€{{ site.gas_heat_cost|floatformat:1 }} / MWh<sub>th</sub> (gas €{{ site.gas_price|floatformat:"0g" }}/MWh, CO₂ €{{ site.co2_price|floatformat:"0g" }}/t)</td></tr>
-      <tr><th>Legacy chiller COP (backup for space and process cooling)</th><td class="num">{{ site.legacy_chiller_cop|floatformat:"-1" }}</td></tr>
+      <tr><th>Unmet heat or cooling demand (no existing plant on site)</th><td class="num">€{{ site.unmet_penalty|floatformat:"0g" }} / MWh penalty</td></tr>
       <tr><th>Grid import fee</th><td class="num">€{{ site.grid_import_fee|floatformat:"-1" }} / MWh</td></tr>
       <tr><th>Hydrogen import fee</th><td class="num">€{{ site.h2_import_fee|floatformat:"-1" }} / MWh</td></tr>
     </tbody>

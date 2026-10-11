@@ -25,7 +25,7 @@ from economic_dispatch import data_loader as ed_dl
 from price_model.multivariate import predict as model_predict
 from price_model.neighbors import add_neighbor_features, add_candidate_neighbor_prices, load_adjacency
 from price_model import api as price_api
-from site_investor_planning.config import (ASSETS, COOL_SERVICES, GREEN_H2, HEAT_SERVICES, SERVICES, SITE_TECH,
+from site_investor_planning.config import (ASSETS, GREEN_H2, SERVICES, SITE_TECH, THERMAL_SERVICES,
                                           THERMAL_ASSET_SERVICES, SiteSpec)
 from site_investor_planning.demand import site_demand
 
@@ -372,8 +372,7 @@ _THERMAL_VARS = {"heat_pump_mw": "hp", "ac_chiller_mw": "ac", "industrial_heat_p
 _THERMAL_LABELS = {"heat_pump_mw": "heat pump", "ac_chiller_mw": "AC chiller",
                    "industrial_heat_pump_mw": "industrial heat pump",
                    "electric_boiler_mw": "electric boiler", "electric_chiller_mw": "process chiller"}
-_BACKUP_VARS = {**{svc: f"gas_{svc}" for svc in HEAT_SERVICES},
-                **{svc: f"legacy_{svc}" for svc in COOL_SERVICES}}
+_UNMET_VARS = {svc: f"unmet_{svc}" for svc in THERMAL_SERVICES}
 _BALANCES = {svc: f"{svc}_balance" for svc in SERVICES}
 
 
@@ -395,8 +394,9 @@ def _solve_sites(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, d
     ``flex_fraction`` lets each hour's demand move by up to that fraction of itself, netting to zero
     over each block.
 
-    Each demand has its own hourly balance, served by its own asset(s) and its backup (gas boiler
-    for heat, legacy chiller for space and process cooling, market imports for electricity and hydrogen). The site's
+    Each demand has its own hourly balance, served by its own asset(s). Electricity and hydrogen can
+    also be bought on the market; there is no existing plant, so heat or cooling the new assets can't
+    supply is left unmet and charged the unmet-demand penalty. The site's
     own wind/PV exported to the grid earns Guarantees of Origin it can sell, unless that output is
     claimed for green hydrogen. The electrolyser's green load in each hour must be covered by that
     hour's own (new, hence additional) wind/PV or GOs bought from additional plants, and green
@@ -477,7 +477,7 @@ def _solve_sites(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, d
     for a, v in _THERMAL_VARS.items():
         m.add_constraints(sum(thermal[a, svc] for svc in THERMAL_ASSET_SERVICES[a]) <= per_zone(a),
                           name=f"{v}_cap")
-    backup = {svc: m.add_variables(lower=0.0, coords=coords, name=v) for svc, v in _BACKUP_VARS.items()}
+    unmet = {svc: m.add_variables(lower=0.0, coords=coords, name=v) for svc, v in _UNMET_VARS.items()}
     grid_buy = m.add_variables(lower=0.0, coords=coords, name="grid_buy")
     grid_sell = m.add_variables(lower=0.0, coords=coords, name="grid_sell")
     h2_buy = m.add_variables(lower=0.0, coords=coords, name="h2_buy")
@@ -510,13 +510,12 @@ def _solve_sites(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, d
 
     thermal_elec = sum((1.0 / tech.cop(a, svc)) * q for (a, svc), q in thermal.items())
     m.add_constraints(served("electricity", wind_p + pv_p + batt_dis - batt_ch - ely_p - thermal_elec
-                                            - (1.0 / tech.legacy_chiller_cop) * sum(backup[svc] for svc in COOL_SERVICES)
                                             + grid_buy - grid_sell)
                       == da["demand_electricity"] * site_da, name=_BALANCES["electricity"])
     m.add_constraints(served("hydrogen", ely_eff * ely_p + tank_dis - tank_ch + h2_buy - h2_sell)
                       == da["demand_hydrogen"] * site_da, name=_BALANCES["hydrogen"])
     for (a, svc), q in thermal.items():
-        m.add_constraints(served(svc, q + backup[svc]) == da[f"demand_{svc}"] * site_da,
+        m.add_constraints(served(svc, q + unmet[svc]) == da[f"demand_{svc}"] * site_da,
                           name=_BALANCES[svc])
 
     go_sell = m.add_variables(lower=0.0, coords=coords, name="go_sell")
@@ -537,13 +536,13 @@ def _solve_sites(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, d
         green_cost = (green_cost + green.go_buy_price_eur_per_mwh * (w * go_buy).sum()
                       + green.green_h2_premium_eur_per_mwh * (w * h2_buy_green).sum())
 
-    gas_cost = tech.gas_heat_cost_eur_per_mwh_th
-    gas_heat = sum(backup[svc] for svc in HEAT_SERVICES)
+    penalty = tech.unmet_demand_penalty_eur_per_mwh
+    unmet_total = sum(unmet[svc] for svc in THERMAL_SERVICES)
     cost = ((w * (da["p_elec"] + tech.grid_import_fee_eur_per_mwh) * grid_buy).sum()
             - (w * da["p_elec"] * grid_sell).sum()
             + (w * (da["p_h2"] + tech.h2_import_fee_eur_per_mwh) * h2_buy).sum()
             - (w * da["p_h2"] * h2_sell).sum()
-            + gas_cost * (w * gas_heat).sum()
+            + penalty * (w * unmet_total).sum()
             + sto_cost * ((w * batt_ch).sum() + (w * batt_dis).sum() + (w * tank_ch).sum() + (w * tank_dis).sum())
             + green_cost)
     m.add_objective(cost)
@@ -597,7 +596,7 @@ def _solve_sites(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, d
         p_elec_z = np.asarray(da["p_elec"].sel(unit=u).values).reshape(-1)
         p_h2_z = np.asarray(da["p_h2"].sel(unit=u).values).reshape(-1)
         gb, gs, hb, hs = v("grid_buy"), v("grid_sell"), v("h2_buy"), v("h2_sell")
-        gas = sum(v(_BACKUP_VARS[svc]) for svc in HEAT_SERVICES)
+        unmet_mw = sum(v(_UNMET_VARS[svc]) for svc in THERMAL_SERVICES)
         bc, bd, tc, td = v("batt_ch"), v("batt_dis"), v("tank_ch"), v("tank_dis")
         zero = np.zeros(H)
         gos = v("go_sell")
@@ -605,7 +604,7 @@ def _solve_sites(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, d
                             if any_green else (zero, zero, zero, zero))
         z_cost = float((weight_flat * ((p_elec_z + tech.grid_import_fee_eur_per_mwh) * gb - p_elec_z * gs
                                        + (p_h2_z + tech.h2_import_fee_eur_per_mwh) * hb - p_h2_z * hs
-                                       + gas_cost * gas + sto_cost * (bc + bd + tc + td)
+                                       + penalty * unmet_mw + sto_cost * (bc + bd + tc + td)
                                        + green.go_buy_price_eur_per_mwh * gob
                                        - green.go_sell_price_eur_per_mwh * gos
                                        + green.green_h2_premium_eur_per_mwh * hbg)).sum())
@@ -636,10 +635,8 @@ def _solve_sites(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, d
         out["Site green H2 bought (MW)"] = hbg
         for (a, svc) in thermal:
             out[f"Site {_THERMAL_LABELS[a]} -> {svc} (MW)"] = v(f"{_THERMAL_VARS[a]}_{svc}")
-        for svc in HEAT_SERVICES:
-            out[f"Site gas boiler -> {svc} (MW)"] = v(_BACKUP_VARS[svc])
-        for svc in COOL_SERVICES:
-            out[f"Site legacy chiller -> {svc} (MW)"] = v(_BACKUP_VARS[svc])
+        for svc in THERMAL_SERVICES:
+            out[f"Site unmet {svc} demand (MW)"] = v(_UNMET_VARS[svc])
         out["day_of_year"] = np.repeat(days, HOURS_PER_DAY)
         out["day_weight"] = weight_flat
         out.attrs.update({"objective": z_cost, "p_elec": p_elec_z, "p_h2": p_h2_z, "host_zone": host_zones[u],
@@ -754,4 +751,4 @@ if __name__ == "__main__":
         print(df.describe().to_string())
     print(f"\nhours solved: {df.attrs['n_hours']} (annualized as {df.attrs['annualized_hours']}) | "
           f"build: {df.attrs['build_seconds']:.1f}s | solve: {df.attrs['solve_seconds']:.1f}s")
-    print("operating cost (EUR, energy purchases + backup fuel - sales):", round(df.attrs["objective"], 2))
+    print("operating cost (EUR, energy purchases + unmet demand penalty - sales):", round(df.attrs["objective"], 2))
