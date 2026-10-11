@@ -227,6 +227,7 @@ errors. The web app passes them to the planner in the run's scenario overrides f
 | `--max-iters N` | 30 | Benders iteration cap |
 | `--gap-tol G` | 0.01 (1%) | Relative Benders convergence gap |
 | `--master-time-limit S` | 180 | Wall-time cap (seconds) per master MILP solve. The master gets genuinely hard to solve to proven optimality as cuts accumulate at large scale, so this bounds it instead; the Benders lower bound is still read from HiGHS's own proven dual bound, so the result stays mathematically rigorous even when the search is cut off early. |
+| `--multi-cut` | off | Give every (site, country) placement its own recourse variable and its own Benders cut each iteration, instead of one cut summed over all placements. |
 | `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (one row per site: its chosen country and capacities)/`_sites.csv` (each site's settings and annual demand)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each site's green hydrogen and GO totals per scenario)/`_unmet_demand.csv` (each site's unmet heat and cooling demand per scenario)/(with `--export-schedules`) `_schedule_<site>_<country>_<scenario>.csv` |
 | `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each chosen site's representative-day schedule: every demand, asset output, grid and H2 import/export, and any unmet demand |
 

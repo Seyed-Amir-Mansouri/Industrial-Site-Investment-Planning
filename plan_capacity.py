@@ -106,7 +106,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                 scenario_probs: dict[str, float] | None = None,
                 workers: int | None = None,
                 max_units_per_candidate: int | None = None,
-                sites: list[hp.SiteSpec] | None = None):
+                sites: list[hp.SiteSpec] | None = None, multi_cut: bool = False):
     """Run the Benders loop: master MILP proposes where each site goes and its capacities, joint subproblems (one per scenario) price them and return cuts, repeat to convergence.
 
     Every site in ``sites`` (default: one default site) is placed in exactly one of ``countries``;
@@ -115,8 +115,9 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     trial point itself, so the master can't propose the same plan again without paying its true
     recourse cost, and one at a Pareto core point that starts inside the feasible region (every
     unit a fractional placement, every asset a mid-grid size within its site cap) and moves halfway
-    toward each trial point. If HiGHS presolve fails on the master, it is re-solved once with
-    presolve off."""
+    toward each trial point. With ``multi_cut`` every (site, country) unit has its own recourse
+    variable and gets its own cut from each solve, instead of one cut summed over all units. If HiGHS
+    presolve fails on the master, it is re-solved once with presolve off."""
     scenario_probs = scenario_probs if scenario_probs is not None else {s: 1.0 / len(DEFAULT_SCENARIOS)
                                                                           for s in DEFAULT_SCENARIOS}
     if len(scenario_probs) > 1 and cvar_alpha is None:
@@ -156,7 +157,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
 
     m = hp.build_master(unit_ids, cand_mw, cand_capex, budget, crf, capex_cfg.theta_lower_bound_eur,
                         scenario_probs=scenario_probs, cvar_alpha=cvar_alpha, site_max_mw=site_max_mw,
-                        max_units_per_candidate=max_units_per_candidate, site_units=site_units)
+                        max_units_per_candidate=max_units_per_candidate, site_units=site_units,
+                        multi_cut=multi_cut)
 
     core_cap = {u: {a: min(float(sum([0.0] + list(cand_mw[u][a])) / (len(cand_mw[u][a]) + 1)),
                            0.5 * site_max_mw[u][a])
@@ -357,6 +359,9 @@ def main() -> None:
                          "parallel (they're mutually independent); default min(4, cpu_count) -- "
                          "raise this if your machine has memory headroom for more. "
                          "Pass 1 to force sequential (e.g. for debugging).")
+    ap.add_argument("--multi-cut", action="store_true",
+                    help="give every (site, country) unit its own recourse variable and its own Benders "
+                         "cut each iteration, instead of one cut summed over all units")
     ap.add_argument("--max-units-per-candidate", type=int, default=0,
                     help="max buildable units of each individual candidate product per "
                          "site/asset (the default catalog has one product per asset, built as many "
@@ -440,6 +445,9 @@ def main() -> None:
     else:
         print(f"Capacity-uncertainty scenarios (CVaR_{cvar_alpha:.2f} risk measure): {scenario_probs}")
 
+    print("Benders cuts: " + ("one per (site, country) unit (multi-cut)" if args.multi_cut
+                              else "one summed over all (site, country) units"))
+
     t0 = time.time()
     res = run_benders(
         countries, budget, args.max_iters, args.gap_tol, capex_cfg,
@@ -448,7 +456,7 @@ def main() -> None:
         disabled_assets=disabled_assets, scenario_probs=scenario_probs, workers=args.workers,
         max_units_per_candidate=(args.max_units_per_candidate
                                  if args.max_units_per_candidate > 0 else None),
-        sites=sites)
+        sites=sites, multi_cut=args.multi_cut)
     elapsed = time.time() - t0
     units, unit_country, host_zone = res["units"], res["unit_country"], res["host_zone"]
     chosen = {units[u][1].name: u for u in units if res["placed"][u] > 0.5}
