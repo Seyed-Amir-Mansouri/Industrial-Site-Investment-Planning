@@ -17,13 +17,16 @@ def build_master(units: list[str], cand_mw: dict[str, dict[str, np.ndarray]],
                  site_max_mw: dict[str, dict[str, float]] | None = None,
                  max_units_per_candidate: int | None = None,
                  site_units: dict[str, list[str]] | None = None,
-                 multi_cut: bool = False) -> linopy.Model:
+                 symmetric_sites: list[list[str]] | None = None) -> linopy.Model:
     """Build a fresh Benders master MILP (site location, candidate selection, budget, and optional
     CVaR/scenario objective) with no cuts yet. A unit is one site placed in one candidate country;
     ``site_units`` maps each site to its units, and every site is built in exactly one of them
     (several sites may share a country). Only the chosen unit may host capacity, up to
-    ``site_max_mw`` of each asset. With ``multi_cut`` the recourse cost gets one ``theta`` per unit
-    (and scenario), each bounded by its own cuts, instead of one ``theta`` for all units."""
+    ``site_max_mw`` of each asset. The recourse cost has one ``theta`` per unit (and scenario),
+    bounded below by ``theta_lower`` and by that unit's own cuts. Each group in ``symmetric_sites``
+    lists sites with identical settings, which are interchangeable; each must be placed in the same
+    or a later country (in ``site_units`` order) than the one before it, so the master doesn't search
+    mirror-image plans."""
     if site_units is None:
         site_units = {"site": list(units)}
     m = linopy.Model()
@@ -37,19 +40,22 @@ def build_master(units: list[str], cand_mw: dict[str, dict[str, np.ndarray]],
     site = m.add_variables(binary=True, coords=[unit_idx], name="site")
     for i, members in enumerate(site_units.values()):
         m.add_constraints(site.sel(unit=members).sum() == 1, name=f"place_site_{i}")
+    for g, group in enumerate(symmetric_sites or []):
+        for j, (a, b) in enumerate(zip(group, group[1:])):
+            order_a = sum(k * site.sel(unit=u) for k, u in enumerate(site_units[a]) if k)
+            order_b = sum(k * site.sel(unit=u) for k, u in enumerate(site_units[b]) if k)
+            m.add_constraints(order_a - order_b <= 0, name=f"site_order_{g}_{j}")
     if cvar_alpha is not None and scenario_probs is None:
         raise ValueError("cvar_alpha requires scenario_probs")
     if scenario_probs is not None and len(scenario_probs) > 1 and cvar_alpha is None:
         raise ValueError("more than one scenario needs a CVaR confidence level (cvar_alpha)")
-    theta_lb = theta_lower if multi_cut else theta_lower * len(units)
-    unit_coords = [unit_idx] if multi_cut else []
     if scenario_probs is None:
-        theta = m.add_variables(lower=theta_lb, coords=unit_coords or None, name="theta")
-        theta_term = theta.sum() if multi_cut else theta
+        theta = m.add_variables(lower=theta_lower, coords=[unit_idx], name="theta")
+        theta_term = theta.sum()
     else:
         scenario_idx = pd.Index(list(scenario_probs), name="scenario")
-        theta = m.add_variables(lower=theta_lb, coords=[scenario_idx, *unit_coords], name="theta")
-        theta_s = theta.sum("unit") if multi_cut else theta
+        theta = m.add_variables(lower=theta_lower, coords=[scenario_idx, unit_idx], name="theta")
+        theta_s = theta.sum("unit")
         prob_da = xr.DataArray(list(scenario_probs.values()), coords=[scenario_idx])
         if cvar_alpha is None or len(scenario_probs) == 1:
             theta_term = (theta_s * prob_da).sum()
@@ -93,36 +99,24 @@ def add_optimality_cut(m: linopy.Model, units: list[str], iteration: int,
                        scenario: str | None = None,
                        lam: dict[str, float] | None = None,
                        site_star: dict[str, float] | None = None, tag: str = "core") -> None:
-    """Add a Benders optimality cut (for one scenario, or the only one) to the master: one cut
-    across all units, or one cut per unit when the master was built with ``multi_cut``. ``mu`` are
-    the recourse cost's sensitivities to each asset's MW, ``lam`` its sensitivity to each site's
-    on/off (its internal demand switching on), both taken at ``cap_star``/``site_star``."""
+    """Add one Benders optimality cut per unit in ``units`` (for one scenario, or the only one) to
+    the master, each bounding that unit's own ``theta``. ``mu`` are the recourse cost's
+    sensitivities to each asset's MW, ``lam`` its sensitivity to the site's on/off (its internal
+    demand switching on), both taken at ``cap_star``/``site_star``."""
     y = m.variables["y"]
     site = m.variables["site"]
     theta = m.variables["theta"]
     theta_var = theta.sel(scenario=scenario) if scenario is not None else theta
     k_idx = y.coords["k"]
-    if "unit" in theta_var.dims:
-        for c in units:
-            cap_expr = sum(mu[c][a] * (xr.DataArray(cand_mw[c][a], coords=[k_idx]) * y.sel(unit=c, asset=a)).sum("k")
-                           for a in ASSETS)
-            rhs = Q[c] - sum(mu[c][a] * cap_star[c][a] for a in ASSETS)
-            if lam is not None:
-                cap_expr = cap_expr + lam[c] * site.sel(unit=c)
-                rhs -= lam[c] * site_star[c]
-            base = f"cut_{tag}_{scenario}_{iteration}" if scenario is not None else f"cut_{tag}_{iteration}"
-            m.add_constraints(theta_var.sel(unit=c) - cap_expr >= rhs, name=f"{base}_{c}")
-        return
-    cap_expr = sum(
-        mu[c][a] * (xr.DataArray(cand_mw[c][a], coords=[k_idx]) * y.sel(unit=c, asset=a)).sum("k")
-        for c in units for a in ASSETS
-    )
-    rhs = sum(Q[c] - sum(mu[c][a] * cap_star[c][a] for a in ASSETS) for c in units)
-    if lam is not None:
-        cap_expr = cap_expr + sum(lam[c] * site.sel(unit=c) for c in units)
-        rhs -= sum(lam[c] * site_star[c] for c in units)
-    cut_name = f"cut_{tag}_{scenario}_{iteration}" if scenario is not None else f"cut_{tag}_{iteration}"
-    m.add_constraints(theta_var - cap_expr >= rhs, name=cut_name)
+    base = f"cut_{tag}_{scenario}_{iteration}" if scenario is not None else f"cut_{tag}_{iteration}"
+    for c in units:
+        cap_expr = sum(mu[c][a] * (xr.DataArray(cand_mw[c][a], coords=[k_idx]) * y.sel(unit=c, asset=a)).sum("k")
+                       for a in ASSETS)
+        rhs = Q[c] - sum(mu[c][a] * cap_star[c][a] for a in ASSETS)
+        if lam is not None:
+            cap_expr = cap_expr + lam[c] * site.sel(unit=c)
+            rhs -= lam[c] * site_star[c]
+        m.add_constraints(theta_var.sel(unit=c) - cap_expr >= rhs, name=f"{base}_{c}")
 
 
 def cvar_value(values: dict[str, float], probs: dict[str, float], alpha: float) -> float:

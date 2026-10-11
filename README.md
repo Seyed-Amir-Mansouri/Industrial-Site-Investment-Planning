@@ -227,50 +227,69 @@ errors. The web app passes them to the planner in the run's scenario overrides f
 | `--max-iters N` | 30 | Benders iteration cap |
 | `--gap-tol G` | 0.01 (1%) | Relative Benders convergence gap |
 | `--master-time-limit S` | 180 | Wall-time cap (seconds) per master MILP solve. The master gets genuinely hard to solve to proven optimality as cuts accumulate at large scale, so this bounds it instead; the Benders lower bound is still read from HiGHS's own proven dual bound, so the result stays mathematically rigorous even when the search is cut off early. |
-| `--multi-cut` | off | Give every (site, country) placement its own recourse variable and its own Benders cut each iteration, instead of one cut summed over all placements. |
+| `--core-cuts` / `--no-core-cuts` | on | Also dispatch each placed site at a moving Pareto core point every iteration and add that cut too (two cuts per scenario and site instead of one). `--no-core-cuts` keeps only the trial-point cut. |
 | `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (one row per site: its chosen country and capacities)/`_sites.csv` (each site's settings and annual demand)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each site's green hydrogen and GO totals per scenario)/`_unmet_demand.csv` (each site's unmet heat and cooling demand per scenario)/(with `--export-schedules`) `_schedule_<site>_<country>_<scenario>.csv` |
 | `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each chosen site's representative-day schedule: every demand, asset output, grid and H2 import/export, and any unmet demand |
 
-Each iteration adds two optimality cuts per scenario: one from the subproblem solved at the
-master's proposed plan (tight there, so the master can't propose the same plan again without
-paying its true cost), and one from a solve at a moving core point (Papadakos-style
-Pareto-optimal cuts), which carry information about the rest of the plan space. This isn't
-configurable. Core-point values that decay below 1e-3 are set to zero, which keeps the
-subproblem numerically stable. If HiGHS fails on the master or a subproblem, it's re-solved once
-with presolve off.
+Each iteration adds one optimality cut per scenario and site, for the country the site is
+placed in, from the subproblem solved at the master's proposed plan (tight there, so the master
+can't propose the same plan again without paying its true cost). Countries a site isn't placed
+in aren't dispatched and keep the cuts from earlier visits. By default each placed site also
+gets a cut from a solve at a moving core point (Papadakos-style Pareto-optimal cuts);
+core-point values that decay below 1e-3 are set to zero, which keeps the subproblem numerically
+stable. If HiGHS fails on the master or a subproblem, it's re-solved once with presolve off.
 
 ### How the Benders solve works
 
 Choosing site locations and sizing all nine assets at once, as one MILP with a full year of
 hourly LP dispatch variables per candidate country, doesn't scale. So `plan_capacity.py`
-splits it into a master problem and one joint subproblem (covering every candidate country
-together), iterating between them:
+splits it into a master problem and one subproblem per site and scenario (the site's dispatch in
+the country the master placed it in), iterating between them:
 
 1. **Master (MILP, `site_investor_planning/master.py`)** picks a country for each site (one
    binary per site and country, exactly one per site) and how many units of each catalog product
    each site builds, subject to the CAPEX budget and the per-site caps. Its objective is annualized
-   CAPEX plus a recourse stand-in (`theta`) that starts unconstrained and gets tightened every
-   round by the cuts below. There's one `theta_s` per capacity-uncertainty scenario, combined
+   CAPEX plus a recourse stand-in (`theta`) per site, country and scenario that gets tightened
+   every round by the cuts below. Before the first round each site is dispatched once in every
+   country with the site off and nothing built (one LP per site, country and scenario). That costs
+   nothing, and its cut keeps a site's `theta` at or above 0 in every country it isn't placed in,
+   while its slopes give the master a first estimate of placing the site there. Each site is also
+   dispatched once in every country at its maximum capacities; that cut bounds how much extra
+   capacity can lower the site's cost, so the master can't overbuild against the steep slopes of
+   the first one. The scenarios' totals are combined
    via CVaR at `--cvar-alpha` (default 0.8); with a single scenario it is just that scenario's
    recourse (deterministic).
-2. **Joint subproblem (LP, every country in one linopy model, `optimize_site_investor.
-   solve_joint`)** takes the master's site choice and capacities and solves the
+2. **Subproblems (LP, one HiGHS model per site, country and scenario, `optimize_site_investor.
+   SiteLP`)** take the master's capacities for each site in its chosen country and solve the
    representative-day site operation (`--rep-days-per-month`), once per capacity-uncertainty
-   scenario. It returns each country's operating cost (electricity and hydrogen purchases
-   minus sales, unmet-demand penalty, GOs bought minus sold, green hydrogen premium) and the dual values
-   (shadow prices) on its capacity constraints, demand balances and green hydrogen requirement.
-3. **Cut generation.** Each scenario's per-country costs and duals become a Benders
-   optimality cut: a linear lower bound on that scenario's `theta_s` in the master's capacity
-   and site variables. Capacity duals give each asset's coefficient. The duals on everything
-   that scales with the site (demand balances, flexibility bands, green hydrogen requirement)
-   give the site's coefficient: what switching that site on costs.
+   scenario. Each returns the site's operating cost (electricity and hydrogen purchases
+   minus sales, unmet-demand penalty, GOs bought minus sold, green hydrogen premium) and the
+   sensitivities of that cost to each asset's MW and to switching the site on. Each LP is built
+   once, with every asset's MW and the site's on/off as columns fixed at the values being solved;
+   a new plan only changes those bounds and the electricity and hydrogen prices (the price proxy
+   sees the site's own capacity), and HiGHS restarts from the previous solution. The sensitivities
+   are the reduced costs of those fixed columns. Each site, country and scenario always runs in
+   the same worker process, which keeps its LP between iterations. Sites don't interact in the
+   dispatch, so solving them separately gives the same costs as one joint model, at a fraction of
+   the memory.
+3. **Cut generation.** Each placed site's cost and duals in each scenario become a Benders
+   optimality cut: a linear lower bound on that site's `theta` in its chosen country, in the
+   master's capacity and site variables for that country. Each asset's sensitivity gives its
+   coefficient, and the site's sensitivity (it scales the demand balances, flexibility bands and
+   green hydrogen requirement) gives the site's coefficient: what switching that site on costs.
+   Sites with identical settings (peaks, green share, flexibility) have the same cost in a
+   country, so they share one LP there, a point both need is solved once, and every cut one of
+   them gets is also given to the others. The master also places identical sites in country order
+   (the second in the same or a later country than the first), so it doesn't search mirror-image
+   plans.
 4. **Loop.** Re-solve the master with the new cuts, re-solve the subproblem at the updated
    plan, and repeat until the master's lower bound (HiGHS's own proven dual bound) and the
    best-found upper bound converge, or the iteration cap is hit.
 
 This avoids ever building one giant MILP over every country's site and asset choices and
-every hour of the model year at once. Each iteration is a small MILP plus one joint,
-representative-day LP, which is what makes the discrete/binary search tractable.
+every hour of the model year at once. Each iteration is a small MILP plus one
+representative-day LP per site and scenario, which is what makes the discrete/binary search
+tractable.
 
 ## Structure
 
