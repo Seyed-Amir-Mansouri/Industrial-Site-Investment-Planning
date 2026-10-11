@@ -3,13 +3,12 @@
 ``inputs/site_demand.csv`` holds the per-unit curves: 8736 rows (``hour`` 0-8735, the model year)
 and one column per service: ``electricity``, ``space_heat``, ``space_cool`` (air conditioning),
 ``process_heat`` (up to 150 C), ``steam`` (above 150 C), ``process_cool`` and ``hydrogen``. Each value
-is that hour's demand as a share of the site's peak setting: 1.0 is a typical day's peak hour (a day
-can go above or below it), except for ``space_cool``, which is zero on most days and where 1.0 is
-the hottest hour of the year. The curves are shared by every site. The shipped curves follow a Central European year
+is that hour's demand as a share of the site's annual peak, so every curve's highest hour is 1.0.
+The curves are shared by every site. The shipped curves follow a Central European year
 starting on a Monday: weekday shifts, weekends and public holidays, a Christmas slowdown, a two-week
 summer maintenance stop, and weather-driven space heating and space cooling.
 
-Each site's daily peaks, green hydrogen share and flexibility come from its ``SiteSpec``. A run's
+Each site's annual peaks, green hydrogen share and flexibility come from its ``SiteSpec``. A run's
 sites can be read from a JSON file shaped ``{"sites": [{"name": .., "peaks_mw": {service: MW},
 "green_share": .., "flex_fraction": ..}, ...]}``; missing values fall back to the defaults.
 """
@@ -50,12 +49,12 @@ def yearly_curves() -> dict[str, np.ndarray]:
 
 
 def year_profiles(peaks_mw: dict[str, float]) -> dict[str, np.ndarray]:
-    """Full-year (8736h) MW profile of every service for a site with these daily peaks."""
+    """Full-year (8736h) MW profile of every service for a site with these annual peaks."""
     return {s: curve * float(peaks_mw[s]) for s, curve in yearly_curves().items()}
 
 
 def annual_demand_mwh(peaks_mw: dict[str, float]) -> dict[str, float]:
-    """Annual demand of every service, MWh/yr, for a site with these daily peaks."""
+    """Annual demand of every service, MWh/yr, for a site with these annual peaks."""
     return {s: float(v.sum()) for s, v in year_profiles(peaks_mw).items()}
 
 

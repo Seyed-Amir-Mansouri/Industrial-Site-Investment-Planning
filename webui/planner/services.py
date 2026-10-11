@@ -44,7 +44,7 @@ def demand_services() -> list[str]:
 
 @lru_cache(maxsize=1)
 def site_defaults() -> dict:
-    """The settings a new site starts from: daily peaks (MW), green hydrogen share and flexibility."""
+    """The settings a new site starts from: annual peaks (MW), green hydrogen share and flexibility."""
     import site_investor_planning as hp
 
     spec = hp.SiteSpec(name="Site 1")

@@ -142,7 +142,7 @@ class PlanRunForm(forms.Form):
 
     @property
     def site_rows(self) -> list[dict]:
-        """One card per possible site: its name, green share, flexibility and daily peak fields."""
+        """One card per possible site: its name, green share, flexibility and annual peak fields."""
         return [{"index": i, "name": self[f"site_name__{i}"], "green": self[f"site_green__{i}"],
                  "flex": self[f"site_flex__{i}"],
                  "peaks": [self[f"site_peak__{i}__{svc}"] for svc in self.demand_services]}

@@ -73,12 +73,11 @@ too, since `solve_joint` has no contiguous-range mode.
 
 ### Site demand
 
-A site's hourly demand is one per-unit curve per demand times the site's daily peak:
+A site's hourly demand is one per-unit curve per demand times the site's annual peak:
 
 - `inputs/site_demand.csv` holds the **per-unit curves** for the whole year: 8736 rows (`hour`
-  0–8735), each value that hour's demand as a share of the site's peak setting (1.0 = a typical
-  day's peak hour; a day can be higher or lower). Space cooling is zero on most days, so its 1.0
-  is the hottest hour of the year instead. The curves are shared by every site:
+  0–8735), each value that hour's demand as a share of the site's annual peak, so every curve's
+  highest hour is 1.0. The curves are shared by every site:
 
   ```
   hour,electricity,space_heat,space_cool,process_heat,steam,process_cool,hydrogen
@@ -112,10 +111,10 @@ Electricity, process heat, steam, process cooling and hydrogen follow two shifts
 with quieter weekends and public holidays, a slowdown over Christmas and a two-week maintenance
 stop in August (steam and hydrogen run more continuously). Space heating follows the outdoor
 temperature, high in winter and close to zero in summer; space cooling appears only on warm days,
-mostly on summer afternoons. The default peaks keep the annual totals of the earlier synthetic
-demand: 50 GWh electricity, 8 GWh space heating, 1.4 GWh space cooling, 40 GWh process heat,
-30 GWh steam, 11.8 GWh process cooling and 10 GWh hydrogen per year (the two cooling demands
-together are the earlier 13.2 GWh of cooling).
+mostly on summer afternoons. The default annual peaks are 8 MW electricity, 4 MW space heating,
+3 MW space cooling, 7 MW process heat, 5 MW steam, 2 MW process cooling and 1.5 MW hydrogen,
+giving about 50 GWh electricity, 8.1 GWh space heating, 1.4 GWh space cooling, 39.3 GWh process
+heat, 30 GWh steam, 11.3 GWh process cooling and 9.2 GWh hydrogen per year.
 
 Every demand is also **flexible**: each hour it may move up or down by up to the site's
 flexibility share of its original value (10% by default), as long as the shifts net to zero over
@@ -170,7 +169,7 @@ Full, current list also always available via `python plan_capacity.py --help`.
 |---|---|---|
 | `--countries CC,CC,...` | — | Candidate site countries, comma-separated 2-letter codes, e.g. `DE,FR,PL` (mutually exclusive with `--all`) |
 | `--all` | — | Every eligible country is a candidate |
-| `--sites-file FILE` | — | JSON file defining each site to build (name, daily peaks, green share, flexibility); see *Site demand*. Overrides the three flags below. |
+| `--sites-file FILE` | — | JSON file defining each site to build (name, annual peaks, green share, flexibility); see *Site demand*. Overrides the three flags below. |
 | `--n-sites N` | 1 | Without `--sites-file`: how many default sites to build. The optimizer picks a country for each; sites may share one. |
 | `--green-h2-share-pct P` | 42 | Without `--sites-file`: minimum green (RFNBO) share of every site's annual hydrogen demand, in %. `0` = no requirement. |
 | `--demand-flex-pct P` | 10 | Without `--sites-file`: hourly demand flexibility of every site, in % of each hour's demand; shifts net to zero over each day. `0` = rigid demand. |
@@ -305,7 +304,7 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      one to select it. *Select all* and *Clear* sit above them. Ticking *All eligible
      countries* turns the country picks off.
   2. **Sites:** one card per site to build, with its name, minimum green hydrogen share,
-     flexibility and daily peak demand (MW) for each of the six demands, filled with the
+     flexibility and annual peak demand (MW) for each of the seven demands, filled with the
      defaults. Only as many cards as *Sites to build* are shown, and each has a **Reset site**
      button. The sites are written to `sites.json` in the run's output folder and passed to the
      planner with `--sites-file`.
@@ -388,7 +387,7 @@ says otherwise.
 |---|---|---|---|
 | `zones_2030.parquet`, `networks_2030.parquet`, `marginal_price_electricity_2030.parquet`, `marginal_price_hydrogen_2030.parquet`, `crossborder_electricity_2030.parquet`, `crossborder_hydrogen_2030.parquet`, `hydro_*_2030.parquet`, `smr_production_2030.parquet` | `inputs/` | In git | Dispatch engine and planner |
 | `uncertainty_scenarios.json` | `inputs/` | In git | Planner (scenario probabilities and country error factors) |
-| `site_demand.csv` | `inputs/` | In git | Planner (per-unit hourly demand curves for the year, shared by all sites; each site's daily peaks come with the site) |
+| `site_demand.csv` | `inputs/` | In git | Planner (per-unit hourly demand curves for the year, shared by all sites; each site's annual peaks come with the site) |
 | `elec_adjacency.json`, `h2_adjacency.json` | `inputs/` | In git (rewritten by `build_dataset.py`) | Price models |
 | `electricity_model.joblib`, `hydrogen_model.joblib` and the `*_metrics.csv` files | `data_exchange/02_train_output__benders_input/` | In git (written by `train_model.py`) | Planner |
 | `elec_samples.parquet`, `h2_samples.parquet` | `data_exchange/01_dispatch_output__train_input/` | Downloaded automatically by `webui\app.bat` from the project's Google Drive. You can also build them with steps 1 and 2. | Planner (`optimize_site_investor.py`) and `train_model.py` |

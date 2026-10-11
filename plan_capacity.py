@@ -423,7 +423,7 @@ def main() -> None:
     print(f"Green H2: hourly-matched additional renewables | GOs buy {green.go_buy_price_eur_per_mwh:g} / sell "
           f"{green.go_sell_price_eur_per_mwh:g} EUR/MWh | certified green H2 premium "
           f"{green.green_h2_premium_eur_per_mwh:g} EUR/MWh")
-    print(f"Sites (daily peaks MW x per-unit curves in {hp.demand.SITE_DEMAND_CSV.relative_to(ROOT)}):")
+    print(f"Sites (annual peaks MW x per-unit curves in {hp.demand.SITE_DEMAND_CSV.relative_to(ROOT)}):")
     for sp in sites:
         annual = hp.annual_demand_mwh(sp.peaks_mw)
         print(f"  {sp.name}: green H2 >= {sp.green_share:.0%}, flexibility +/-{sp.flex_fraction:.0%} | peaks "

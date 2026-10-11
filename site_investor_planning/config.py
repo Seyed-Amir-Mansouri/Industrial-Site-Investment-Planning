@@ -14,7 +14,7 @@ Thermal assets are sized in MW of useful output (MW_th / MW_cold), the electroly
 electrical input. ``THERMAL_SERVICES`` are the heat and cooling demands. There is no existing
 plant on site: heat or cooling the new assets can't cover is left unmet at a penalty.
 
-Every site to build is a ``SiteSpec``: its own daily peak demand per service (MW_th for heat and
+Every site to build is a ``SiteSpec``: its own annual peak demand per service (MW_th for heat and
 cooling, MW_LHV for hydrogen), green hydrogen share and demand flexibility. A site's hourly demand
 is the per-unit yearly curve in ``inputs/site_demand.csv`` times its peaks, wherever it is built.
 ``DEFAULT_SITE_PEAKS_MW`` are the peaks a new site starts from.
@@ -49,8 +49,8 @@ SERVICE_LABELS = {
 }
 
 DEFAULT_SITE_PEAKS_MW: dict[str, float] = {
-    "electricity": 6.604, "space_heat": 1.0466, "space_cool": 2.9316, "process_heat": 5.2832,
-    "steam": 3.9624, "process_cool": 1.9164, "hydrogen": 1.3208,
+    "electricity": 8.0, "space_heat": 4.0, "space_cool": 3.0, "process_heat": 7.0,
+    "steam": 5.0, "process_cool": 2.0, "hydrogen": 1.5,
 }
 
 THERMAL_ASSET_SERVICES = {
@@ -164,7 +164,7 @@ GREEN_H2 = GreenH2Params()
 
 @dataclass
 class SiteSpec:
-    """One industrial site to build: its name, daily peak demand per service (MW), minimum green
+    """One industrial site to build: its name, annual peak demand per service (MW), minimum green
     share of its annual hydrogen demand (default 42%, the RED III 2030 RFNBO target for industrial
     hydrogen), and demand flexibility (how far each hour's demand may move up or down as a share of
     itself, the shifts netting to zero over each day; default 10%)."""
