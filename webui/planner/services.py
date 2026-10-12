@@ -95,10 +95,10 @@ def capex_assumptions_defaults():
 
 @lru_cache(maxsize=1)
 def trained_error_ranges() -> dict[str, dict[str, list[int]]]:
-    """Per country, the wind and solar error (%) the price models were trained on: each training
-    scenario's installed capacity in that country compared with the Baseline's, as the share of
-    output lost (positive) or gained (negative), rounded inward to whole percent. Empty when the
-    training samples aren't on disk."""
+    """Per country, the change in installed wind and solar capacity (%) the price models were trained
+    on: each training scenario's capacity in that country compared with the Baseline's, positive for
+    more and negative for less, rounded inward to whole percent. Empty when the training samples
+    aren't on disk."""
     import math
 
     import pandas as pd
@@ -113,7 +113,7 @@ def trained_error_ranges() -> dict[str, dict[str, list[int]]]:
     ratio = (per_country / per_country.loc["p100"]).reset_index()
     out = {}
     for country, g in ratio.groupby("country"):
-        out[country] = {kind: [math.ceil(round((1 - g[col].max()) * 100, 6)), math.floor(round((1 - g[col].min()) * 100, 6))]
+        out[country] = {kind: [math.ceil(round((g[col].min() - 1) * 100, 6)), math.floor(round((g[col].max() - 1) * 100, 6))]
                         for kind, col in (("wind", "wind_capacity_mw"), ("solar", "pv_capacity_mw"))}
     return out
 
