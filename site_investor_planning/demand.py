@@ -8,9 +8,11 @@ The curves are shared by every site. The shipped curves follow a Central Europea
 starting on a Monday: weekday shifts, weekends and public holidays, a Christmas slowdown, a two-week
 summer maintenance stop, and weather-driven space heating and space cooling.
 
-Each site's annual peaks, green hydrogen share and flexibility come from its ``SiteSpec``. A run's
-sites can be read from a JSON file shaped ``{"sites": [{"name": .., "peaks_mw": {service: MW},
-"green_share": .., "flex_fraction": ..}, ...]}``; missing values fall back to the defaults.
+Each site's annual peaks, green hydrogen share, flexibility, active assets and maximum MW come
+from its ``SiteSpec``. A run's sites can be read from a JSON file shaped ``{"sites": [{"name": ..,
+"peaks_mw": {service: MW}, "green_share": .., "flex_fraction": {service: share} or one share for all,
+"active_assets": [asset, ..], "max_mw": {asset: MW}}, ...]}``; missing values fall back to the
+defaults (every asset active, default caps).
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .config import DEFAULT_SITE_PEAKS_MW, SERVICES, SiteSpec
+from .config import DEFAULT_FLEX_FRACTION, DEFAULT_SITE_PEAKS_MW, SERVICES, SiteSpec
 
 ROOT = Path(__file__).resolve().parent.parent
 SITE_DEMAND_CSV = ROOT / "inputs" / "site_demand.csv"
@@ -64,25 +66,16 @@ def site_demand(peaks_mw: dict[str, float], hours: np.ndarray) -> dict[str, np.n
     return {s: v[idx] for s, v in year_profiles(peaks_mw).items()}
 
 
-def peak_demand_mw(peaks_mw: dict[str, float], services: list[str]) -> float:
-    """Full-year peak MW of the combined demand of ``services``, used to cap thermal asset sizes."""
-    full = year_profiles(peaks_mw)
-    return float(sum(full[s] for s in services).max())
-
-
 def default_sites(n_sites: int, green_share: float | None = None,
                   flex_fraction: float | None = None) -> list[SiteSpec]:
     """``n_sites`` sites named Site 1..N with the default peaks, optionally overriding the green
     share and flexibility of all of them."""
-    sites = []
-    for i in range(1, n_sites + 1):
-        spec = SiteSpec(name=f"Site {i}", peaks_mw=dict(DEFAULT_SITE_PEAKS_MW))
-        if green_share is not None:
-            spec.green_share = green_share
-        if flex_fraction is not None:
-            spec.flex_fraction = flex_fraction
-        sites.append(spec)
-    return sites
+    extra = {}
+    if green_share is not None:
+        extra["green_share"] = green_share
+    if flex_fraction is not None:
+        extra["flex_fraction"] = flex_fraction
+    return [SiteSpec(name=f"Site {i}", peaks_mw=dict(DEFAULT_SITE_PEAKS_MW), **extra) for i in range(1, n_sites + 1)]
 
 
 def load_sites(path: Path) -> list[SiteSpec]:
@@ -98,7 +91,8 @@ def load_sites(path: Path) -> list[SiteSpec]:
         peaks = {**DEFAULT_SITE_PEAKS_MW, **e.get("peaks_mw", {})}
         sites.append(SiteSpec(name=str(e.get("name") or f"Site {i}"), peaks_mw=peaks,
                               green_share=float(e.get("green_share", 0.42)),
-                              flex_fraction=float(e.get("flex_fraction", 0.10))))
+                              flex_fraction=e.get("flex_fraction", DEFAULT_FLEX_FRACTION),
+                              active_assets=e.get("active_assets"), max_mw=e.get("max_mw", {})))
     names = [s.name for s in sites]
     if len(set(names)) != len(names):
         raise ValueError(f"site names in {path} must be unique, got {names}")

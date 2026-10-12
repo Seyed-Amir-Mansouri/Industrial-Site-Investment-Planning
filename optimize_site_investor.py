@@ -386,8 +386,8 @@ class SiteLP:
     site placed in one zone: ``units[u] = (zone, spec)``, the zone giving prices, wind/PV profiles and
     the scenario derating, the ``SiteSpec`` giving demand peaks, green hydrogen share and flexibility.
     ``sites[u]`` scales unit ``u``'s internal demand: 1 = the site is built there, 0 = not (default 1).
-    The site's ``flex_fraction`` lets each hour's demand move by up to that fraction of itself,
-    netting to zero over each block.
+    The site's ``flex_fraction`` of each service lets each hour's demand of that service move by up
+    to that fraction of itself, netting to zero over each block.
 
     Each demand has its own hourly balance, served by its own asset(s). Electricity and hydrogen can
     also be bought on the market; there is no existing plant, so heat or cooling the new assets can't
@@ -451,9 +451,9 @@ class SiteLP:
             for svc in _BALANCES:
                 stacks[f"demand_{svc}"].append(r2d(demand[svc]))
         self.da = da = {k: xr.DataArray(np.stack(v), coords=coords) for k, v in stacks.items()}
-        flex_da = xr.DataArray([float(units[u][1].flex_fraction) for u in unit_ids], coords=[unit_idx])
+        flex_da = {svc: xr.DataArray([units[u][1].flex_fraction[svc] for u in unit_ids], coords=[unit_idx])
+                   for svc in _BALANCES}
         green_da = xr.DataArray([float(units[u][1].green_share) for u in unit_ids], coords=[unit_idx])
-        self.any_flex = any_flex = bool((flex_da > 0).any())
         self.any_green = any_green = bool((green_da > 0).any())
 
         self.cfg0 = cfg0 = self.cfgs[unit_ids[0]]
@@ -533,10 +533,10 @@ class SiteLP:
 
         shift = {}
         for svc in _BALANCES:
-            if not any_flex:
+            if not bool((flex_da[svc] > 0).any()):
                 continue
             sh = m.add_variables(coords=coords, name=f"shift_{svc}")
-            band = flex_da * da[f"demand_{svc}"]
+            band = flex_da[svc] * da[f"demand_{svc}"]
             m.add_constraints(sh - band * site_on <= 0, name=f"shift_up_{svc}")
             m.add_constraints(-1 * sh - band * site_on <= 0, name=f"shift_down_{svc}")
             m.add_constraints(sh.sum("hid") == 0, name=f"shift_net_{svc}")

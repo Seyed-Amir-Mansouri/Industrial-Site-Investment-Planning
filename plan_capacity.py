@@ -140,8 +140,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     site_units = {sp.name: [_unit_id(sp.name, c) for c in countries] for sp in sites}
     twin_groups: dict[tuple, list[str]] = {}
     for sp in sites:
-        twin_groups.setdefault((tuple(sorted(sp.peaks_mw.items())), sp.green_share, sp.flex_fraction),
-                               []).append(sp.name)
+        twin_groups.setdefault(sp.settings_key(), []).append(sp.name)
     site_twins = {name: group for group in twin_groups.values() for name in group}
     twins = {u: [_unit_id(n, unit_country[u]) for n in site_twins[units[u][1].name]] for u in unit_ids}
     rep_unit = {u: twins[u][0] for u in unit_ids}
@@ -391,7 +390,8 @@ def main() -> None:
     ap.add_argument("--budget", type=float, default=None,
                     help=f"total CAPEX budget across every site, EUR, raw/unannualized "
                          f"(default {hp.CapexAssumptions().default_budget_eur:,.0f})")
-    ap.add_argument("--max-iters", type=int, default=30)
+    ap.add_argument("--no-budget", action="store_true", help="plan without any CAPEX budget limit")
+    ap.add_argument("--max-iters", type=int, default=100)
     ap.add_argument("--gap-tol", type=float, default=0.01, help="relative Benders gap, default 0.01 (1%%)")
     ap.add_argument("--discount-rate", type=float, default=None, help="for the capital recovery factor")
     ap.add_argument("--lifetime-years", type=float, default=None,
@@ -441,7 +441,9 @@ def main() -> None:
         capex_cfg.discount_rate = args.discount_rate
     if args.lifetime_years is not None:
         capex_cfg.lifetime_years = {a: args.lifetime_years for a in hp.ASSETS}
-    budget = args.budget if args.budget is not None else capex_cfg.default_budget_eur
+    if args.no_budget and args.budget is not None:
+        ap.error("--budget and --no-budget can't be used together")
+    budget = None if args.no_budget else (args.budget if args.budget is not None else capex_cfg.default_budget_eur)
 
     names = ([s.strip() for s in args.scenarios.split(",") if s.strip()] if args.scenarios
              else list(DEFAULT_SCENARIOS))
@@ -478,7 +480,8 @@ def main() -> None:
     print(f"Candidate countries: {countries} | sites to build: {len(sites)} (each in one country; sites may share one)")
     crfs = capex_cfg.capital_recovery_factors()
     crf_str = ", ".join(f"{a}={crfs[a]:.4f}({capex_cfg.lifetime_years[a]:.0f}yr)" for a in hp.ASSETS)
-    print(f"Budget: {budget:,.0f} EUR (raw/unannualized) | CRF @ {capex_cfg.discount_rate:.1%} discount: "
+    budget_str = "no limit" if budget is None else f"{budget:,.0f} EUR (raw/unannualized)"
+    print(f"Budget: {budget_str} | CRF @ {capex_cfg.discount_rate:.1%} discount: "
          f"{crf_str}")
     units_note = ("unbounded" if args.max_units_per_candidate <= 0
                  else f"max {args.max_units_per_candidate} units/candidate")
@@ -496,9 +499,15 @@ def main() -> None:
     print(f"Sites (annual peaks MW x per-unit curves in {hp.demand.SITE_DEMAND_CSV.relative_to(ROOT)}):")
     for sp in sites:
         annual = hp.annual_demand_mwh(sp.peaks_mw)
-        print(f"  {sp.name}: green H2 >= {sp.green_share:.0%}, flexibility +/-{sp.flex_fraction:.0%} | peaks "
+        flex = set(sp.flex_fraction.values())
+        flex_str = (f"+/-{flex.pop():.0%}" if len(flex) == 1
+                    else ", ".join(f"{k} +/-{v:.0%}" for k, v in sp.flex_fraction.items()))
+        print(f"  {sp.name}: green H2 >= {sp.green_share:.0%}, flexibility {flex_str} | peaks "
               + ", ".join(f"{k}={v:g}" for k, v in sp.peaks_mw.items())
               + " | MWh/yr " + ", ".join(f"{k}={v:,.0f}" for k, v in annual.items()))
+        if sp.active_assets is not None or sp.max_mw:
+            caps = hp.site_max_mw(sp, capex_cfg)
+            print("    assets (max MW): " + ", ".join(f"{a}={caps[a]:g}" for a in hp.ASSETS if caps[a] > 0))
     print(f"No existing plant on site: unmet heat/cooling demand penalty "
           f"{tech.unmet_demand_penalty_eur_per_mwh:,.0f} EUR/MWh | grid import fee {tech.grid_import_fee_eur_per_mwh:g} EUR/MWh, "
           f"H2 import fee {tech.h2_import_fee_eur_per_mwh:g} EUR/MWh")
@@ -536,8 +545,8 @@ def main() -> None:
     cap_df = pd.DataFrame(rows)
     print(cap_df.to_string(index=False))
     print(f"\nChosen site(s): {', '.join(f'{sp.name} -> {unit_country[chosen[sp.name]]}' for sp in sites)}")
-    print(f"Total raw CAPEX: {res['capex']:,.0f} EUR (budget {budget:,.0f} EUR, "
-         f"{res['capex'] / budget:.1%} used)")
+    print(f"Total raw CAPEX: {res['capex']:,.0f} EUR "
+         + ("(no budget limit)" if budget is None else f"(budget {budget:,.0f} EUR, {res['capex'] / budget:.1%} used)"))
     risk_label = ("deterministic" if cvar_alpha is None else f"CVaR_{cvar_alpha:.2f}")
     print(f"Best objective (annualized CAPEX + {risk_label} 1yr operating cost across "
          f"{len(scenario_probs)} scenarios, EUR, lower=better): {res['objective']:,.0f}")
@@ -546,7 +555,9 @@ def main() -> None:
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
     cap_df.to_csv(f"{out_prefix}_capacities.csv", index=False)
     res["log"].to_csv(f"{out_prefix}_convergence.csv", index=False)
-    pd.DataFrame([{"site": sp.name, "green_share": sp.green_share, "flex_fraction": sp.flex_fraction,
+    pd.DataFrame([{"site": sp.name, "green_share": sp.green_share,
+                   **{f"flex_{k}": v for k, v in sp.flex_fraction.items()},
+                   "active_assets": ",".join(sp.active_assets or hp.ASSETS),
                    **{f"peak_{k}_mw": v for k, v in sp.peaks_mw.items()},
                    **{f"annual_{k}_mwh": v for k, v in hp.annual_demand_mwh(sp.peaks_mw).items()}}
                   for sp in sites]).to_csv(f"{out_prefix}_sites.csv", index=False)

@@ -55,6 +55,8 @@ SERVICE_LABELS = {
     "hydrogen": "Hydrogen",
 }
 
+DEFAULT_FLEX_FRACTION = 0.10
+
 DEFAULT_SITE_PEAKS_MW: dict[str, float] = {
     "electricity": 8.0, "space_heat": 4.0, "space_cool": 3.0, "process_heat": 7.0,
     "steam": 5.0, "process_cool": 2.0, "hydrogen": 1.5,
@@ -68,14 +70,24 @@ THERMAL_ASSET_SERVICES = {
     "electric_chiller_mw": ["process_cool"],
 }
 
-CAP_SERVICES = {
-    **THERMAL_ASSET_SERVICES,
-    "hot_water_storage_mw": ["space_heat"],
-    "cold_storage_mw": ["space_cool"],
-    "solar_thermal_mw": ["space_heat", "process_heat"],
-    "thermal_battery_mw": ["steam"],
-    "heat_recovery_chiller_mw": ["process_cool"],
-    "absorption_chiller_mw": ["space_cool", "process_cool"],
+CAP_RULES: dict[str, tuple[float, list[str]]] = {
+    "wind_mw": (7.5, ["electricity"]),
+    "pv_mw": (7.5, ["electricity"]),
+    "battery_mw": (5.0, ["electricity"]),
+    "chp_mw": (1.25, ["electricity"]),
+    "heat_pump_mw": (1.25, ["space_heat"]),
+    "hot_water_storage_mw": (1.25, ["space_heat"]),
+    "ac_chiller_mw": (1.25, ["space_cool"]),
+    "cold_storage_mw": (1.25, ["space_cool"]),
+    "industrial_heat_pump_mw": (1.25, ["process_heat"]),
+    "solar_thermal_mw": (1.25, ["space_heat", "process_heat"]),
+    "electric_boiler_mw": (1.25, ["steam"]),
+    "thermal_battery_mw": (1.25, ["steam"]),
+    "electric_chiller_mw": (1.25, ["process_cool"]),
+    "heat_recovery_chiller_mw": (1.25, ["process_cool"]),
+    "absorption_chiller_mw": (1.25, ["space_cool", "process_cool"]),
+    "electrolyser_mw": (1.25 / 0.68, ["hydrogen"]),
+    "tank_mw": (1.25, ["hydrogen"]),
 }
 
 
@@ -223,29 +235,58 @@ GREEN_H2 = GreenH2Params()
 class SiteSpec:
     """One industrial site to build: its name, annual peak demand per service (MW), minimum green
     share of its annual hydrogen demand (default 42%, the RED III 2030 RFNBO target for industrial
-    hydrogen), and demand flexibility (how far each hour's demand may move up or down as a share of
-    itself, the shifts netting to zero over each day; default 10%)."""
+    hydrogen), demand flexibility per service (how far each hour's demand of that service may move
+    up or down as a share of itself, the shifts netting to zero over each day; default 10% for
+    every service, and a single number applies to all of them), the assets it may build
+    (``active_assets``, default all) and optional maximum MW per asset (``max_mw``) that replace
+    the default site caps."""
 
     name: str
     peaks_mw: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SITE_PEAKS_MW))
     green_share: float = 0.42
-    flex_fraction: float = 0.10
+    flex_fraction: dict[str, float] | float = DEFAULT_FLEX_FRACTION
+    active_assets: list[str] | None = None
+    max_mw: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         missing = [svc for svc in SERVICES if svc not in self.peaks_mw]
         if missing:
             raise ValueError(f"site {self.name!r} is missing peak(s) for {missing}")
         self.peaks_mw = {svc: float(self.peaks_mw[svc]) for svc in SERVICES}
+        if isinstance(self.flex_fraction, dict):
+            unknown = [svc for svc in self.flex_fraction if svc not in SERVICES]
+            if unknown:
+                raise ValueError(f"site {self.name!r} has flexibility for unknown service(s) {unknown}")
+            self.flex_fraction = {svc: float(self.flex_fraction.get(svc, DEFAULT_FLEX_FRACTION)) for svc in SERVICES}
+        else:
+            self.flex_fraction = {svc: float(self.flex_fraction) for svc in SERVICES}
+        if self.active_assets is not None:
+            unknown = [a for a in self.active_assets if a not in ASSETS]
+            if unknown:
+                raise ValueError(f"site {self.name!r} has unknown active asset(s) {unknown} -- choices: {ASSETS}")
+            self.active_assets = [a for a in ASSETS if a in self.active_assets]
+        unknown = [a for a in self.max_mw if a not in ASSETS]
+        if unknown:
+            raise ValueError(f"site {self.name!r} has a maximum MW for unknown asset(s) {unknown}")
+        self.max_mw = {a: float(v) for a, v in self.max_mw.items()}
+
+    def settings_key(self) -> tuple:
+        """Everything that shapes this site's subproblem and caps; sites with equal keys are interchangeable."""
+        return (tuple(sorted(self.peaks_mw.items())), self.green_share, tuple(sorted(self.flex_fraction.items())),
+                tuple(self.active_assets or ASSETS), tuple(sorted(self.max_mw.items())))
 
 
 @dataclass
 class CapexAssumptions:
     """Candidate catalog plus annualization/budget parameters for the Benders master problem.
 
-    ``site_max_mw`` is the largest MW of each market-facing asset one site may host (land, grid
-    connection). Heat and cooling assets, including the heat and cold stores and the thermal
-    battery, are instead capped at ``thermal_oversize_factor`` times the site's own peak demand of
-    the services in ``CAP_SERVICES``, since their output can't be sold.
+    ``cap_rules`` set the default largest MW of each asset one site may host: the factor times the
+    sum of the site's annual peaks of the listed demands, rounded up to a whole MW. Heat and cooling
+    assets and their stores get 1.25 times the peak they serve (25% headroom), solar thermal 1.25
+    times space plus process heat, wind and PV 7.5 times and the battery 5 times the electricity
+    peak (they also sell to the market), the CHP 1.25 times the electricity peak, the electrolyser
+    1.25 times the hydrogen peak divided by its 68% efficiency (it is sized in MW of electricity),
+    and the H2 tank 1.25 times the hydrogen peak. A site's own ``max_mw`` replaces these.
     """
 
     catalog: dict[str, list[AssetCandidate]] = field(default_factory=lambda: dict(CANDIDATE_CATALOG))
@@ -254,11 +295,7 @@ class CapexAssumptions:
     default_budget_eur: float = 1_500_000_000.0
     theta_lower_bound_eur: float = -1e8
 
-    site_max_mw: dict[str, float] = field(default_factory=lambda: {
-        "wind_mw": 60.0, "pv_mw": 60.0, "battery_mw": 40.0, "chp_mw": 10.0, "electrolyser_mw": 40.0,
-        "tank_mw": 20.0,
-    })
-    thermal_oversize_factor: float = 1.25
+    cap_rules: dict[str, tuple[float, list[str]]] = field(default_factory=lambda: dict(CAP_RULES))
 
     lifetime_years: dict[str, float] = field(init=False)
 

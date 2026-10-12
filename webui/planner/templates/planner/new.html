@@ -85,6 +85,41 @@
   #run-form .site-card input[name^="site_name__"] { font: 600 18px var(--serif); background: transparent; border-color: transparent; max-width: 320px; }
   #run-form .site-card input[name^="site_name__"]:hover, #run-form .site-card input[name^="site_name__"]:focus { border-color: var(--gold-line); }
 
+  #run-form .site-sub { font: 700 10.5px var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin: 18px 0 10px; }
+  #run-form .site-sub-note { font: 400 12px var(--sans); letter-spacing: 0; text-transform: none; margin-left: 8px; }
+  #run-form .site-table th[scope="row"] { white-space: nowrap; color: var(--muted); font-weight: 600; font-size: 12px; }
+  #run-form .asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+  #run-form .asset-cell { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line-2);
+                          border-radius: 14px; background: var(--surface); transition: all .2s; }
+  #run-form .asset-cell:hover { border-color: var(--gold-line); }
+  #run-form .asset-cell:has(input[type="checkbox"]:checked) { border-color: var(--gold); background: var(--gold-soft); }
+  #run-form .asset-cell .toggle { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+  #run-form .asset-cell .toggle input { width: 16px; height: 16px; accent-color: var(--gold); cursor: pointer; }
+  #run-form .asset-cell .max { display: none; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); font-weight: 600; }
+  #run-form .asset-cell:has(input[type="checkbox"]:checked) .max { display: flex; }
+  #run-form .asset-cell .max input[type="number"] { padding: 7px 10px; }
+  #run-form .cov { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 11.5px;
+                   font-weight: 700; white-space: nowrap; border: 1px solid transparent; cursor: help; }
+  #run-form .cov::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  #run-form .cov.ok { background: var(--ok-soft); color: var(--ok); border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
+  #run-form .cov.warn { background: var(--warn-soft); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+  #run-form .cov.bad { background: var(--bad-soft); color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+  #run-form .cov.market { background: var(--run-soft); color: var(--run); border-color: color-mix(in srgb, var(--run) 30%, transparent); }
+  #run-form .cov.none { color: var(--muted); border-color: var(--line-2); }
+  #run-form .coverage-alert { margin: 4px 0 6px; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.5;
+                              border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent); background: var(--bad-soft); color: var(--bad); }
+  #run-form .coverage-alert.warn { border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: var(--warn-soft); color: var(--warn); }
+  #run-form .asset-cell .serves { font-size: 11.5px; color: var(--muted); margin-top: -4px; }
+  #run-form .asset-cell .suggest { display: none; font-size: 11.5px; font-weight: 700; }
+  #run-form .asset-cell.suggest-bad { border-style: dashed; border-color: var(--bad); }
+  #run-form .asset-cell.suggest-bad .suggest { display: block; color: var(--bad); }
+  #run-form .asset-cell.suggest-warn { border-style: dashed; border-color: var(--warn); }
+  #run-form .asset-cell.suggest-warn .suggest { display: block; color: var(--warn); }
+  #run-form .cap-rule { margin-top: 14px; }
+  #run-form .cap-rule .lede { font-size: 13px; margin-top: 10px; }
+  #run-form .scenario-card .range { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+  #run-form .scenario-card .range:empty { display: none; }
+  #run-form .scenario-card input[type="number"]:invalid { border-color: var(--bad); background: var(--bad-soft); }
   #run-form .total { padding: 7px 14px; border-radius: 999px; font-weight: 700; font-size: 12px; letter-spacing: .03em; border: 1px solid transparent; }
   #run-form .total.ok { background: var(--ok-soft); color: var(--ok); border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
   #run-form .total.bad { background: var(--bad-soft); color: var(--bad); border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
@@ -113,7 +148,7 @@
   <div>
     <div class="eyebrow">Configure</div>
     <h1>New planning run</h1>
-    <p class="lede">Define the problem, set the economics, and launch. A typical run takes 2–8 minutes.</p>
+    <p class="lede">Define the problem, set the economics, and launch. A typical run takes 2–8 minutes. Everything you change here applies to this run only; the defaults stay as they are.</p>
   </div>
 </div>
 
@@ -128,8 +163,35 @@
   <div class="card">
     <div class="section-head">
       <div>
-        <h2><span class="step">01</span>Sites</h2>
-        <p class="lede">One card per site to build; add as many as you need. Each site has its own peak demand (MW), minimum green hydrogen share and demand flexibility. Hourly demand is the per-unit yearly curve in <code>inputs/site_demand.csv</code> (shared by all sites) times the site's peaks. The optimizer picks a country for every site, and several sites may share a country.</p>
+        <h2><span class="step">01</span>Problem definition</h2>
+        <p class="lede">Name the run and set how much capital it may spend.</p>
+      </div>
+      <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
+    </div>
+    <div class="two-col">
+      <div class="field">
+        <label>{{ form.name.label }}</label>
+        {{ form.name }}
+      </div>
+      <div class="field" id="budget-box">
+        <div class="switch-row">
+          {{ form.budget_limited }}
+          <label class="inline" style="font-weight:600;">{{ form.budget_limited.label }}</label>
+        </div>
+        <label>{{ form.budget.label }}</label>
+        {{ form.budget }}
+        <div class="help" id="budget-help">{{ form.budget.help_text }}</div>
+        <div class="help" id="budget-off" hidden>No limit: the optimizer may spend as much as pays off.</div>
+        {% for e in form.budget.errors %}<div class="error">{{ e }}</div>{% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="section-head">
+      <div>
+        <h2><span class="step">02</span>Sites</h2>
+        <p class="lede">One card per site to build; add as many as you need. Each site has its own peak demand (MW) and flexibility (± % of each hour's demand, netting to zero over each day) for every demand, a minimum green hydrogen share, and its own active assets. Hourly demand is the per-unit yearly curve in <code>inputs/site_demand.csv</code> (shared by all sites) times the site's peaks. The optimizer picks a country for every site, and several sites may share a country.</p>
       </div>
       <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
     </div>
@@ -141,18 +203,34 @@
           <label class="prob-field" style="font-weight:600;color:var(--ink)">{{ site.name }}</label>
           <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
             <label class="prob-field">Green H2 (%) {{ site.green }}</label>
-            <label class="prob-field">Flexibility (±%) {{ site.flex }}</label>
             <button type="button" class="btn ghost small" data-reset="site">Reset site</button>
             <button type="button" class="btn ghost small" data-remove-site>Remove site</button>
           </div>
         </div>
         {% for e in site.green.errors %}<div class="error">{{ e }}</div>{% endfor %}
-        {% for e in site.flex.errors %}<div class="error">{{ e }}</div>{% endfor %}
+        <div class="coverage-alert" data-coverage-alert hidden></div>
+        <div class="site-sub">Demand</div>
         <div style="overflow-x:auto">
-        <table class="catalog-table">
-          <thead><tr>{% for label in form.demand_service_labels %}<th>{{ label }} (MW)</th>{% endfor %}</tr></thead>
-          <tbody><tr>{% for f in site.peaks %}<td>{{ f }}{% for e in f.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>{% endfor %}</tr></tbody>
+        <table class="catalog-table site-table">
+          <thead><tr><th></th>{% for label in form.demand_service_labels %}<th>{{ label }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            <tr><th scope="row">Peak (MW)</th>{% for f in site.peaks %}<td>{{ f }}{% for e in f.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>{% endfor %}</tr>
+            <tr><th scope="row">Flexibility (±%)</th>{% for f in site.flexes %}<td>{{ f }}{% for e in f.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>{% endfor %}</tr>
+            <tr><th scope="row">Coverage</th>{% for svc in site.services %}<td><span class="cov" data-cov="{{ svc }}"></span></td>{% endfor %}</tr>
+          </tbody>
         </table>
+        </div>
+        <div class="site-sub">Active assets</div>
+        <div class="asset-grid">
+          {% for a in site.assets %}
+          <div class="asset-cell" data-asset-cell="{{ a.key }}">
+            <label class="toggle">{{ a.active }} {{ a.label }}</label>
+            <div class="serves">Serves {{ a.serves }}</div>
+            <div class="suggest" data-suggest></div>
+            <label class="max">Max MW {{ a.maxmw }}</label>
+            {% for e in a.maxmw.errors %}<div class="error">{{ e }}</div>{% endfor %}
+          </div>
+          {% endfor %}
         </div>
       </div>
       {% endfor %}
@@ -160,57 +238,36 @@
     <div class="toolbar">
       <button type="button" class="btn ghost small" data-add-site>+ Add site</button>
     </div>
+    <details class="cap-rule">
+      <summary>What the coverage colors mean</summary>
+      <p class="lede">The default <em>Max MW</em> of each asset follows the site's peaks; the rule is explained on the <a href="{% url 'catalog' %}">Catalog</a> page.</p>
+      <p class="lede"> <span class="cov ok">Covered</span> the active assets can supply the peak; <span class="cov warn">Partly</span> firm capacity is below the peak, or only solar or recovered heat serves it; <span class="cov bad">Unmet</span> nothing active serves it, so all of it is charged as unmet demand; <span class="cov market">Market</span> bought from the grid or the hydrogen market; <span class="cov none">No demand</span>.</p>
+    </details>
+    {{ form.site_rules|json_script:"site-rules" }}
   </div>
 
   <div class="card">
     <div class="section-head">
       <div>
-        <h2><span class="step">02</span>Problem definition</h2>
-        <p class="lede">Where the sites may go, how much capital, and which technologies are in scope.</p>
+        <h2><span class="step">03</span>Countries</h2>
+        <p class="lede">The countries a site may be built in.</p>
       </div>
       <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
     </div>
-    <div class="two-col">
-      <div class="field">
-        <label>{{ form.name.label }}</label>
-        {{ form.name }}
+    <div class="field">
+      <div class="switch-row">
+        {{ form.all_countries }}
+        <label class="inline" style="font-weight:600;">{{ form.all_countries.label }}</label>
       </div>
-      <div class="field">
-        <label>{{ form.budget.label }}</label>
-        {{ form.budget }}
-        <div class="help">{{ form.budget.help_text }}</div>
-        {% for e in form.budget.errors %}<div class="error">{{ e }}</div>{% endfor %}
-      </div>
-      <div class="field" style="grid-column: 1 / -1;">
-        <div class="switch-row">
-          {{ form.all_countries }}
-          <label class="inline" style="font-weight:600;">{{ form.all_countries.label }}</label>
+      <div id="country-box" class="field">
+        <label>{{ form.countries.label }}</label>
+        <div class="toolbar">
+          <button type="button" class="btn ghost small" data-country="all">Select all</button>
+          <button type="button" class="btn ghost small" data-country="none">Clear</button>
         </div>
-        <div id="country-box" class="field">
-          <label>{{ form.countries.label }}</label>
-          <div class="toolbar">
-            <button type="button" class="btn ghost small" data-country="all">Select all</button>
-            <button type="button" class="btn ghost small" data-country="none">Clear</button>
-          </div>
-          <table class="country-table">
-            <tbody>
-              {% for row in form.country_table_rows %}
-              <tr>
-                {% for cell in row %}
-                <td><label class="country-cell">{{ cell.tag }} {{ cell.choice_label }}</label></td>
-                {% endfor %}
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-          {% for e in form.countries.errors %}<div class="error">{{ e }}</div>{% endfor %}
-        </div>
-      </div>
-      <div class="field" style="grid-column: 1 / -1;">
-        <label>{{ form.active_assets.label }}</label>
         <table class="country-table">
           <tbody>
-            {% for row in form.active_asset_table_rows %}
+            {% for row in form.country_table_rows %}
             <tr>
               {% for cell in row %}
               <td><label class="country-cell">{{ cell.tag }} {{ cell.choice_label }}</label></td>
@@ -219,8 +276,7 @@
             {% endfor %}
           </tbody>
         </table>
-        <div class="help">Ticked technologies can be built at every site; untick one to leave it out of the run.</div>
-        {% for e in form.active_assets.errors %}<div class="error">{{ e }}</div>{% endfor %}
+        {% for e in form.countries.errors %}<div class="error">{{ e }}</div>{% endfor %}
       </div>
     </div>
   </div>
@@ -228,11 +284,12 @@
   <div class="card">
     <div class="section-head">
       <div>
-        <h2><span class="step">03</span>Candidate catalog</h2>
-        <p class="lede">The product sizes, CAPEX, and lifetime the optimizer can choose from per asset. Add or remove candidates and edit their characteristics; changes apply to this run only. Defaults come from <code>site_investor_planning/config.py</code>.</p>
+        <h2><span class="step">04</span>Candidate catalog</h2>
+        <p class="lede">The product sizes, CAPEX, and lifetime the optimizer can choose from per asset. Only assets active at one or more sites are listed. Add or remove candidates and edit their characteristics. Defaults come from <code>site_investor_planning/config.py</code>.</p>
       </div>
       <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
     </div>
+    <p class="lede" id="catalog-empty">No assets are active yet. Tick assets in the Sites section to edit their candidates here.</p>
     <div style="display:flex;flex-direction:column;gap:0;">
       {% for row in form.catalog_rows %}
       <div class="catalog-card" data-asset="{{ row.asset }}">
@@ -275,8 +332,8 @@
   <div class="card">
     <div class="section-head">
       <div>
-        <h2><span class="step">04</span>Uncertainty scenarios</h2>
-        <p class="lede">The Baseline is planned on its own by default (100%, deterministic). Add as many scenarios of your own as you like to plan under uncertainty: each has a probability and a wind and solar error per country compared with the Baseline (the share of the site's own wind/solar output lost), and uses Baseline market prices. Probabilities must add up to 100%; with two or more scenarios the risk measure switches to CVaR. Changes apply to this run only.</p>
+        <h2><span class="step">05</span>Uncertainty scenarios</h2>
+        <p class="lede">The Baseline assumes every country's wind and solar capacity is installed as planned, following the ENTSO-E TYNDP National Trends 2030 scenario behind the price models. To test what happens if generation falls short of that plan, add a scenario and enter, for each country, the wind and solar error compared with the Baseline: a positive error is the share of the site's own output lost, a negative one is extra output. Beside each box is the range the price models were trained on for that country, from 130% of the Baseline's installed capacity down to the lowest level in the training scenarios; a value outside it turns red and is not accepted. The Baseline is planned on its own by default (100%, deterministic). Probabilities must add up to 100%; with two or more scenarios the risk measure switches to CVaR.</p>
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
         <span id="prob-total" class="total ok"></span>
@@ -309,12 +366,12 @@
           <table style="margin-top:8px;">
             <thead><tr><th>Country</th><th>Wind error %</th><th>Solar error %</th></tr></thead>
             <tbody>
-              <tr><td><em>All countries</em></td><td><input type="number" data-fill="wind" min="0" max="100" step="any" placeholder="set all"></td><td><input type="number" data-fill="solar" min="0" max="100" step="any" placeholder="set all"></td></tr>
+              <tr><td><em>All countries</em></td><td><input type="number" data-fill="wind" min="{{ form.fill_bounds.wind.0 }}" max="{{ form.fill_bounds.wind.1 }}" step="any" placeholder="set all"></td><td><input type="number" data-fill="solar" min="{{ form.fill_bounds.solar.0 }}" max="{{ form.fill_bounds.solar.1 }}" step="any" placeholder="set all"></td></tr>
               {% for c in row.countries %}
               <tr data-country-row="{{ c.code }}">
                 <td>{{ c.code }}</td>
-                <td>{{ c.wind }}{% for e in c.wind.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>
-                <td>{{ c.solar }}{% for e in c.solar.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>
+                <td>{{ c.wind }}<span class="range">{{ c.wind_text }}</span>{% for e in c.wind.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>
+                <td>{{ c.solar }}<span class="range">{{ c.solar_text }}</span>{% for e in c.solar.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>
               </tr>
               {% endfor %}
             </tbody>
@@ -337,12 +394,12 @@
           <table style="margin-top:8px;">
             <thead><tr><th>Country</th><th>Wind error %</th><th>Solar error %</th></tr></thead>
             <tbody>
-              <tr><td><em>All countries</em></td><td><input type="number" data-fill="wind" min="0" max="100" step="any" placeholder="set all"></td><td><input type="number" data-fill="solar" min="0" max="100" step="any" placeholder="set all"></td></tr>
-              {% for c in form.scenario_countries %}
-              <tr data-country-row="{{ c }}">
-                <td>{{ c }}</td>
-                <td><input type="number" name="custom_wind____I____{{ c }}" value="0" min="0" max="100" step="any" required></td>
-                <td><input type="number" name="custom_solar____I____{{ c }}" value="0" min="0" max="100" step="any" required></td>
+              <tr><td><em>All countries</em></td><td><input type="number" data-fill="wind" min="{{ form.fill_bounds.wind.0 }}" max="{{ form.fill_bounds.wind.1 }}" step="any" placeholder="set all"></td><td><input type="number" data-fill="solar" min="{{ form.fill_bounds.solar.0 }}" max="{{ form.fill_bounds.solar.1 }}" step="any" placeholder="set all"></td></tr>
+              {% for c in form.scenario_country_rows %}
+              <tr data-country-row="{{ c.code }}">
+                <td>{{ c.code }}</td>
+                <td><input type="number" name="custom_wind____I____{{ c.code }}" value="0" min="{{ c.wind.0 }}" max="{{ c.wind.1 }}" step="any" required><span class="range">{{ c.wind_text }}</span></td>
+                <td><input type="number" name="custom_solar____I____{{ c.code }}" value="0" min="{{ c.solar.0 }}" max="{{ c.solar.1 }}" step="any" required><span class="range">{{ c.solar_text }}</span></td>
               </tr>
               {% endfor %}
             </tbody>
@@ -358,7 +415,7 @@
   <div class="card">
     <div class="section-head">
       <div>
-        <h2><span class="step">05</span>Economics</h2>
+        <h2><span class="step">06</span>Economics</h2>
         <p class="lede">How capital is annualized and how uncertainty is penalized.</p>
       </div>
       <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
@@ -383,7 +440,7 @@
   <div class="card">
     <div class="section-head">
       <div>
-        <h2><span class="step">06</span>Solver settings</h2>
+        <h2><span class="step">07</span>Solver settings</h2>
         <p class="lede">Defaults are tuned for a good balance of speed and accuracy.</p>
       </div>
       <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
@@ -452,6 +509,123 @@
       siteCards.forEach(card => { card.hidden = Number(card.dataset.siteIndex) >= n; });
       siteCards.forEach(card => { card.querySelector('[data-remove-site]').hidden = n < 2; });
       document.querySelector('[data-add-site]').disabled = n >= siteCards.length;
+      syncCatalogVisibility();
+      siteCards.forEach(siteCoverage);
+    }
+    const assetCatalogCards = Array.from(document.querySelectorAll('.catalog-card[data-asset]'));
+    function syncCatalogVisibility() {
+      const active = new Set();
+      siteCards.filter(card => !card.hidden).forEach(card => {
+        card.querySelectorAll('input[type="checkbox"][name^="site_asset__"]:checked')
+          .forEach(box => active.add(box.name.split('__')[2]));
+      });
+      assetCatalogCards.forEach(card => { card.hidden = !active.has(card.dataset.asset); });
+      document.getElementById('catalog-empty').hidden = active.size > 0;
+    }
+    const budgetLimited = document.querySelector('input[name="budget_limited"]');
+    const budgetInput = document.querySelector('input[name="budget"]');
+    function syncBudget() {
+      const on = budgetLimited.checked;
+      budgetInput.disabled = !on;
+      document.getElementById('budget-help').hidden = !on;
+      document.getElementById('budget-off').hidden = on;
+    }
+    const RULES = JSON.parse(document.getElementById('site-rules').textContent);
+    const SVC_LABELS = RULES.service_labels, ASSET_NAMES = RULES.asset_labels;
+    const lower = svcs => svcs.map(s => SVC_LABELS[s].charAt(0).toLowerCase() + SVC_LABELS[s].slice(1)).join(', ');
+    const fmt = x => String(Math.round(x * 10) / 10);
+    function cardPeaks(card) {
+      const peaks = {};
+      card.querySelectorAll('input[name^="site_peak__"]').forEach(i => { peaks[i.name.split('__')[2]] = parseFloat(i.value) || 0; });
+      return peaks;
+    }
+    function ruleCap(asset, peaks) {
+      const [factor, svcs] = RULES.cap_rules[asset];
+      const v = factor * svcs.reduce((sum, svc) => sum + (peaks[svc] || 0), 0);
+      return Math.ceil(Math.round(v * 1e6) / 1e6);
+    }
+    const maxInputs = card => Array.from(card.querySelectorAll('input[data-maxmw]'));
+    function initEdited(card) {
+      const peaks = cardPeaks(card);
+      maxInputs(card).forEach(i => {
+        if (i.dataset.edited === undefined)
+          i.dataset.edited = i.value !== '' && Number(i.value) !== ruleCap(i.dataset.maxmw, peaks) ? '1' : '0';
+      });
+    }
+    function fillDefaults(card) {
+      const peaks = cardPeaks(card);
+      maxInputs(card).forEach(i => { if (i.dataset.edited !== '1') i.value = ruleCap(i.dataset.maxmw, peaks); });
+    }
+    function siteCoverage(card) {
+      const peaks = cardPeaks(card), active = {};
+      card.querySelectorAll('input[name^="site_asset__"]:checked').forEach(box => {
+        const a = box.name.split('__')[2];
+        const v = parseFloat(card.querySelector('input[data-maxmw="' + a + '"]').value);
+        active[a] = isNaN(v) ? ruleCap(a, peaks) : v;
+      });
+      const on = a => (active[a] || 0) > 0;
+      const heatSupplied = Object.keys(RULES.firm.process_heat).some(on);
+      const status = {};
+      Object.keys(SVC_LABELS).forEach(svc => {
+        const peak = peaks[svc] || 0;
+        let level, text, tip;
+        if (peak <= 0) {
+          level = 'none'; text = 'No demand'; tip = 'This site has no ' + SVC_LABELS[svc].toLowerCase() + ' demand.';
+        } else if (RULES.market[svc]) {
+          const own = RULES.market[svc].filter(on).map(a => ASSET_NAMES[a]);
+          if (own.length) {
+            level = 'ok'; text = 'On site + market'; tip = own.join(', ') + ' on site; any shortfall is bought on the market.';
+          } else {
+            level = 'market'; text = 'Market';
+            tip = 'No on-site asset serves it, so all of it is bought ' + (svc === 'electricity' ? 'from the grid.' : 'on the hydrogen market.');
+          }
+        } else {
+          let firm = 0;
+          const firmNames = [], part = RULES.part[svc].filter(on).map(a => ASSET_NAMES[a]);
+          Object.entries(RULES.firm[svc]).forEach(([a, k]) => {
+            if (!on(a)) return;
+            if (a === 'absorption_chiller_mw' && !heatSupplied) { part.push(ASSET_NAMES[a] + ' (no process heat supplier to drive it)'); return; }
+            firm += active[a] * k;
+            firmNames.push(ASSET_NAMES[a]);
+          });
+          if (!firmNames.length && !part.length) {
+            level = 'bad'; text = 'Unmet';
+            tip = 'No active asset serves it: all of the ' + fmt(peak) + ' MW peak is left unmet and charged the unmet-demand penalty.';
+          } else if (!firmNames.length) {
+            level = 'warn'; text = 'Partly'; tip = 'Only ' + part.join(', ') + ': demand is unmet whenever they cannot supply it.';
+          } else if (firm + 1e-9 < peak) {
+            level = 'warn'; text = 'Partly';
+            tip = 'Firm capacity ' + fmt(firm) + ' MW (' + firmNames.join(', ') + ') is below the ' + fmt(peak) + ' MW peak.';
+          } else {
+            level = 'ok'; text = 'Covered'; tip = fmt(firm) + ' MW firm (' + firmNames.join(', ') + ') for a ' + fmt(peak) + ' MW peak.';
+          }
+        }
+        status[svc] = level;
+        const chip = card.querySelector('[data-cov="' + svc + '"]');
+        chip.className = 'cov ' + level;
+        chip.textContent = text;
+        chip.title = tip;
+      });
+      card.querySelectorAll('.asset-cell').forEach(cell => {
+        const a = cell.dataset.assetCell;
+        cell.classList.remove('suggest-bad', 'suggest-warn');
+        if (cell.querySelector('input[type="checkbox"]').checked) return;
+        const needs = RULES.serves[a].filter(svc => (status[svc] === 'bad' || status[svc] === 'warn')
+                                                   && RULES.firm[svc] && a in RULES.firm[svc]);
+        if (!needs.length) return;
+        const worst = needs.some(svc => status[svc] === 'bad') ? 'bad' : 'warn';
+        cell.classList.add('suggest-' + worst);
+        cell.querySelector('[data-suggest]').textContent = (worst === 'bad' ? 'Needed for ' : 'Would firm up ') + lower(needs);
+      });
+      const bad = Object.keys(status).filter(svc => status[svc] === 'bad');
+      const warn = Object.keys(status).filter(svc => status[svc] === 'warn');
+      const alertBox = card.querySelector('[data-coverage-alert]');
+      alertBox.hidden = !bad.length && !warn.length;
+      alertBox.className = 'coverage-alert' + (bad.length ? '' : ' warn');
+      alertBox.textContent = alertBox.hidden ? '' : bad.length
+        ? 'Nothing active serves ' + lower(bad) + ' at this site, so all of it would be left unmet. Activate one of the highlighted assets.'
+          + (warn.length ? ' Partly covered: ' + lower(warn) + '.' : '')
+        : 'Partly covered: ' + lower(warn) + '. Some hours may be left unmet; hover the coverage chips for details.';
     }
     function siteFields(card) {
       const out = {};
@@ -465,9 +639,15 @@
       const n = siteCount();
       for (let j = index; j < n - 1; j++) {
         const to = siteFields(siteCards[j]), from = siteFields(siteCards[j + 1]);
-        Object.keys(to).forEach(k => { if (from[k]) to[k].value = from[k].value; });
+        Object.keys(to).forEach(k => {
+          if (!from[k]) return;
+          if (to[k].type === 'checkbox') to[k].checked = from[k].checked;
+          else to[k].value = from[k].value;
+          if (to[k].dataset.maxmw) to[k].dataset.edited = from[k].dataset.edited;
+        });
       }
       siteCards[n - 1].querySelectorAll('input').forEach(resetField);
+      siteCards[n - 1].querySelectorAll('input[data-maxmw]').forEach(i => { delete i.dataset.edited; });
       nSitesInput.value = n - 1;
       syncSites();
     }
@@ -503,9 +683,12 @@
     }
     function resetWithin(scope) {
       scope.querySelectorAll('input, select, textarea').forEach(resetField);
+      scope.querySelectorAll('input[data-maxmw]').forEach(i => { delete i.dataset.edited; });
       syncAll();
     }
     function syncAll() {
+      siteCards.forEach(card => { initEdited(card); fillDefaults(card); });
+      syncBudget();
       syncCountries();
       syncSites();
       syncRisk();
@@ -583,6 +766,20 @@
     form.addEventListener('reset', function () { setTimeout(syncAll, 0); });
 
     allBox.addEventListener('change', syncCountries);
+    budgetLimited.addEventListener('change', syncBudget);
+    const siteList = document.getElementById('site-list');
+    siteList.addEventListener('change', function (e) {
+      syncCatalogVisibility();
+      const card = e.target.closest('.site-card');
+      if (card) siteCoverage(card);
+    });
+    siteList.addEventListener('input', function (e) {
+      const card = e.target.closest('.site-card');
+      if (!card) return;
+      if (e.target.matches('input[data-maxmw]')) e.target.dataset.edited = '1';
+      if (/^site_peak__/.test(e.target.name || '')) fillDefaults(card);
+      siteCoverage(card);
+    });
     countryInputs.forEach(c => c.addEventListener('change', syncCountryRows));
     riskRadios.forEach(r => r.addEventListener('change', syncRisk));
     function syncFills(card) {

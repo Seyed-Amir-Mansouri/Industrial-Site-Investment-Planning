@@ -239,11 +239,11 @@
       <tr><th style="width:260px">Candidate countries</th><td>{% if run.params.all_countries %}All eligible{% else %}{{ run.params.countries|join:", " }}{% endif %}</td></tr>
       <tr><th>Number of sites</th><td>{{ run.params.n_sites|default:1 }}</td></tr>
       {% for sp in run.params.sites %}
-      <tr><th>{{ sp.name }}</th><td>green H2 ≥ {% widthratio sp.green_share 1 100 %}% · flexibility ±{% widthratio sp.flex_fraction 1 100 %}% · peaks {% for k, v in sp.peaks_mw.items %}{{ k }} {{ v|floatformat:"-2" }}{% if not forloop.last %}, {% endif %}{% endfor %} MW</td></tr>
+      <tr><th>{{ sp.name }}</th><td>green H2 ≥ {% widthratio sp.green_share 1 100 %}% · flexibility {% if sp.flex_fraction.items %}{% for k, v in sp.flex_fraction.items %}{{ k }} ±{% widthratio v 1 100 %}%{% if not forloop.last %}, {% endif %}{% endfor %}{% else %}±{% widthratio sp.flex_fraction 1 100 %}%{% endif %} · peaks {% for k, v in sp.peaks_mw.items %}{{ k }} {{ v|floatformat:"-2" }}{% if not forloop.last %}, {% endif %}{% endfor %} MW{% if sp.active_assets %}<br>assets: {% for a in sp.active_assets %}{{ a }}{% for k, v in sp.max_mw.items %}{% if k == a %} (max {{ v|floatformat:"-2" }} MW){% endif %}{% endfor %}{% if not forloop.last %}, {% endif %}{% endfor %}{% endif %}</td></tr>
       {% endfor %}
-      <tr><th>Budget</th><td>€{{ run.params.budget|floatformat:"0g" }}</td></tr>
+      <tr><th>Budget</th><td>{% if run.params.budget is None %}No limit{% else %}€{{ run.params.budget|floatformat:"0g" }}{% endif %}</td></tr>
       {% if run.params.active_assets %}
-      <tr><th>Active asset types</th><td>{{ run.params.active_assets|join:", " }}</td></tr>
+      <tr><th>Active asset types (any site)</th><td>{{ run.params.active_assets|join:", " }}</td></tr>
       {% else %}
       <tr><th>Excluded technologies</th><td>{% if run.params.disabled_assets %}{{ run.params.disabled_assets|join:", " }}{% else %}none{% endif %}</td></tr>
       {% endif %}

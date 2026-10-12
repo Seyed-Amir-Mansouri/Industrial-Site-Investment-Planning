@@ -40,7 +40,7 @@
         <td><span class="badge {{ run.status }}">{{ run.get_status_display }}</span></td>
         <td>{% if run.params.all_countries %}All eligible{% else %}{{ run.params.countries|join:", " }}{% endif %}</td>
         <td>{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }}{% elif run.params.risk_measure == "deterministic" %}Deterministic{% else %}Expected value{% endif %}</td>
-        <td class="num">€{{ run.params.budget|floatformat:"0g" }}</td>
+        <td class="num">{% if run.params.budget is None %}No limit{% else %}€{{ run.params.budget|floatformat:"0g" }}{% endif %}</td>
         <td class="num">{% if run.summary.objective_eur %}{{ run.summary.objective_eur|floatformat:"0g" }}{% else %}—{% endif %}</td>
         <td class="num">{% if run.summary.elapsed_seconds %}{{ run.summary.elapsed_seconds|floatformat:1 }} s{% else %}—{% endif %}</td>
         <td>{{ run.created_at|date:"d M Y, H:i" }}</td>
