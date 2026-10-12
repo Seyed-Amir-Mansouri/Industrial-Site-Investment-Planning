@@ -244,13 +244,13 @@ expected-value option.
 default (`default_scenarios`).
 
 Further scenarios are your own, added on the New run page: each has a name, a probability and a
-wind and a solar error in % compared with the Baseline for each country: positive for output
-lost, negative for extra output. A scenario uses the Baseline's market prices and scales only the
-site's own wind/PV output by exactly those errors (an error of -20% gives 120% of the Baseline
-output). Each country's error must stay within the range the price models were trained on: from
-130% of the Baseline's installed wind or solar capacity (-30%) down to the lowest level in the
-training scenarios (about +68% to +80% depending on the country). The New run page shows that
-range beside every box; it is read from the training samples (`elec_samples.parquet`). The web app passes them to the planner in the run's scenario overrides file
+change in installed wind and in installed solar capacity, in % compared with the Baseline, for
+each country: positive for more capacity than planned, negative for less. A scenario uses the
+Baseline's market prices and scales the site's own wind/PV output by the same share (+20% gives
+120% of the Baseline output, -20% gives 80%). Each country's change must stay within the range
+the price models were trained on: from the lowest level in the training scenarios (about -68% to
+-80% depending on the country) up to 130% of the Baseline's capacity (+30%). The New run page
+shows that range under every box; it is read from the training samples (`elec_samples.parquet`). The web app passes them to the planner in the run's scenario overrides file
 (`PLANNER_SCENARIO_OVERRIDES`, entries marked `"custom": true`).
 
 **Solve control / output**
@@ -383,9 +383,9 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      breakdown with the run's own catalog.
   5. **Uncertainty scenarios:** the **Baseline** card, ticked at 100% by default, and
      **+ Add scenario**, which adds as many scenarios of your own as you like. Each added
-     scenario has a name, a probability and a table of wind and solar error % compared with the
-     Baseline for every selected country (positive for output lost, negative for extra output),
-     each with its trained range beside it and turning red outside it; the *All
+     scenario has a name, a probability and a table of the change in installed wind and solar
+     capacity (%) compared with the Baseline for every selected country (positive for more,
+     negative for less), each with its trained range under it and turning red outside it; the *All
      countries* row fills a whole column at once. **Remove** deletes it. The probabilities must add up to 100%; a badge at the top shows the total in
      green when it's right and red when it isn't. **Reset this section** goes back to the
      Baseline alone. Changes apply to this run only.
