@@ -35,16 +35,23 @@ should be, using the price models above as a price-taker market signal.
 
 | Demand | Main asset(s) | If the new assets don't cover it |
 |---|---|---|
-| Electricity | Solar PV, wind, battery | Grid import |
-| Space heating (keeping buildings warm) | Heat pump | Unmet, at the unmet-demand penalty |
-| Space cooling (air conditioning of buildings) | AC chiller | Unmet, at the unmet-demand penalty |
-| Process heat (up to 150 °C: washing, drying, pasteurising) | Industrial heat pump | Unmet, at the unmet-demand penalty |
-| Steam (above 150 °C: steam networks, sterilising, reactors) | Electric boiler | Unmet, at the unmet-demand penalty |
-| Process cooling (machines, products, cold stores) | Process chiller | Unmet, at the unmet-demand penalty |
+| Electricity | Solar PV, wind, battery, biogas CHP | Grid import |
+| Space heating (keeping buildings warm) | Heat pump, hot-water storage (CHP, solar thermal and heat-recovery chiller heat can also serve it) | Unmet, at the unmet-demand penalty |
+| Space cooling (air conditioning of buildings) | AC chiller, chilled-water / ice storage (the absorption chiller can also serve it) | Unmet, at the unmet-demand penalty |
+| Process heat (up to 150 °C: washing, drying, pasteurising) | Industrial heat pump, solar thermal (CHP and heat-recovery chiller heat can also serve it) | Unmet, at the unmet-demand penalty |
+| Steam (above 150 °C: steam networks, sterilising, reactors) | Electric boiler, thermal battery | Unmet, at the unmet-demand penalty |
+| Process cooling (machines, products, cold stores) | Process chiller, heat-recovery chiller, absorption chiller | Unmet, at the unmet-demand penalty |
 | Hydrogen | Electrolyser, hydrogen storage | Hydrogen market import |
 
 - `optimize_site_investor.py` is the site's operating LP. Every hour, seven separate balances
   must hold, one per demand, each served by its own asset(s). The heat pumps, boiler and chillers draw electricity at their COP.
+  Some assets link balances: the biogas CHP burns bought biogas for electricity plus space or
+  process heat, solar thermal serves space or process heat, the heat-recovery chiller cools the
+  process and sends its rejected heat to space or process heat, the absorption chiller turns
+  process heat into space or process cooling, and the thermal battery charges with electricity
+  and discharges steam. Hot-water and chilled-water / ice storage shift space heating and space
+  cooling within each day. Heat that the CHP, solar thermal or heat-recovery chiller can't use is
+  released.
   The site buys any electricity or hydrogen deficit at the modeled market price plus an
   import fee, and sells any surplus at the market price. There is no existing plant on
   site: heat or cooling the new assets can't supply is left unmet and charged a penalty (5,000
@@ -54,7 +61,7 @@ should be, using the price models above as a price-taker market signal.
   a representative-day sample. `solve_joint` runs every candidate country's site LP
   together in one model (still independent problems, just solved in one call). It's the only
   mode `plan_capacity.py` uses.
-- `site_investor_planning/` + `plan_capacity.py` turn the site choice and the nine asset
+- `site_investor_planning/` + `plan_capacity.py` turn the site choice and the 17 asset
   sizes into discrete/binary choices under a CAPEX budget, solved via Benders decomposition
   (MILP master + one joint LP subproblem covering every candidate country together).
 
@@ -150,15 +157,23 @@ green load, the wind/PV claimed for it, GOs bought and sold, and green hydrogen 
   comes in steps of that product's size. More products can be added per run on the New run
   page. Wind, PV, battery, electrolyser and H2 tank come from
   `Help/Candidates (Edited).docx`'s 2030 candidate-product table. The heat pump, AC chiller,
-  industrial heat pump, electric boiler and process chiller entries are indicative 2030 costs in the
+  industrial heat pump, electric boiler, process chiller, biogas CHP (1 MW_el, EUR 1.2M), hot-water
+  storage (1 MW / 6 MWh, EUR 150k), chilled-water / ice storage (0.5 MW / 3 MWh, EUR 120k), solar
+  thermal (1 MW_th peak, EUR 450k), thermal battery (1 MW / 8 MWh, EUR 700k), heat-recovery chiller
+  (0.5 MW, EUR 300k) and absorption chiller (0.5 MW, EUR 200k) entries are indicative 2030 costs in the
   range of public technology catalogues (e.g. the Danish Energy Agency's). Replace them with
-  vendor quotes for a real site. Thermal assets are sized in MW of heat or cooling output.
+  vendor quotes for a real site. Thermal assets are sized in MW of heat or cooling output, the
+  stores in MW of charge and discharge, and the CHP in MW of electricity.
 - `SiteTechParams`: COPs and efficiencies (heat pump 3.0, AC chiller 3.5, industrial heat pump
-  2.5, electric boiler 0.99, process chiller 4.5), the unmet heat/cooling demand penalty (5,000 EUR/MWh) and the grid and
-  hydrogen import fees (15 and 0 EUR/MWh).
-- `CapexAssumptions.site_max_mw`: the most MW of wind, PV, battery, electrolyser and H2 tank
-  one site may host. Heat pumps, boilers and chillers are instead capped at 1.25 times the
-  site's own peak demand for their service, since their output can't be sold.
+  2.5, electric boiler 0.99, process chiller 4.5, heat-recovery chiller 3.0 with all rejected heat
+  usable, absorption chiller 0.7 per MWh of process heat), the biogas CHP (40% electric, up to 45%
+  heat, biogas at 60 EUR/MWh), the stores (hot-water and chilled-water / ice 6h at 95%, thermal
+  battery 8h at 95%; solar thermal follows the site's PV profile), the unmet heat/cooling demand
+  penalty (5,000 EUR/MWh) and the grid and hydrogen import fees (15 and 0 EUR/MWh).
+- `CapexAssumptions.site_max_mw`: the most MW of wind, PV, battery, biogas CHP, electrolyser and H2
+  tank one site may host. Heat and cooling assets, the heat and cold stores and the thermal battery
+  are instead capped at 1.25 times the site's own peak demand of the services they serve
+  (`CAP_SERVICES`), since their output can't be sold.
 
 ### `plan_capacity.py` flags
 
@@ -179,7 +194,7 @@ Full, current list also always available via `python plan_capacity.py --help`.
 |---|---|---|
 | `--budget EUR` | 1,500,000,000 | Raw/unannualized CAPEX budget, shared across every site. |
 | `--discount-rate R` | 0.05 | Discount rate for the capital recovery factor |
-| `--lifetime-years N` | catalog's own (30/40/20yr wind/PV/battery, 20/20/25/25/20yr heat pump/AC chiller/industrial heat pump/electric boiler/process chiller, 25/30yr electrolyser/tank) | Overrides every asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
+| `--lifetime-years N` | catalog's own (30/40/20yr wind/PV/battery, 20/20/25/25/20yr heat pump/AC chiller/industrial heat pump/electric boiler/process chiller, 20/30/25/25/25/20/25yr CHP/hot-water storage/chilled-water storage/solar thermal/thermal battery/heat-recovery chiller/absorption chiller, 25/30yr electrolyser/tank) | Overrides every asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
 
 The master places every site in exactly one candidate country, and several sites may share a
 country. Internally each (site, country) pair is a separate candidate with its own capacities;
@@ -194,7 +209,7 @@ longer.
 |---|---|---|
 | `--scenarios S,S,...` | `p100` (the Baseline) | Scenarios to plan over, probabilities renormalized to sum to 1. Scenarios other than the Baseline are defined in the `PLANNER_SCENARIO_OVERRIDES` file the web app writes. One scenario is planned deterministically; two or more use CVaR. |
 | `--cvar-alpha A` | 0.8 | CVaR confidence level (0–1), used only with two or more scenarios. |
-| `--disabled-assets A,A,...` | none | Exclude asset keys at every site (max MW = 0), e.g. `battery_mw,tank_mw`. Keys: `wind_mw`, `pv_mw`, `battery_mw`, `heat_pump_mw`, `ac_chiller_mw`, `industrial_heat_pump_mw`, `electric_boiler_mw`, `electric_chiller_mw` (process chiller), `electrolyser_mw`, `tank_mw`. |
+| `--disabled-assets A,A,...` | none | Exclude asset keys at every site (max MW = 0), e.g. `battery_mw,tank_mw`. Keys: `wind_mw`, `pv_mw`, `battery_mw`, `heat_pump_mw`, `ac_chiller_mw`, `industrial_heat_pump_mw`, `electric_boiler_mw`, `electric_chiller_mw` (process chiller), `chp_mw`, `hot_water_storage_mw`, `cold_storage_mw`, `solar_thermal_mw`, `thermal_battery_mw`, `heat_recovery_chiller_mw`, `absorption_chiller_mw`, `electrolyser_mw`, `tank_mw`. |
 
 **Subproblem**
 | Flag | Default | What it does |

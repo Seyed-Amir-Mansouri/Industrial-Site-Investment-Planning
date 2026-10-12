@@ -237,13 +237,19 @@
   <table>
     <tbody>
       <tr><th style="width:260px">Candidate countries</th><td>{% if run.params.all_countries %}All eligible{% else %}{{ run.params.countries|join:", " }}{% endif %}</td></tr>
-      <tr><th>Sites to build</th><td>{{ run.params.n_sites|default:1 }}</td></tr>
+      <tr><th>Number of sites</th><td>{{ run.params.n_sites|default:1 }}</td></tr>
       {% for sp in run.params.sites %}
       <tr><th>{{ sp.name }}</th><td>green H2 ≥ {% widthratio sp.green_share 1 100 %}% · flexibility ±{% widthratio sp.flex_fraction 1 100 %}% · peaks {% for k, v in sp.peaks_mw.items %}{{ k }} {{ v|floatformat:"-2" }}{% if not forloop.last %}, {% endif %}{% endfor %} MW</td></tr>
       {% endfor %}
       <tr><th>Budget</th><td>€{{ run.params.budget|floatformat:"0g" }}</td></tr>
+      {% if run.params.active_assets %}
+      <tr><th>Active asset types</th><td>{{ run.params.active_assets|join:", " }}</td></tr>
+      {% else %}
       <tr><th>Excluded technologies</th><td>{% if run.params.disabled_assets %}{{ run.params.disabled_assets|join:", " }}{% else %}none{% endif %}</td></tr>
-      <tr><th>Max units per product</th><td>{% if run.params.max_units_per_candidate %}{{ run.params.max_units_per_candidate }}{% else %}unbounded{% endif %}</td></tr>
+      {% endif %}
+      {% if run.params.max_units_per_candidate %}
+      <tr><th>Max units per product</th><td>{{ run.params.max_units_per_candidate }}</td></tr>
+      {% endif %}
       {% if not run.params.sites %}
       <tr><th>Minimum green hydrogen share</th><td>{{ run.params.green_h2_share_pct|default:42 }}%</td></tr>
       <tr><th>Demand flexibility</th><td>±{{ run.params.demand_flex_pct|default:10 }}% per hour, net zero per day</td></tr>

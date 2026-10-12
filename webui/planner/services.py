@@ -94,12 +94,12 @@ def eligible_countries() -> list[str]:
 
 
 ASSET_GROUPS = {
-    "electricity": ["wind_mw", "pv_mw", "battery_mw"],
-    "space_heat": ["heat_pump_mw"],
-    "space_cool": ["ac_chiller_mw"],
-    "process_heat": ["industrial_heat_pump_mw"],
-    "steam": ["electric_boiler_mw"],
-    "process_cool": ["electric_chiller_mw"],
+    "electricity": ["wind_mw", "pv_mw", "battery_mw", "chp_mw"],
+    "space_heat": ["heat_pump_mw", "hot_water_storage_mw"],
+    "space_cool": ["ac_chiller_mw", "cold_storage_mw"],
+    "process_heat": ["industrial_heat_pump_mw", "solar_thermal_mw"],
+    "steam": ["electric_boiler_mw", "thermal_battery_mw"],
+    "process_cool": ["electric_chiller_mw", "heat_recovery_chiller_mw", "absorption_chiller_mw"],
     "hydrogen": ["electrolyser_mw", "tank_mw"],
 }
 GROUP_LABELS = {
@@ -250,7 +250,6 @@ def build_command(params: dict, output_prefix: Path) -> list[str]:
     else:
         cmd += ["--n-sites", str(params.get("n_sites", 1))]
     cmd += ["--budget", f"{params['budget']:.0f}",
-            "--max-units-per-candidate", str(params["max_units_per_candidate"]),
             "--discount-rate", f"{params['discount_rate_pct'] / 100:.6f}",
             "--rep-days-per-month", str(params["rep_days_per_month"]),
             "--gap-tol", str(params["gap_tol"]),
@@ -260,6 +259,8 @@ def build_command(params: dict, output_prefix: Path) -> list[str]:
             "--output", str(output_prefix)]
     if params.get("risk_measure") == "cvar":
         cmd += ["--cvar-alpha", str(params["cvar_alpha"])]
+    if params.get("max_units_per_candidate"):
+        cmd += ["--max-units-per-candidate", str(params["max_units_per_candidate"])]
     if params.get("disabled_assets"):
         cmd += ["--disabled-assets", ",".join(params["disabled_assets"])]
     if params.get("scenarios"):

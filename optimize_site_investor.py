@@ -365,6 +365,11 @@ _THERMAL_LABELS = {"heat_pump_mw": "heat pump", "ac_chiller_mw": "AC chiller",
                    "industrial_heat_pump_mw": "industrial heat pump",
                    "electric_boiler_mw": "electric boiler", "electric_chiller_mw": "process chiller"}
 _UNMET_VARS = {svc: f"unmet_{svc}" for svc in THERMAL_SERVICES}
+_HEAT_SERVICES = ["space_heat", "process_heat"]
+_COOL_SERVICES = ["space_cool", "process_cool"]
+_MULTI_OUTPUTS = {"chp": _HEAT_SERVICES, "sth": _HEAT_SERVICES, "hrc_heat": _HEAT_SERVICES, "abs": _COOL_SERVICES}
+_MULTI_LABELS = {"chp": "CHP heat", "sth": "solar thermal", "hrc_heat": "heat-recovery chiller heat",
+                 "abs": "absorption chiller"}
 _BALANCES = {svc: f"{svc}_balance" for svc in SERVICES}
 
 
@@ -386,7 +391,13 @@ class SiteLP:
 
     Each demand has its own hourly balance, served by its own asset(s). Electricity and hydrogen can
     also be bought on the market; there is no existing plant, so heat or cooling the new assets can't
-    supply is left unmet and charged the unmet-demand penalty. The site's
+    supply is left unmet and charged the unmet-demand penalty. Some assets link balances: the biogas
+    CHP makes electricity plus space or process heat, solar thermal serves space or process heat,
+    the heat-recovery chiller's cooling goes to process cooling and its rejected heat to space or
+    process heat, the absorption chiller turns process heat into space or process cooling, and the
+    thermal battery charges with electricity and discharges steam. Hot-water and chilled-water / ice
+    storage shift space heating and space cooling within the day. Heat that CHP, solar thermal and
+    the heat-recovery chiller can't use is released. The site's
     own wind/PV exported to the grid earns Guarantees of Origin it can sell, unless that output is
     claimed for green hydrogen. The electrolyser's green load in each hour must be covered by that
     hour's own (new, hence additional) wind/PV or GOs bought from additional plants, and green
@@ -470,6 +481,18 @@ class SiteLP:
         tank_ch = bounded("tank_ch", 1.0, "tank_mw", "tank_ch_cap")
         tank_soc = bounded("tank_soc", tank_h, "tank_mw", "tank_soc_cap")
         ely_p = bounded("ely_p", 1.0, "electrolyser_mw", "ely_cap")
+        tech = SITE_TECH
+        chp_el = bounded("chp_el", 1.0, "chp_mw", "chp_cap")
+        hw_dis = bounded("hw_dis", 1.0, "hot_water_storage_mw", "hw_dis_cap")
+        hw_ch = bounded("hw_ch", 1.0, "hot_water_storage_mw", "hw_ch_cap")
+        hw_soc = bounded("hw_soc", tech.hot_water_storage_hours, "hot_water_storage_mw", "hw_soc_cap")
+        cs_dis = bounded("cs_dis", 1.0, "cold_storage_mw", "cs_dis_cap")
+        cs_ch = bounded("cs_ch", 1.0, "cold_storage_mw", "cs_ch_cap")
+        cs_soc = bounded("cs_soc", tech.cold_storage_hours, "cold_storage_mw", "cs_soc_cap")
+        tb_dis = bounded("tb_dis", 1.0, "thermal_battery_mw", "tb_dis_cap")
+        tb_ch = bounded("tb_ch", 1.0, "thermal_battery_mw", "tb_ch_cap")
+        tb_soc = bounded("tb_soc", tech.thermal_battery_hours, "thermal_battery_mw", "tb_soc_cap")
+        hrc_cool = bounded("hrc_cool", 1.0, "heat_recovery_chiller_mw", "hrc_cap")
         thermal = {(a, svc): m.add_variables(lower=0.0, coords=coords, name=f"{v}_{svc}")
                    for a, v in _THERMAL_VARS.items() for svc in THERMAL_ASSET_SERVICES[a]}
         for a, v in _THERMAL_VARS.items():
@@ -477,14 +500,29 @@ class SiteLP:
                               name=f"{v}_cap")
         self.thermal_keys = list(thermal)
         unmet = {svc: m.add_variables(lower=0.0, coords=coords, name=v) for svc, v in _UNMET_VARS.items()}
+        multi = {name: {svc: m.add_variables(lower=0.0, coords=coords, name=f"{name}_{svc}") for svc in svcs}
+                 for name, svcs in _MULTI_OUTPUTS.items()}
+        m.add_constraints(sum(multi["chp"].values())
+                          - (tech.chp_heat_efficiency / tech.chp_electric_efficiency) * chp_el <= 0,
+                          name="chp_heat_cap")
+        m.add_constraints(sum(multi["sth"].values()) - da["pv_cf"] * cap["solar_thermal_mw"] <= 0, name="sth_cap")
+        m.add_constraints(sum(multi["hrc_heat"].values()) - (1.0 + 1.0 / tech.heat_recovery_chiller_cop) * hrc_cool
+                          <= 0, name="hrc_heat_cap")
+        m.add_constraints(sum(multi["abs"].values()) - cap["absorption_chiller_mw"] <= 0, name="abs_cap")
 
         grid_buy = m.add_variables(lower=0.0, coords=coords, name="grid_buy")
         grid_sell = m.add_variables(lower=0.0, coords=coords, name="grid_sell")
         h2_buy = m.add_variables(lower=0.0, coords=coords, name="h2_buy")
         h2_sell = m.add_variables(lower=0.0, coords=coords, name="h2_sell")
 
-        for name, soc, ch, dis, eff, a, dur in (("batt", batt_soc, batt_ch, batt_dis, batt_eff, "battery_mw", batt_h),
-                                                ("tank", tank_soc, tank_ch, tank_dis, tank_eff, "tank_mw", tank_h)):
+        for name, soc, ch, dis, eff, a, dur in (
+                ("batt", batt_soc, batt_ch, batt_dis, batt_eff, "battery_mw", batt_h),
+                ("tank", tank_soc, tank_ch, tank_dis, tank_eff, "tank_mw", tank_h),
+                ("hw", hw_soc, hw_ch, hw_dis, tech.hot_water_storage_efficiency, "hot_water_storage_mw",
+                 tech.hot_water_storage_hours),
+                ("cs", cs_soc, cs_ch, cs_dis, tech.cold_storage_efficiency, "cold_storage_mw", tech.cold_storage_hours),
+                ("tb", tb_soc, tb_ch, tb_dis, tech.thermal_battery_efficiency, "thermal_battery_mw",
+                 tech.thermal_battery_hours)):
             m.add_constraints(soc.isel(hid=0) - soc0_frac * dur * cap[a] - eff * ch.isel(hid=0) + dis.isel(hid=0) == 0,
                               name=f"{name}_balance_0")
             m.add_constraints(soc.isel(hid=slice(1, None)) - soc.isel(hid=slice(None, -1))
@@ -511,13 +549,24 @@ class SiteLP:
 
         thermal_elec = sum((1.0 / SITE_TECH.cop(a, svc)) * q for (a, svc), q in thermal.items())
         m.add_constraints(served("electricity", wind_p + pv_p + batt_dis - batt_ch - ely_p - thermal_elec
+                                                + chp_el - tb_ch - (1.0 / tech.heat_recovery_chiller_cop) * hrc_cool
                                                 + grid_buy - grid_sell)
                           - da["demand_electricity"] * site_on == 0, name=_BALANCES["electricity"])
         m.add_constraints(served("hydrogen", ely_eff * ely_p + tank_dis - tank_ch + h2_buy - h2_sell)
                           - da["demand_hydrogen"] * site_on == 0, name=_BALANCES["hydrogen"])
+        supply = {svc: 1.0 * unmet[svc] for svc in THERMAL_SERVICES}
         for (a, svc), q in thermal.items():
-            m.add_constraints(served(svc, q + unmet[svc]) - da[f"demand_{svc}"] * site_on == 0,
-                              name=_BALANCES[svc])
+            supply[svc] = supply[svc] + q
+        for name in ("chp", "sth", "hrc_heat", "abs"):
+            for svc, q in multi[name].items():
+                supply[svc] = supply[svc] + q
+        supply["space_heat"] = supply["space_heat"] + hw_dis - hw_ch
+        supply["space_cool"] = supply["space_cool"] + cs_dis - cs_ch
+        supply["steam"] = supply["steam"] + tb_dis
+        supply["process_cool"] = supply["process_cool"] + hrc_cool
+        supply["process_heat"] = supply["process_heat"] - (1.0 / tech.absorption_chiller_cop) * sum(multi["abs"].values())
+        for svc in THERMAL_SERVICES:
+            m.add_constraints(served(svc, supply[svc]) - da[f"demand_{svc}"] * site_on == 0, name=_BALANCES[svc])
 
         green = GREEN_H2
         go_sell = m.add_variables(lower=0.0, coords=coords, name="go_sell")
@@ -538,14 +587,14 @@ class SiteLP:
             green_cost = (green_cost + green.go_buy_price_eur_per_mwh * (w * go_buy).sum()
                           + green.green_h2_premium_eur_per_mwh * (w * h2_buy_green).sum())
 
-        tech = SITE_TECH
         unmet_total = sum(unmet[svc] for svc in THERMAL_SERVICES)
         zero_price = xr.zeros_like(da["wind_cf"])
         m.add_objective((w * zero_price * grid_buy).sum() + (w * zero_price * grid_sell).sum()
                         + (w * zero_price * h2_buy).sum() + (w * zero_price * h2_sell).sum()
                         + tech.unmet_demand_penalty_eur_per_mwh * (w * unmet_total).sum()
-                        + sto_cost * ((w * batt_ch).sum() + (w * batt_dis).sum()
-                                      + (w * tank_ch).sum() + (w * tank_dis).sum())
+                        + sto_cost * sum((w * x).sum() for x in (batt_ch, batt_dis, tank_ch, tank_dis, hw_ch, hw_dis,
+                                                                  cs_ch, cs_dis, tb_ch, tb_dis))
+                        + (tech.biogas_price_eur_per_mwh / tech.chp_electric_efficiency) * (w * chp_el).sum()
                         + green_cost)
 
         M = m.matrices
@@ -630,13 +679,17 @@ class SiteLP:
             gb, gs, hb, hs = v("grid_buy"), v("grid_sell"), v("h2_buy"), v("h2_sell")
             unmet_mw = sum(v(_UNMET_VARS[svc]) for svc in THERMAL_SERVICES)
             bc, bd, tc, td = v("batt_ch"), v("batt_dis"), v("tank_ch"), v("tank_dis")
+            sto_mwh = bc + bd + tc + td + sum(v(f"{k}_{d}") for k in ("hw", "cs", "tb") for d in ("ch", "dis"))
+            chp = v("chp_el")
+            fuel = chp / tech.chp_electric_efficiency
             zero = np.zeros(H)
             gos = v("go_sell")
             gob, hbg, eg, re = ((v("go_buy"), v("h2_buy_green"), v("ely_green"), v("res_to_ely"))
                                 if self.any_green else (zero, zero, zero, zero))
             z_cost = float((weight_flat * ((p_elec_z + tech.grid_import_fee_eur_per_mwh) * gb - p_elec_z * gs
                                            + (p_h2_z + tech.h2_import_fee_eur_per_mwh) * hb - p_h2_z * hs
-                                           + penalty * unmet_mw + sto_cost * (bc + bd + tc + td)
+                                           + penalty * unmet_mw + sto_cost * sto_mwh
+                                           + tech.biogas_price_eur_per_mwh * fuel
                                            + green.go_buy_price_eur_per_mwh * gob
                                            - green.go_sell_price_eur_per_mwh * gos
                                            + green.green_h2_premium_eur_per_mwh * hbg)).sum())
@@ -666,7 +719,22 @@ class SiteLP:
             out["Site GOs sold (MWh/h)"] = gos
             out["Site green H2 bought (MW)"] = hbg
             for (a, svc) in self.thermal_keys:
-                out[f"Site {_THERMAL_LABELS[a]} -> {svc} (MW)"] = v(f"{_THERMAL_VARS[a]}_{svc}")
+                q = v(f"{_THERMAL_VARS[a]}_{svc}")
+                out[f"Site {_THERMAL_LABELS[a]} -> {svc} (MW)"] = q
+                out[f"Site {_THERMAL_LABELS[a]} electricity (-) (MW)"] = -q / tech.cop(a, svc)
+            out["Site CHP electricity (MW)"] = chp
+            out["Site CHP biogas (MW)"] = fuel
+            for name, svcs in _MULTI_OUTPUTS.items():
+                for svc in svcs:
+                    out[f"Site {_MULTI_LABELS[name]} -> {svc} (MW)"] = v(f"{name}_{svc}")
+            hrc = v("hrc_cool")
+            out["Site heat-recovery chiller -> process_cool (MW)"] = hrc
+            out["Site heat-recovery chiller electricity (-) (MW)"] = -hrc / tech.heat_recovery_chiller_cop
+            out["Site absorption chiller heat (-) (MW)"] = -sum(v(f"abs_{svc}") for svc in _COOL_SERVICES) \
+                / tech.absorption_chiller_cop
+            for k, label in (("hw", "hot-water storage"), ("cs", "cold storage"), ("tb", "thermal battery")):
+                out[f"Site {label} discharge (MW)"] = v(f"{k}_dis")
+                out[f"Site {label} charge (-) (MW)"] = -v(f"{k}_ch")
             for svc in THERMAL_SERVICES:
                 out[f"Site unmet {svc} demand (MW)"] = v(_UNMET_VARS[svc])
             out["day_of_year"] = np.repeat(self.days, HOURS_PER_DAY)

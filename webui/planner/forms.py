@@ -9,15 +9,22 @@ ASSET_LABELS = {
     "wind_mw": "Wind",
     "pv_mw": "Solar PV",
     "battery_mw": "Battery",
+    "chp_mw": "Biogas CHP",
     "heat_pump_mw": "Heat pump",
+    "hot_water_storage_mw": "Hot-water storage",
     "ac_chiller_mw": "AC chiller",
+    "cold_storage_mw": "Chilled-water / ice storage",
     "industrial_heat_pump_mw": "Industrial heat pump",
+    "solar_thermal_mw": "Solar thermal",
     "electric_boiler_mw": "Electric boiler",
+    "thermal_battery_mw": "Thermal battery",
     "electric_chiller_mw": "Process chiller",
+    "heat_recovery_chiller_mw": "Heat-recovery chiller",
+    "absorption_chiller_mw": "Absorption chiller",
     "electrolyser_mw": "Electrolyser",
     "tank_mw": "H2 storage",
 }
-MWH_ASSETS = {"battery_mw", "tank_mw"}
+MWH_ASSETS = {"battery_mw", "tank_mw", "hot_water_storage_mw", "cold_storage_mw", "thermal_battery_mw"}
 MAX_CANDIDATES_PER_ASSET = 8
 MAX_SITES = 6
 CUSTOM_FIELD_RE = re.compile(r"^custom_name__(\d+)$")
@@ -29,19 +36,14 @@ class PlanRunForm(forms.Form):
     all_countries = forms.BooleanField(required=False, initial=True, label="All eligible countries")
     countries = forms.MultipleChoiceField(required=False, label="Candidate site countries",
                                           widget=forms.CheckboxSelectMultiple)
-    n_sites = forms.IntegerField(min_value=1, max_value=MAX_SITES, initial=1, label="Sites to build",
-                                 help_text="Each site has its own settings in step 2. The optimizer picks a "
-                                           "country for each site; several sites may share a country.")
+    n_sites = forms.IntegerField(min_value=1, max_value=MAX_SITES, initial=1, widget=forms.HiddenInput)
     budget = forms.FloatField(min_value=1e6, initial=1_500_000_000, label="Total CAPEX budget (EUR)",
                               help_text="Raw, unannualized budget across all sites.")
-    disabled_assets = forms.MultipleChoiceField(
-        required=False, label="Excluded asset types",
+    active_assets = forms.MultipleChoiceField(
+        required=False, label="Active asset types",
         choices=[(a, label) for a, label in ASSET_LABELS.items()],
-        widget=forms.CheckboxSelectMultiple,
+        initial=list(ASSET_LABELS), widget=forms.CheckboxSelectMultiple,
     )
-    max_units_per_candidate = forms.IntegerField(
-        min_value=0, initial=0, label="Max units per product",
-        help_text="Cap on how many units of any single product size can be built. 0 = no cap.")
 
     discount_rate_pct = forms.FloatField(min_value=0, max_value=30, initial=5, label="Discount rate (%)")
     risk_measure = forms.ChoiceField(
@@ -136,9 +138,9 @@ class PlanRunForm(forms.Form):
         return self._table_rows("countries", self.COUNTRY_TABLE_COLUMNS)
 
     @property
-    def disabled_asset_table_rows(self) -> list[list]:
-        """Excluded-technology checkboxes laid out as table rows."""
-        return self._table_rows("disabled_assets", self.ASSET_TABLE_COLUMNS)
+    def active_asset_table_rows(self) -> list[list]:
+        """Active-technology checkboxes laid out as table rows."""
+        return self._table_rows("active_assets", self.ASSET_TABLE_COLUMNS)
 
     @property
     def site_rows(self) -> list[dict]:
@@ -198,6 +200,8 @@ class PlanRunForm(forms.Form):
         data = super().clean()
         if not data.get("all_countries") and not data.get("countries"):
             self.add_error("countries", "Select at least one country or choose all countries.")
+        if not data.get("active_assets"):
+            self.add_error("active_assets", "Tick at least one asset type.")
         n_sites = data.get("n_sites") or 0
         names = [(data.get(f"site_name__{i}") or "").strip() or f"Site {i + 1}" for i in range(n_sites)]
         if len(set(names)) != len(names):
@@ -282,8 +286,8 @@ class PlanRunForm(forms.Form):
             "n_sites": d["n_sites"],
             "sites": sites,
             "budget": d["budget"],
-            "disabled_assets": list(d["disabled_assets"]),
-            "max_units_per_candidate": d["max_units_per_candidate"],
+            "active_assets": [a for a in ASSET_LABELS if a in d["active_assets"]],
+            "disabled_assets": [a for a in ASSET_LABELS if a not in d["active_assets"]],
             "scenarios": included,
             "scenario_labels": labels,
             "scenario_overrides": overrides,

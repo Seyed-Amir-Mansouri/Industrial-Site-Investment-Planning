@@ -128,8 +128,45 @@
   <div class="card">
     <div class="section-head">
       <div>
-        <h2><span class="step">01</span>Problem definition</h2>
-        <p class="lede">Where a site may go, how many to build, how much capital, and which technologies are in scope.</p>
+        <h2><span class="step">01</span>Sites</h2>
+        <p class="lede">One card per site to build; add as many as you need. Each site has its own peak demand (MW), minimum green hydrogen share and demand flexibility. Hourly demand is the per-unit yearly curve in <code>inputs/site_demand.csv</code> (shared by all sites) times the site's peaks. The optimizer picks a country for every site, and several sites may share a country.</p>
+      </div>
+      <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
+    </div>
+    {{ form.n_sites }}
+    <div id="site-list" style="display:flex;flex-direction:column;gap:0;">
+      {% for site in form.site_rows %}
+      <div class="catalog-card site-card" data-site-index="{{ site.index }}">
+        <div class="section-head" style="margin-bottom:10px;">
+          <label class="prob-field" style="font-weight:600;color:var(--ink)">{{ site.name }}</label>
+          <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+            <label class="prob-field">Green H2 (%) {{ site.green }}</label>
+            <label class="prob-field">Flexibility (±%) {{ site.flex }}</label>
+            <button type="button" class="btn ghost small" data-reset="site">Reset site</button>
+            <button type="button" class="btn ghost small" data-remove-site>Remove site</button>
+          </div>
+        </div>
+        {% for e in site.green.errors %}<div class="error">{{ e }}</div>{% endfor %}
+        {% for e in site.flex.errors %}<div class="error">{{ e }}</div>{% endfor %}
+        <div style="overflow-x:auto">
+        <table class="catalog-table">
+          <thead><tr>{% for label in form.demand_service_labels %}<th>{{ label }} (MW)</th>{% endfor %}</tr></thead>
+          <tbody><tr>{% for f in site.peaks %}<td>{{ f }}{% for e in f.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>{% endfor %}</tr></tbody>
+        </table>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="toolbar">
+      <button type="button" class="btn ghost small" data-add-site>+ Add site</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="section-head">
+      <div>
+        <h2><span class="step">02</span>Problem definition</h2>
+        <p class="lede">Where the sites may go, how much capital, and which technologies are in scope.</p>
       </div>
       <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
     </div>
@@ -169,22 +206,11 @@
           {% for e in form.countries.errors %}<div class="error">{{ e }}</div>{% endfor %}
         </div>
       </div>
-      <div class="field">
-        <label>{{ form.n_sites.label }}</label>
-        {{ form.n_sites }}
-        <div class="help">{{ form.n_sites.help_text }}</div>
-        {% for e in form.n_sites.errors %}<div class="error">{{ e }}</div>{% endfor %}
-      </div>
-      <div class="field">
-        <label>{{ form.max_units_per_candidate.label }}</label>
-        {{ form.max_units_per_candidate }}
-        <div class="help">{{ form.max_units_per_candidate.help_text }}</div>
-      </div>
       <div class="field" style="grid-column: 1 / -1;">
-        <label>{{ form.disabled_assets.label }}</label>
+        <label>{{ form.active_assets.label }}</label>
         <table class="country-table">
           <tbody>
-            {% for row in form.disabled_asset_table_rows %}
+            {% for row in form.active_asset_table_rows %}
             <tr>
               {% for cell in row %}
               <td><label class="country-cell">{{ cell.tag }} {{ cell.choice_label }}</label></td>
@@ -193,40 +219,9 @@
             {% endfor %}
           </tbody>
         </table>
-        <div class="help">Ticked technologies are excluded at every site.</div>
+        <div class="help">Ticked technologies can be built at every site; untick one to leave it out of the run.</div>
+        {% for e in form.active_assets.errors %}<div class="error">{{ e }}</div>{% endfor %}
       </div>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="section-head">
-      <div>
-        <h2><span class="step">02</span>Sites</h2>
-        <p class="lede">One card per site to build. Each site has its own peak demand (MW), minimum green hydrogen share and demand flexibility. Hourly demand is the per-unit yearly curve in <code>inputs/site_demand.csv</code> (shared by all sites) times the site's peaks. The optimizer picks a country for every site, and several sites may share a country.</p>
-      </div>
-      <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:0;">
-      {% for site in form.site_rows %}
-      <div class="catalog-card site-card" data-site-index="{{ site.index }}">
-        <div class="section-head" style="margin-bottom:10px;">
-          <label class="prob-field" style="font-weight:600;color:var(--ink)">{{ site.name }}</label>
-          <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-            <label class="prob-field">Green H2 (%) {{ site.green }}</label>
-            <label class="prob-field">Flexibility (±%) {{ site.flex }}</label>
-            <button type="button" class="btn ghost small" data-reset="site">Reset site</button>
-          </div>
-        </div>
-        {% for e in site.green.errors %}<div class="error">{{ e }}</div>{% endfor %}
-        {% for e in site.flex.errors %}<div class="error">{{ e }}</div>{% endfor %}
-        <div style="overflow-x:auto">
-        <table class="catalog-table">
-          <thead><tr>{% for label in form.demand_service_labels %}<th>{{ label }} (MW)</th>{% endfor %}</tr></thead>
-          <tbody><tr>{% for f in site.peaks %}<td>{{ f }}{% for e in f.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>{% endfor %}</tr></tbody>
-        </table>
-        </div>
-      </div>
-      {% endfor %}
     </div>
   </div>
 
@@ -449,9 +444,32 @@
       rows.forEach(r => { r.hidden = !(all || picked.has(r.dataset.countryRow)); });
     }
     const nSitesInput = document.querySelector('input[name="n_sites"]');
+    const siteCards = Array.from(document.querySelectorAll('.site-card'));
+    function siteCount() { return Math.min(siteCards.length, Math.max(1, parseInt(nSitesInput.value, 10) || 1)); }
     function syncSites() {
-      const n = Math.max(1, parseInt(nSitesInput.value, 10) || 1);
-      document.querySelectorAll('.site-card').forEach(card => { card.hidden = Number(card.dataset.siteIndex) >= n; });
+      const n = siteCount();
+      nSitesInput.value = n;
+      siteCards.forEach(card => { card.hidden = Number(card.dataset.siteIndex) >= n; });
+      siteCards.forEach(card => { card.querySelector('[data-remove-site]').hidden = n < 2; });
+      document.querySelector('[data-add-site]').disabled = n >= siteCards.length;
+    }
+    function siteFields(card) {
+      const out = {};
+      card.querySelectorAll('input').forEach(i => {
+        const m = /^(site_[a-z]+)__\d+(.*)$/.exec(i.name || '');
+        if (m) out[m[1] + m[2]] = i;
+      });
+      return out;
+    }
+    function removeSite(index) {
+      const n = siteCount();
+      for (let j = index; j < n - 1; j++) {
+        const to = siteFields(siteCards[j]), from = siteFields(siteCards[j + 1]);
+        Object.keys(to).forEach(k => { if (from[k]) to[k].value = from[k].value; });
+      }
+      siteCards[n - 1].querySelectorAll('input').forEach(resetField);
+      nSitesInput.value = n - 1;
+      syncSites();
     }
     function syncRisk() {
       const n = scenarioCards().filter(c => c.on).length;
@@ -500,6 +518,7 @@
       const reset = e.target.closest('[data-reset]');
       if (reset) {
         const scope = reset.closest(RESET_SCOPES[reset.dataset.reset] || '.card');
+        if (scope.contains(nSitesInput) && reset.dataset.reset === 'section') nSitesInput.value = nSitesInput.defaultValue;
         resetWithin(scope);
         scope.querySelectorAll('.custom-scenario').forEach(card => card.remove());
         syncProbTotal();
@@ -535,6 +554,18 @@
         syncProbTotal();
         return;
       }
+      if (e.target.closest('[data-add-site]')) {
+        nSitesInput.value = siteCount() + 1;
+        syncSites();
+        const card = siteCards[siteCount() - 1];
+        card.querySelector('input[name^="site_name__"]').focus();
+        return;
+      }
+      const removeSiteBtn = e.target.closest('[data-remove-site]');
+      if (removeSiteBtn) {
+        removeSite(Number(removeSiteBtn.closest('.site-card').dataset.siteIndex));
+        return;
+      }
       const removeScenario = e.target.closest('[data-remove-scenario]');
       if (removeScenario) {
         removeScenario.closest('.custom-scenario').remove();
@@ -553,7 +584,6 @@
 
     allBox.addEventListener('change', syncCountries);
     countryInputs.forEach(c => c.addEventListener('change', syncCountryRows));
-    nSitesInput.addEventListener('input', syncSites);
     riskRadios.forEach(r => r.addEventListener('change', syncRisk));
     function syncFills(card) {
       card.querySelectorAll('[data-fill]').forEach(fill => {

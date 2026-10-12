@@ -8,7 +8,7 @@ import numpy as np
 from economic_dispatch import model as ed_model
 from economic_dispatch.config import RunConfig
 
-from .config import ASSETS, THERMAL_ASSET_SERVICES, CapexAssumptions, SiteSpec
+from .config import ASSETS, CAP_SERVICES, CapexAssumptions, SiteSpec
 from .demand import peak_demand_mw
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -55,9 +55,10 @@ def build_candidates(countries: list[str], capex_cfg: CapexAssumptions | None = 
 
 def site_max_mw(spec: SiteSpec, capex_cfg: CapexAssumptions | None = None) -> dict[str, float]:
     """Largest MW of each asset one site may host: ``capex_cfg.site_max_mw`` for the market-facing
-    assets, and ``thermal_oversize_factor`` times the site's own peak demand for each thermal asset."""
+    assets, and ``thermal_oversize_factor`` times the site's own peak demand of the services in
+    ``CAP_SERVICES`` for each heat and cooling asset."""
     capex_cfg = capex_cfg or CapexAssumptions()
     caps = dict(capex_cfg.site_max_mw)
-    for a, services in THERMAL_ASSET_SERVICES.items():
+    for a, services in CAP_SERVICES.items():
         caps[a] = capex_cfg.thermal_oversize_factor * peak_demand_mw(spec.peaks_mw, services)
     return caps
