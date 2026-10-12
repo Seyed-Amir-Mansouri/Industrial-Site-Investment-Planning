@@ -44,11 +44,13 @@ def demand_services() -> list[str]:
 
 @lru_cache(maxsize=1)
 def site_defaults() -> dict:
-    """The settings a new site starts from: daily peaks (MW), green hydrogen share and flexibility."""
+    """The settings a new site starts from on the New run page: every annual peak and flexibility at
+    0 (the user enters the site's own), and the default green hydrogen share."""
     import site_investor_planning as hp
 
     spec = hp.SiteSpec(name="Site 1")
-    return {"peaks_mw": dict(spec.peaks_mw), "green_share": spec.green_share, "flex_fraction": spec.flex_fraction}
+    return {"peaks_mw": {s: 0.0 for s in hp.SERVICES}, "green_share": spec.green_share,
+            "flex_fraction": {s: 0.0 for s in hp.SERVICES}}
 
 
 @lru_cache(maxsize=1)
@@ -56,24 +58,22 @@ def site_assumptions():
     import site_investor_planning as hp
 
     tech = hp.SITE_TECH
+    spec = hp.SiteSpec(name="Site 1")
     return {
         "services": list(hp.SERVICES),
-        "default_peaks": [site_defaults()["peaks_mw"][s] for s in hp.SERVICES],
-        "default_annual": list(hp.annual_demand_mwh(site_defaults()["peaks_mw"]).values()),
+        "default_peaks": [spec.peaks_mw[s] for s in hp.SERVICES],
+        "default_annual": list(hp.annual_demand_mwh(spec.peaks_mw).values()),
         "cop": [{"asset": a, "service": svc, "cop": tech.cop(a, svc)}
                 for a, services in hp.THERMAL_ASSET_SERVICES.items() for svc in services],
         "electrolyser_efficiency": 0.68,
-        "gas_heat_cost": tech.gas_heat_cost_eur_per_mwh_th,
-        "gas_price": tech.gas_price_eur_per_mwh,
-        "co2_price": tech.co2_price_eur_per_t,
-        "legacy_chiller_cop": tech.legacy_chiller_cop,
+        "unmet_penalty": tech.unmet_demand_penalty_eur_per_mwh,
         "grid_import_fee": tech.grid_import_fee_eur_per_mwh,
         "h2_import_fee": tech.h2_import_fee_eur_per_mwh,
         "green_share": site_defaults()["green_share"],
         "go_buy_price": hp.GREEN_H2.go_buy_price_eur_per_mwh,
         "go_sell_price": hp.GREEN_H2.go_sell_price_eur_per_mwh,
         "green_h2_premium": hp.GREEN_H2.green_h2_premium_eur_per_mwh,
-        "flex_pct": site_defaults()["flex_fraction"] * 100,
+        "flex_pct": spec.flex_fraction["electricity"] * 100,
     }
 
 
@@ -87,8 +87,53 @@ def capex_assumptions_defaults():
         "catalog": {a: [c._asdict() for c in cfg.catalog[a]] for a in hp.ASSETS},
         "discount_rate": cfg.discount_rate,
         "budget": cfg.default_budget_eur,
+        "cap_rules": {a: [factor, list(svcs)] for a, (factor, svcs) in cfg.cap_rules.items()},
+        "default_max_mw": hp.default_max_mw(site_defaults()["peaks_mw"], cfg),
         "lifetime_years": dict(cfg.lifetime_years),
     }
+
+
+@lru_cache(maxsize=1)
+def trained_error_ranges() -> dict[str, dict[str, list[int]]]:
+    """Per country, the wind and solar error (%) the price models were trained on: each training
+    scenario's installed capacity in that country compared with the Baseline's, as the share of
+    output lost (positive) or gained (negative), rounded inward to whole percent. Empty when the
+    training samples aren't on disk."""
+    import math
+
+    import pandas as pd
+
+    path = PROJECT_ROOT / "data_exchange" / "01_dispatch_output__train_input" / "elec_samples.parquet"
+    if not path.exists():
+        return {}
+    df = pd.read_parquet(path, columns=["scenario", "zone", "wind_capacity_mw", "pv_capacity_mw"])
+    per_zone = df.groupby(["scenario", "zone"])[["wind_capacity_mw", "pv_capacity_mw"]].max().reset_index()
+    per_zone["country"] = per_zone["zone"].str[:2]
+    per_country = per_zone.groupby(["scenario", "country"])[["wind_capacity_mw", "pv_capacity_mw"]].sum()
+    ratio = (per_country / per_country.loc["p100"]).reset_index()
+    out = {}
+    for country, g in ratio.groupby("country"):
+        out[country] = {kind: [math.ceil(round((1 - g[col].max()) * 100, 6)), math.floor(round((1 - g[col].min()) * 100, 6))]
+                        for kind, col in (("wind", "wind_capacity_mw"), ("solar", "pv_capacity_mw"))}
+    return out
+
+
+@lru_cache(maxsize=1)
+def cap_rule_rows() -> list[dict]:
+    """One row per asset for the Catalog page: how its default maximum MW per site follows the site's
+    peaks, and the value at the command-line default site's peaks."""
+    import site_investor_planning as hp
+
+    cfg = hp.CapexAssumptions()
+    example = hp.default_max_mw(hp.SiteSpec(name="Site 1").peaks_mw, cfg)
+    rows = []
+    for a, (factor, svcs) in cfg.cap_rules.items():
+        basis = " + ".join(SERVICE_LABELS[s][0].lower() + SERVICE_LABELS[s][1:] if i else SERVICE_LABELS[s]
+                           for i, s in enumerate(svcs))
+        rule = (f"1.25 × peak ÷ 68% efficiency (= {factor:.2f} × peak)" if a == "electrolyser_mw"
+                else f"{factor:g} × peak")
+        rows.append({"asset": a, "rule": rule, "basis": basis, "example": example[a]})
+    return rows
 
 
 @lru_cache(maxsize=1)
@@ -97,23 +142,21 @@ def eligible_countries() -> list[str]:
 
 
 ASSET_GROUPS = {
-    "electricity": ["wind_mw", "pv_mw", "battery_mw"],
-    "space_heat": ["heat_pump_mw"],
-    "process_heat": ["industrial_heat_pump_mw"],
-    "steam": ["electric_boiler_mw"],
-    "cooling": ["electric_chiller_mw"],
+    "electricity": ["wind_mw", "pv_mw", "battery_mw", "chp_mw"],
+    "space_heat": ["heat_pump_mw", "hot_water_storage_mw"],
+    "space_cool": ["ac_chiller_mw", "cold_storage_mw"],
+    "process_heat": ["industrial_heat_pump_mw", "solar_thermal_mw"],
+    "steam": ["electric_boiler_mw", "thermal_battery_mw"],
+    "process_cool": ["electric_chiller_mw", "heat_recovery_chiller_mw", "absorption_chiller_mw"],
     "hydrogen": ["electrolyser_mw", "tank_mw"],
 }
 GROUP_LABELS = {
-    "electricity": "Electricity", "space_heat": "Space heating", "process_heat": "Low/medium-temp process heat",
-    "steam": "High-temp heat and steam", "cooling": "Cooling", "hydrogen": "Hydrogen",
+    "electricity": "Electricity", "space_heat": "Space heating", "space_cool": "Space cooling",
+    "process_heat": "Process heat (up to 150 °C)", "steam": "Steam (above 150 °C)",
+    "process_cool": "Process cooling", "hydrogen": "Hydrogen",
 }
 GROUP_MAP_TOKENS = {g: f"--group-{g.replace('_', '-')}" for g in ASSET_GROUPS}
-SERVICE_LABELS = {
-    "electricity": "Electricity", "space_heat": "Space heating",
-    "process_heat": "Low/medium-temperature process heat", "steam": "High-temperature heat / steam",
-    "cooling": "Cooling", "hydrogen": "Hydrogen",
-}
+SERVICE_LABELS = GROUP_LABELS
 MARKER_MIN_DIAMETER = 18
 MARKER_MAX_DIAMETER = 56
 
@@ -254,9 +297,8 @@ def build_command(params: dict, output_prefix: Path) -> list[str]:
         cmd += ["--sites-file", str(Path(output_prefix).parent / SITES_FILE_NAME)]
     else:
         cmd += ["--n-sites", str(params.get("n_sites", 1))]
-    cmd += ["--budget", f"{params['budget']:.0f}",
-            "--max-units-per-candidate", str(params["max_units_per_candidate"]),
-            "--discount-rate", f"{params['discount_rate_pct'] / 100:.6f}",
+    cmd += ["--no-budget"] if params.get("budget") is None else ["--budget", f"{params['budget']:.0f}"]
+    cmd += ["--discount-rate", f"{params['discount_rate_pct'] / 100:.6f}",
             "--rep-days-per-month", str(params["rep_days_per_month"]),
             "--gap-tol", str(params["gap_tol"]),
             "--max-iters", str(params["max_iters"]),
@@ -265,6 +307,8 @@ def build_command(params: dict, output_prefix: Path) -> list[str]:
             "--output", str(output_prefix)]
     if params.get("risk_measure") == "cvar":
         cmd += ["--cvar-alpha", str(params["cvar_alpha"])]
+    if params.get("max_units_per_candidate"):
+        cmd += ["--max-units-per-candidate", str(params["max_units_per_candidate"])]
     if params.get("disabled_assets"):
         cmd += ["--disabled-assets", ",".join(params["disabled_assets"])]
     if params.get("scenarios"):
@@ -301,6 +345,8 @@ def parse_summary(output_prefix: Path, log: str) -> dict:
     capacities = _read_csv(Path(f"{output_prefix}_capacities.csv"))
     units = _read_csv(Path(f"{output_prefix}_units.csv"))
     green = [{k: _maybe_float(v) for k, v in row.items()} for row in _read_csv(Path(f"{output_prefix}_green_h2.csv"))]
+    unmet = [{k: _maybe_float(v) for k, v in row.items()}
+             for row in _read_csv(Path(f"{output_prefix}_unmet_demand.csv"))]
     convergence = _read_csv(Path(f"{output_prefix}_convergence.csv"))
 
     assets = list(capex_assumptions_defaults()["assets"])
@@ -326,6 +372,9 @@ def parse_summary(output_prefix: Path, log: str) -> dict:
         "units": units,
         "green_h2": green,
         "green_h2_expected": _expected_green(green),
+        "unmet_demand": _expected_unmet(unmet),
+        "unmet_labels": [GROUP_LABELS[k[len("unmet_"):-len("_mwh")]] for k in (unmet[0] if unmet else {})
+                         if k.startswith("unmet_") and k != "unmet_total_mwh"],
         "convergence": [{k: _maybe_float(v) for k, v in row.items()} for row in convergence],
         "totals_mw": totals,
     }
@@ -358,6 +407,22 @@ def _expected_green(rows: list[dict]) -> list[dict]:
         for k in keys:
             acc[k] += float(row[k]) * float(row["probability"])
     return list(out.values())
+
+
+def _expected_unmet(rows: list[dict]) -> list[dict]:
+    """Probability-weighted unmet heat and cooling demand (MWh/yr) per chosen site, one value per demand."""
+    services = [s for s in GROUP_LABELS if f"unmet_{s}_mwh" in (rows[0] if rows else {})]
+    out = {}
+    for row in rows:
+        site = row.get("site") or row["country"]
+        acc = out.setdefault(site, {"site": site, "country": row["country"], "total": 0.0,
+                                    "values": {s: 0.0 for s in services}})
+        p = float(row["probability"])
+        for s in services:
+            acc["values"][s] += float(row[f"unmet_{s}_mwh"]) * p
+        acc["total"] += float(row["unmet_total_mwh"]) * p
+    return [{**r, "values": [r["values"][s] for s in services]} for r in out.values()] if out else []
+
 
 
 def _maybe_float(value: str):

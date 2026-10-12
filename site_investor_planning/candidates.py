@@ -8,8 +8,9 @@ import numpy as np
 from economic_dispatch import model as ed_model
 from economic_dispatch.config import RunConfig
 
-from .config import ASSETS, THERMAL_ASSET_SERVICES, CapexAssumptions, SiteSpec
-from .demand import peak_demand_mw
+import math
+
+from .config import ASSETS, CapexAssumptions, SiteSpec
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ZONES_DB = ROOT / "inputs" / "zones_2030.parquet"
@@ -53,11 +54,19 @@ def build_candidates(countries: list[str], capex_cfg: CapexAssumptions | None = 
     return cand_mw, cand_capex, host_zone
 
 
-def site_max_mw(spec: SiteSpec, capex_cfg: CapexAssumptions | None = None) -> dict[str, float]:
-    """Largest MW of each asset one site may host: ``capex_cfg.site_max_mw`` for the market-facing
-    assets, and ``thermal_oversize_factor`` times the site's own peak demand for each thermal asset."""
+def default_max_mw(peaks_mw: dict[str, float], capex_cfg: CapexAssumptions | None = None) -> dict[str, float]:
+    """Default largest MW of each asset for a site with these annual peaks: each ``cap_rules`` factor
+    times the sum of the peaks it names, rounded up to a whole MW."""
     capex_cfg = capex_cfg or CapexAssumptions()
-    caps = dict(capex_cfg.site_max_mw)
-    for a, services in THERMAL_ASSET_SERVICES.items():
-        caps[a] = capex_cfg.thermal_oversize_factor * peak_demand_mw(spec.peaks_mw, services)
+    return {a: float(math.ceil(round(factor * sum(peaks_mw.get(s, 0.0) for s in services), 6)))
+            for a, (factor, services) in capex_cfg.cap_rules.items()}
+
+
+def site_max_mw(spec: SiteSpec, capex_cfg: CapexAssumptions | None = None) -> dict[str, float]:
+    """Largest MW of each asset one site may host: ``default_max_mw`` of the site's peaks, replaced by
+    the site's own ``max_mw`` where it gives one; an asset outside its ``active_assets`` gets 0."""
+    caps = default_max_mw(spec.peaks_mw, capex_cfg)
+    caps.update(spec.max_mw)
+    if spec.active_assets is not None:
+        caps = {a: (caps[a] if a in spec.active_assets else 0.0) for a in caps}
     return caps
