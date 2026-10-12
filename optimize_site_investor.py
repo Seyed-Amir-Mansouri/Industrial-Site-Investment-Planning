@@ -1,5 +1,5 @@
 """Industrial Site Investor operating LP: one or more industrial sites meeting their own electricity,
-heat, steam, cooling and hydrogen demand, trading surplus/deficit at the trained price proxy's prices."""
+heat, steam, space and process cooling and hydrogen demand, trading surplus/deficit at the trained price proxy's prices."""
 from __future__ import annotations
 
 import argparse
@@ -17,7 +17,9 @@ import xarray as xr
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+import highspy
 import linopy
+from linopy.io import to_highspy
 from economic_dispatch.config import RunConfig, discover_zones
 from economic_dispatch import model as ed_model
 from economic_dispatch import data_loader as ed_dl
@@ -25,7 +27,7 @@ from economic_dispatch import data_loader as ed_dl
 from price_model.multivariate import predict as model_predict
 from price_model.neighbors import add_neighbor_features, add_candidate_neighbor_prices, load_adjacency
 from price_model import api as price_api
-from site_investor_planning.config import (ASSETS, GREEN_H2, HEAT_SERVICES, SERVICES, SITE_TECH,
+from site_investor_planning.config import (ASSETS, GREEN_H2, SERVICES, SITE_TECH, THERMAL_SERVICES,
                                           THERMAL_ASSET_SERVICES, SiteSpec)
 from site_investor_planning.demand import site_demand
 
@@ -129,7 +131,7 @@ _ELEC_ZONE_OVERRIDES = {"BE": "BE00", "NL": "NL00"}
 TANK_EFFICIENCY = 0.99
 
 DEFAULT_SITE_CAPACITIES = {"wind_mw": 10.0, "pv_mw": 10.0, "battery_mw": 5.0,
-                           "heat_pump_mw": 2.0, "industrial_heat_pump_mw": 5.0,
+                           "heat_pump_mw": 2.0, "ac_chiller_mw": 2.0, "industrial_heat_pump_mw": 5.0,
                            "electric_boiler_mw": 5.0, "electric_chiller_mw": 2.0,
                            "electrolyser_mw": 5.0, "tank_mw": 1.0}
 
@@ -357,21 +359,17 @@ def proxy_price_series(elec_zone: str, hours: np.ndarray, h2_zone: str | None = 
 
 
 
-def _capacity_bounded(m: linopy.Model, name: str, coords: list[pd.Index], upper_val,
-                      return_duals: bool, cap_name: str):
-    """Build a [0, ``upper_val``]-bounded variable, using a named constraint instead of a plain bound when duals are needed."""
-    if not return_duals:
-        return m.add_variables(lower=0.0, upper=upper_val, coords=coords, name=name)
-    v = m.add_variables(lower=0.0, coords=coords, name=name)
-    m.add_constraints(v <= upper_val, name=cap_name)
-    return v
-
-
-_THERMAL_VARS = {"heat_pump_mw": "hp", "industrial_heat_pump_mw": "ihp",
+_THERMAL_VARS = {"heat_pump_mw": "hp", "ac_chiller_mw": "ac", "industrial_heat_pump_mw": "ihp",
                  "electric_boiler_mw": "eb", "electric_chiller_mw": "ch"}
-_THERMAL_LABELS = {"heat_pump_mw": "heat pump", "industrial_heat_pump_mw": "industrial heat pump",
-                   "electric_boiler_mw": "electric boiler", "electric_chiller_mw": "electric chiller"}
-_BACKUP_VARS = {**{svc: f"gas_{svc}" for svc in HEAT_SERVICES}, "cooling": "legacy_cold"}
+_THERMAL_LABELS = {"heat_pump_mw": "heat pump", "ac_chiller_mw": "AC chiller",
+                   "industrial_heat_pump_mw": "industrial heat pump",
+                   "electric_boiler_mw": "electric boiler", "electric_chiller_mw": "process chiller"}
+_UNMET_VARS = {svc: f"unmet_{svc}" for svc in THERMAL_SERVICES}
+_HEAT_SERVICES = ["space_heat", "process_heat"]
+_COOL_SERVICES = ["space_cool", "process_cool"]
+_MULTI_OUTPUTS = {"chp": _HEAT_SERVICES, "sth": _HEAT_SERVICES, "hrc_heat": _HEAT_SERVICES, "abs": _COOL_SERVICES}
+_MULTI_LABELS = {"chp": "CHP heat", "sth": "solar thermal", "hrc_heat": "heat-recovery chiller heat",
+                 "abs": "absorption chiller"}
 _BALANCES = {svc: f"{svc}_balance" for svc in SERVICES}
 
 
@@ -381,283 +379,428 @@ def _sample_days(rep_days_per_month: int, day_selection: str) -> tuple[list[int]
     return representative_days(rep_days_per_month)
 
 
-def _solve_sites(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, dict], sites: dict[str, float],
-                 days: list[int], day_weights: list[float], block_len: int,
-                 return_duals: bool, edf, hdf, quiet: bool, scenario: str | None) -> dict:
-    """Build and solve every unit's site LP together over ``days`` (``day_weights`` per day), cut
-    into blocks of ``block_len`` hours (24 = representative days, each its own storage cycle; the
-    whole horizon = one contiguous run). A unit is one site placed in one zone:
-    ``units[u] = (zone, spec)``, the zone giving prices, wind/PV profiles and the scenario derating,
-    the ``SiteSpec`` giving demand peaks, green hydrogen share and flexibility. ``sites[u]`` scales
-    unit ``u``'s internal demand: 1 = the site is built there, 0 = not (default 1). The site's
-    ``flex_fraction`` lets each hour's demand move by up to that fraction of itself, netting to zero
-    over each block.
+class SiteLP:
+    """Every unit's site LP over ``days`` (``day_weights`` per day), cut into blocks of ``block_len``
+    hours (24 = representative days, each its own storage cycle; the whole horizon = one contiguous
+    run), built once as a HiGHS model and re-solved for any capacities and site choice. A unit is one
+    site placed in one zone: ``units[u] = (zone, spec)``, the zone giving prices, wind/PV profiles and
+    the scenario derating, the ``SiteSpec`` giving demand peaks, green hydrogen share and flexibility.
+    ``sites[u]`` scales unit ``u``'s internal demand: 1 = the site is built there, 0 = not (default 1).
+    The site's ``flex_fraction`` of each service lets each hour's demand of that service move by up
+    to that fraction of itself, netting to zero over each block.
 
-    Each demand has its own hourly balance, served by its own asset(s) and its backup (gas boiler
-    for heat, legacy chiller for cooling, market imports for electricity and hydrogen). The site's
+    Each demand has its own hourly balance, served by its own asset(s). Electricity and hydrogen can
+    also be bought on the market; there is no existing plant, so heat or cooling the new assets can't
+    supply is left unmet and charged the unmet-demand penalty. Some assets link balances: the biogas
+    CHP makes electricity plus space or process heat, solar thermal serves space or process heat,
+    the heat-recovery chiller's cooling goes to process cooling and its rejected heat to space or
+    process heat, the absorption chiller turns process heat into space or process cooling, and the
+    thermal battery charges with electricity and discharges steam. Hot-water and chilled-water / ice
+    storage shift space heating and space cooling within the day. Heat that CHP, solar thermal and
+    the heat-recovery chiller can't use is released. The site's
     own wind/PV exported to the grid earns Guarantees of Origin it can sell, unless that output is
     claimed for green hydrogen. The electrolyser's green load in each hour must be covered by that
     hour's own (new, hence additional) wind/PV or GOs bought from additional plants, and green
     production plus certified green H2 purchases must reach the site's ``green_share`` of its annual
     hydrogen demand.
 
-    Cut coefficients: each asset's is the sum of the duals on its capacity constraints; the site's
-    is the sensitivity to switching the site on, which scales every balance's demand, every
-    flexibility band and the green hydrogen requirement. A solve HiGHS reports as failed is retried
-    once with presolve off."""
-    t0 = time.time()
-    green = GREEN_H2
-    tech = SITE_TECH
-    unit_ids = list(units)
-    hours = np.array([(d - 1) * HOURS_PER_DAY + h for d in days for h in range(HOURS_PER_DAY)], dtype=int)
-    H = len(hours)
-    n_blocks = H // block_len
+    Each asset's MW and each unit's on/off placement are columns fixed at the values being solved,
+    so a new point only changes those bounds and the electricity and hydrogen price costs (the price
+    proxy sees the site's own added capacity), and HiGHS restarts from the previous basis. The cut
+    coefficients are those fixed columns' reduced costs: each asset's is the sensitivity to its MW
+    across every constraint it bounds, the site's is the sensitivity to switching the site on, which
+    scales every balance's demand, every flexibility band and the green hydrogen requirement. A solve
+    HiGHS reports as failed is retried once from scratch with presolve off."""
 
-    unit_idx = pd.Index(unit_ids, name="unit")
-    day_idx = pd.RangeIndex(n_blocks, name="day")
-    hid_idx = pd.RangeIndex(block_len, name="hid")
-    coords = [unit_idx, day_idx, hid_idx]
-    weight_flat = np.repeat(np.asarray(day_weights, dtype=float), HOURS_PER_DAY)
-    w = xr.DataArray(weight_flat.reshape(n_blocks, block_len), coords=[day_idx, hid_idx])
+    def __init__(self, units: dict[str, tuple[str, SiteSpec]], days: list[int], day_weights: list[float],
+                 block_len: int, edf, hdf, quiet: bool, scenario: str | None):
+        t0 = time.time()
+        self.units, self.unit_ids, self.scenario = units, list(units), scenario
+        self.days = list(days)
+        self.hours = np.array([(d - 1) * HOURS_PER_DAY + h for d in days for h in range(HOURS_PER_DAY)], dtype=int)
+        self.H = H = len(self.hours)
+        n_blocks = H // block_len
+        unit_ids = self.unit_ids
+        unit_idx = pd.Index(unit_ids, name="unit")
+        day_idx = pd.RangeIndex(n_blocks, name="day")
+        hid_idx = pd.RangeIndex(block_len, name="hid")
+        coords = [unit_idx, day_idx, hid_idx]
+        self.weight_flat = np.repeat(np.asarray(day_weights, dtype=float), HOURS_PER_DAY)
+        w = xr.DataArray(self.weight_flat.reshape(n_blocks, block_len), coords=[day_idx, hid_idx])
+        self.w = w
+        edf = edf if edf is not None else enriched_elec_df()
+        hdf = hdf if hdf is not None else enriched_h2_df()
 
-    def r2d(a):
-        return np.asarray(a, dtype=float).reshape(n_blocks, block_len)
+        def r2d(a):
+            return np.asarray(a, dtype=float).reshape(n_blocks, block_len)
 
-    cfgs, sizings, host_zones = {}, {}, {}
-    stacks = {k: [] for k in ("wind_upper", "pv_upper", "wind_cf", "pv_cf", "p_elec", "p_h2",
-                              *(f"demand_{s}" for s in _BALANCES))}
-    for u in unit_ids:
-        z, spec = units[u]
-        (cfg, s, host_zone, wind_donor, pv_donor, wind_upper, pv_upper,
-         wind_cf_norm, pv_cf_norm) = sizing_and_profiles(z, hours, capacities[u], scenario)
-        cfgs[u], sizings[u], host_zones[u] = cfg, s, host_zone
-        elec_zone = _ELEC_ZONE_OVERRIDES.get(z[:2], z)
-        p_elec, p_h2 = proxy_price_series(elec_zone, hours, h2_zone=z, edf=edf, hdf=hdf,
-                                          wind_gen_add=wind_cf_norm * s["wind_mw"],
-                                          pv_gen_add=pv_cf_norm * s["pv_mw"],
-                                          battery_add=s["battery_mw"], electrolyser_add=s["electrolyser_mw"],
-                                          tank_add=s["tank_mw"])
-        demand = site_demand(spec.peaks_mw, hours)
-        for key, arr in (("wind_upper", wind_upper), ("pv_upper", pv_upper), ("wind_cf", wind_cf_norm),
-                         ("pv_cf", pv_cf_norm), ("p_elec", p_elec), ("p_h2", p_h2)):
-            stacks[key].append(r2d(arr))
-        for svc in _BALANCES:
-            stacks[f"demand_{svc}"].append(r2d(demand[svc]))
-    da = {k: xr.DataArray(np.stack(v), coords=coords) for k, v in stacks.items()}
-    site_da = xr.DataArray([float(sites.get(u, 1.0)) for u in unit_ids], coords=[unit_idx])
-    flex_da = xr.DataArray([float(units[u][1].flex_fraction) for u in unit_ids], coords=[unit_idx])
-    green_da = xr.DataArray([float(units[u][1].green_share) for u in unit_ids], coords=[unit_idx])
-    any_flex = bool((flex_da > 0).any())
-    any_green = bool((green_da > 0).any())
+        self.cfgs, self.host_zones, self.cf, self.frames = {}, {}, {}, {}
+        stacks = {k: [] for k in ("wind_cf", "pv_cf", *(f"demand_{s}" for s in _BALANCES))}
+        for u in unit_ids:
+            z, spec = units[u]
+            cfg, _, host_zone, _, _, _, _, wind_cf_norm, pv_cf_norm = sizing_and_profiles(z, self.hours, {}, scenario)
+            self.cfgs[u], self.host_zones[u] = cfg, host_zone
+            self.cf[u] = (wind_cf_norm, pv_cf_norm)
+            elec_zone = _ELEC_ZONE_OVERRIDES.get(z[:2], z)
+            self.frames[u] = (elec_zone, z,
+                              edf[(edf["zone"] == elec_zone) & (edf["hour"].isin(self.hours))],
+                              hdf[(hdf["zone"] == z) & (hdf["hour"].isin(self.hours))])
+            stacks["wind_cf"].append(r2d(wind_cf_norm))
+            stacks["pv_cf"].append(r2d(pv_cf_norm))
+            demand = site_demand(spec.peaks_mw, self.hours)
+            for svc in _BALANCES:
+                stacks[f"demand_{svc}"].append(r2d(demand[svc]))
+        self.da = da = {k: xr.DataArray(np.stack(v), coords=coords) for k, v in stacks.items()}
+        flex_da = {svc: xr.DataArray([units[u][1].flex_fraction[svc] for u in unit_ids], coords=[unit_idx])
+                   for svc in _BALANCES}
+        green_da = xr.DataArray([float(units[u][1].green_share) for u in unit_ids], coords=[unit_idx])
+        self.any_green = any_green = bool((green_da > 0).any())
 
-    def per_zone(key):
-        return xr.DataArray([sizings[u][key] for u in unit_ids], coords=[unit_idx])
+        self.cfg0 = cfg0 = self.cfgs[unit_ids[0]]
+        self.ely_eff = ely_eff = cfg0.g_investor_electrolyser_efficiency
+        batt_eff, tank_eff = cfg0.g_investor_battery_efficiency, cfg0.g_investor_tank_efficiency
+        self.sto_cost = sto_cost = cfg0.storage_op_cost_eur_per_mwh
+        batt_h, tank_h = cfg0.g_investor_battery_duration_hours, cfg0.g_investor_tank_duration_hours
+        soc0_frac = cfg0.initial_soc_fraction
 
-    cfg0 = cfgs[unit_ids[0]]
-    ely_eff = cfg0.g_investor_electrolyser_efficiency
-    batt_eff, tank_eff = cfg0.g_investor_battery_efficiency, cfg0.g_investor_tank_efficiency
-    sto_cost = cfg0.storage_op_cost_eur_per_mwh
-    batt_soc0 = cfg0.initial_soc_fraction * per_zone("battery_mwh")
-    tank_soc0 = cfg0.initial_soc_fraction * per_zone("tank_mwh")
+        m = linopy.Model()
+        cap = {a: m.add_variables(lower=0.0, upper=0.0, coords=[unit_idx], name=f"cap_{a}") for a in ASSETS}
+        site_on = m.add_variables(lower=0.0, upper=0.0, coords=[unit_idx], name="site_on")
 
-    m = linopy.Model()
-    wind_p = _capacity_bounded(m, "wind_p", coords, da["wind_upper"], return_duals, "wind_cap")
-    pv_p = _capacity_bounded(m, "pv_p", coords, da["pv_upper"], return_duals, "pv_cap")
-    batt_dis = _capacity_bounded(m, "batt_dis", coords, per_zone("battery_mw"), return_duals, "batt_dis_cap")
-    batt_ch = _capacity_bounded(m, "batt_ch", coords, per_zone("battery_mw"), return_duals, "batt_ch_cap")
-    batt_soc = _capacity_bounded(m, "batt_soc", coords, per_zone("battery_mwh"), return_duals, "batt_soc_cap")
-    tank_dis = _capacity_bounded(m, "tank_dis", coords, per_zone("tank_mw"), return_duals, "tank_dis_cap")
-    tank_ch = _capacity_bounded(m, "tank_ch", coords, per_zone("tank_mw"), return_duals, "tank_ch_cap")
-    tank_soc = _capacity_bounded(m, "tank_soc", coords, per_zone("tank_mwh"), return_duals, "tank_soc_cap")
-    ely_p = _capacity_bounded(m, "ely_p", coords, per_zone("electrolyser_mw"), return_duals, "ely_cap")
-    thermal = {(a, svc): m.add_variables(lower=0.0, coords=coords, name=f"{v}_{svc}")
-               for a, v in _THERMAL_VARS.items() for svc in THERMAL_ASSET_SERVICES[a]}
-    for a, v in _THERMAL_VARS.items():
-        m.add_constraints(sum(thermal[a, svc] for svc in THERMAL_ASSET_SERVICES[a]) <= per_zone(a),
-                          name=f"{v}_cap")
-    backup = {svc: m.add_variables(lower=0.0, coords=coords, name=v) for svc, v in _BACKUP_VARS.items()}
-    grid_buy = m.add_variables(lower=0.0, coords=coords, name="grid_buy")
-    grid_sell = m.add_variables(lower=0.0, coords=coords, name="grid_sell")
-    h2_buy = m.add_variables(lower=0.0, coords=coords, name="h2_buy")
-    h2_sell = m.add_variables(lower=0.0, coords=coords, name="h2_sell")
+        def bounded(name, coef, a, cap_name):
+            v = m.add_variables(lower=0.0, coords=coords, name=name)
+            m.add_constraints(v - coef * cap[a] <= 0, name=cap_name)
+            return v
 
-    for name, soc, ch, dis, soc0, eff in (("batt", batt_soc, batt_ch, batt_dis, batt_soc0, batt_eff),
-                                          ("tank", tank_soc, tank_ch, tank_dis, tank_soc0, tank_eff)):
-        m.add_constraints(soc.isel(hid=0) - soc0 - eff * ch.isel(hid=0) + dis.isel(hid=0) == 0,
-                          name=f"{name}_balance_0")
-        m.add_constraints(soc.isel(hid=slice(1, None)) - soc.isel(hid=slice(None, -1))
-                          - eff * ch.isel(hid=slice(1, None)) + dis.isel(hid=slice(1, None)) == 0,
-                          name=f"{name}_balance")
-        if cfg0.cyclic_storage:
-            m.add_constraints(soc.isel(hid=-1) >= soc0, name=f"{name}_cyclic")
+        wind_p = bounded("wind_p", da["wind_cf"], "wind_mw", "wind_cap")
+        pv_p = bounded("pv_p", da["pv_cf"], "pv_mw", "pv_cap")
+        batt_dis = bounded("batt_dis", 1.0, "battery_mw", "batt_dis_cap")
+        batt_ch = bounded("batt_ch", 1.0, "battery_mw", "batt_ch_cap")
+        batt_soc = bounded("batt_soc", batt_h, "battery_mw", "batt_soc_cap")
+        tank_dis = bounded("tank_dis", 1.0, "tank_mw", "tank_dis_cap")
+        tank_ch = bounded("tank_ch", 1.0, "tank_mw", "tank_ch_cap")
+        tank_soc = bounded("tank_soc", tank_h, "tank_mw", "tank_soc_cap")
+        ely_p = bounded("ely_p", 1.0, "electrolyser_mw", "ely_cap")
+        tech = SITE_TECH
+        chp_el = bounded("chp_el", 1.0, "chp_mw", "chp_cap")
+        hw_dis = bounded("hw_dis", 1.0, "hot_water_storage_mw", "hw_dis_cap")
+        hw_ch = bounded("hw_ch", 1.0, "hot_water_storage_mw", "hw_ch_cap")
+        hw_soc = bounded("hw_soc", tech.hot_water_storage_hours, "hot_water_storage_mw", "hw_soc_cap")
+        cs_dis = bounded("cs_dis", 1.0, "cold_storage_mw", "cs_dis_cap")
+        cs_ch = bounded("cs_ch", 1.0, "cold_storage_mw", "cs_ch_cap")
+        cs_soc = bounded("cs_soc", tech.cold_storage_hours, "cold_storage_mw", "cs_soc_cap")
+        tb_dis = bounded("tb_dis", 1.0, "thermal_battery_mw", "tb_dis_cap")
+        tb_ch = bounded("tb_ch", 1.0, "thermal_battery_mw", "tb_ch_cap")
+        tb_soc = bounded("tb_soc", tech.thermal_battery_hours, "thermal_battery_mw", "tb_soc_cap")
+        hrc_cool = bounded("hrc_cool", 1.0, "heat_recovery_chiller_mw", "hrc_cap")
+        thermal = {(a, svc): m.add_variables(lower=0.0, coords=coords, name=f"{v}_{svc}")
+                   for a, v in _THERMAL_VARS.items() for svc in THERMAL_ASSET_SERVICES[a]}
+        for a, v in _THERMAL_VARS.items():
+            m.add_constraints(sum(thermal[a, svc] for svc in THERMAL_ASSET_SERVICES[a]) - cap[a] <= 0,
+                              name=f"{v}_cap")
+        self.thermal_keys = list(thermal)
+        unmet = {svc: m.add_variables(lower=0.0, coords=coords, name=v) for svc, v in _UNMET_VARS.items()}
+        multi = {name: {svc: m.add_variables(lower=0.0, coords=coords, name=f"{name}_{svc}") for svc in svcs}
+                 for name, svcs in _MULTI_OUTPUTS.items()}
+        m.add_constraints(sum(multi["chp"].values())
+                          - (tech.chp_heat_efficiency / tech.chp_electric_efficiency) * chp_el <= 0,
+                          name="chp_heat_cap")
+        m.add_constraints(sum(multi["sth"].values()) - da["pv_cf"] * cap["solar_thermal_mw"] <= 0, name="sth_cap")
+        m.add_constraints(sum(multi["hrc_heat"].values()) - (1.0 + 1.0 / tech.heat_recovery_chiller_cop) * hrc_cool
+                          <= 0, name="hrc_heat_cap")
+        m.add_constraints(sum(multi["abs"].values()) - cap["absorption_chiller_mw"] <= 0, name="abs_cap")
 
-    shift = {}
-    for svc in _BALANCES:
-        if not any_flex:
-            continue
-        sh = m.add_variables(coords=coords, name=f"shift_{svc}")
-        band = flex_da * da[f"demand_{svc}"] * site_da
-        m.add_constraints(sh <= band, name=f"shift_up_{svc}")
-        m.add_constraints(-1 * sh <= band, name=f"shift_down_{svc}")
-        m.add_constraints(sh.sum("hid") == 0, name=f"shift_net_{svc}")
-        shift[svc] = sh
+        grid_buy = m.add_variables(lower=0.0, coords=coords, name="grid_buy")
+        grid_sell = m.add_variables(lower=0.0, coords=coords, name="grid_sell")
+        h2_buy = m.add_variables(lower=0.0, coords=coords, name="h2_buy")
+        h2_sell = m.add_variables(lower=0.0, coords=coords, name="h2_sell")
 
-    def served(svc, expr):
-        """Supply side of ``svc``'s balance, net of its demand shift (balance RHS stays demand * site)."""
-        return expr - shift[svc] if svc in shift else expr
-
-    thermal_elec = sum((1.0 / tech.cop(a, svc)) * q for (a, svc), q in thermal.items())
-    m.add_constraints(served("electricity", wind_p + pv_p + batt_dis - batt_ch - ely_p - thermal_elec
-                                            - (1.0 / tech.legacy_chiller_cop) * backup["cooling"]
-                                            + grid_buy - grid_sell)
-                      == da["demand_electricity"] * site_da, name=_BALANCES["electricity"])
-    m.add_constraints(served("hydrogen", ely_eff * ely_p + tank_dis - tank_ch + h2_buy - h2_sell)
-                      == da["demand_hydrogen"] * site_da, name=_BALANCES["hydrogen"])
-    for (a, svc), q in thermal.items():
-        m.add_constraints(served(svc, q + backup[svc]) == da[f"demand_{svc}"] * site_da,
-                          name=_BALANCES[svc])
-
-    go_sell = m.add_variables(lower=0.0, coords=coords, name="go_sell")
-    m.add_constraints(go_sell - grid_sell <= 0, name="go_sell_export")
-    green_cost = -green.go_sell_price_eur_per_mwh * (w * go_sell).sum()
-    if any_green:
-        ely_green = m.add_variables(lower=0.0, coords=coords, name="ely_green")
-        res_to_ely = m.add_variables(lower=0.0, coords=coords, name="res_to_ely")
-        go_buy = m.add_variables(lower=0.0, coords=coords, name="go_buy")
-        h2_buy_green = m.add_variables(lower=0.0, coords=coords, name="h2_buy_green")
-        m.add_constraints(ely_green - ely_p <= 0, name="ely_green_cap")
-        m.add_constraints(ely_green - res_to_ely - go_buy == 0, name="ely_green_matching")
-        m.add_constraints(res_to_ely + go_sell - wind_p - pv_p <= 0, name="res_attribution")
-        m.add_constraints(h2_buy_green - h2_buy <= 0, name="h2_buy_green_cap")
-        annual_h2 = (w * da["demand_hydrogen"]).sum(["day", "hid"])
-        m.add_constraints((w * (ely_eff * ely_green + h2_buy_green)).sum(["day", "hid"])
-                          >= green_da * annual_h2 * site_da, name="green_h2_share")
-        green_cost = (green_cost + green.go_buy_price_eur_per_mwh * (w * go_buy).sum()
-                      + green.green_h2_premium_eur_per_mwh * (w * h2_buy_green).sum())
-
-    gas_cost = tech.gas_heat_cost_eur_per_mwh_th
-    gas_heat = sum(backup[svc] for svc in HEAT_SERVICES)
-    cost = ((w * (da["p_elec"] + tech.grid_import_fee_eur_per_mwh) * grid_buy).sum()
-            - (w * da["p_elec"] * grid_sell).sum()
-            + (w * (da["p_h2"] + tech.h2_import_fee_eur_per_mwh) * h2_buy).sum()
-            - (w * da["p_h2"] * h2_sell).sum()
-            + gas_cost * (w * gas_heat).sum()
-            + sto_cost * ((w * batt_ch).sum() + (w * batt_dis).sum() + (w * tank_ch).sum() + (w * tank_dis).sum())
-            + green_cost)
-    m.add_objective(cost)
-
-    build_s = time.time() - t0
-    t1 = time.time()
-    solver_kwargs = {"output_flag": False} if quiet else {}
-    status, condition = m.solve(solver_name="highs", **solver_kwargs)
-    if status != "ok":
-        status, condition = m.solve(solver_name="highs", presolve="off", **solver_kwargs)
-    solve_s = time.time() - t1
-    if status != "ok":
-        raise RuntimeError(f"site solve failed: {status}/{condition}")
-
-    cut_coeffs, site_coeffs = None, None
-    if return_duals:
-        hd = ["day", "hid"]
-        dual = m.dual
-        soc0_terms = {}
-        for name in ("batt", "tank"):
-            t = dual[f"{name}_balance_0"].sum("day")
+        for name, soc, ch, dis, eff, a, dur in (
+                ("batt", batt_soc, batt_ch, batt_dis, batt_eff, "battery_mw", batt_h),
+                ("tank", tank_soc, tank_ch, tank_dis, tank_eff, "tank_mw", tank_h),
+                ("hw", hw_soc, hw_ch, hw_dis, tech.hot_water_storage_efficiency, "hot_water_storage_mw",
+                 tech.hot_water_storage_hours),
+                ("cs", cs_soc, cs_ch, cs_dis, tech.cold_storage_efficiency, "cold_storage_mw", tech.cold_storage_hours),
+                ("tb", tb_soc, tb_ch, tb_dis, tech.thermal_battery_efficiency, "thermal_battery_mw",
+                 tech.thermal_battery_hours)):
+            m.add_constraints(soc.isel(hid=0) - soc0_frac * dur * cap[a] - eff * ch.isel(hid=0) + dis.isel(hid=0) == 0,
+                              name=f"{name}_balance_0")
+            m.add_constraints(soc.isel(hid=slice(1, None)) - soc.isel(hid=slice(None, -1))
+                              - eff * ch.isel(hid=slice(1, None)) + dis.isel(hid=slice(1, None)) == 0,
+                              name=f"{name}_balance")
             if cfg0.cyclic_storage:
-                t = t + dual[f"{name}_cyclic"].sum("day")
-            soc0_terms[name] = t
-        mu = {
-            "wind_mw": (dual["wind_cap"] * da["wind_cf"]).sum(hd),
-            "pv_mw": (dual["pv_cap"] * da["pv_cf"]).sum(hd),
-            "battery_mw": (dual["batt_dis_cap"].sum(hd) + dual["batt_ch_cap"].sum(hd)
-                           + dual["batt_soc_cap"].sum(hd) * cfg0.g_investor_battery_duration_hours
-                           + soc0_terms["batt"] * cfg0.initial_soc_fraction * cfg0.g_investor_battery_duration_hours),
-            "tank_mw": (dual["tank_dis_cap"].sum(hd) + dual["tank_ch_cap"].sum(hd)
-                        + dual["tank_soc_cap"].sum(hd) * cfg0.g_investor_tank_duration_hours
-                        + soc0_terms["tank"] * cfg0.initial_soc_fraction * cfg0.g_investor_tank_duration_hours),
-            "electrolyser_mw": dual["ely_cap"].sum(hd),
-            **{a: dual[f"{v}_cap"].sum(hd) for a, v in _THERMAL_VARS.items()},
-        }
-        lam = sum((dual[con] * da[f"demand_{svc}"]).sum(hd) for svc, con in _BALANCES.items())
-        for svc in shift:
-            band_per_site = flex_da * da[f"demand_{svc}"]
-            lam = lam + ((dual[f"shift_up_{svc}"] + dual[f"shift_down_{svc}"]) * band_per_site).sum(hd)
-        if any_green:
-            lam = lam + dual["green_h2_share"] * green_da * annual_h2
-        cut_coeffs = {u: {a: float(mu[a].sel(unit=u)) for a in ASSETS} for u in unit_ids}
-        site_coeffs = {u: float(lam.sel(unit=u)) for u in unit_ids}
+                m.add_constraints(soc.isel(hid=-1) - soc0_frac * dur * cap[a] >= 0, name=f"{name}_cyclic")
 
-    sol = m.solution
-    schedules, objective_by_zone = {}, {}
-    for u in unit_ids:
-        def v(name):
-            return np.asarray(sol[name].sel(unit=u).values).reshape(-1)
-        p_elec_z = np.asarray(da["p_elec"].sel(unit=u).values).reshape(-1)
-        p_h2_z = np.asarray(da["p_h2"].sel(unit=u).values).reshape(-1)
-        gb, gs, hb, hs = v("grid_buy"), v("grid_sell"), v("h2_buy"), v("h2_sell")
-        gas = sum(v(_BACKUP_VARS[svc]) for svc in HEAT_SERVICES)
-        bc, bd, tc, td = v("batt_ch"), v("batt_dis"), v("tank_ch"), v("tank_dis")
-        zero = np.zeros(H)
-        gos = v("go_sell")
-        gob, hbg, eg, re = ((v("go_buy"), v("h2_buy_green"), v("ely_green"), v("res_to_ely"))
-                            if any_green else (zero, zero, zero, zero))
-        z_cost = float((weight_flat * ((p_elec_z + tech.grid_import_fee_eur_per_mwh) * gb - p_elec_z * gs
-                                       + (p_h2_z + tech.h2_import_fee_eur_per_mwh) * hb - p_h2_z * hs
-                                       + gas_cost * gas + sto_cost * (bc + bd + tc + td)
-                                       + green.go_buy_price_eur_per_mwh * gob
-                                       - green.go_sell_price_eur_per_mwh * gos
-                                       + green.green_h2_premium_eur_per_mwh * hbg)).sum())
-        objective_by_zone[u] = z_cost
-
-        site_z = float(site_da.sel(unit=u))
-        out = pd.DataFrame({"hour": np.arange(H)})
+        shift = {}
         for svc in _BALANCES:
-            out[f"Site {svc} demand (MW)"] = site_z * np.asarray(da[f"demand_{svc}"].sel(unit=u).values).reshape(-1)
-            out[f"Site {svc} demand shift (MW)"] = v(f"shift_{svc}") if svc in shift else 0.0
-        out["Site wind (MW)"] = v("wind_p")
-        out["Site pv (MW)"] = v("pv_p")
-        out["Site battery discharge (MW)"] = bd
-        out["Site battery charge (-) (MW)"] = -bc
-        out["Site grid import (MW)"] = gb
-        out["Site grid export (-) (MW)"] = -gs
-        out["Site electrolyser load (-) (MW)"] = -v("ely_p")
-        out["Site electrolyser production (MW)"] = ely_eff * v("ely_p")
-        out["Site tank discharge (MW)"] = td
-        out["Site tank charge (-) (MW)"] = -tc
-        out["Site H2 import (MW)"] = hb
-        out["Site H2 export (-) (MW)"] = -hs
-        out["Site electrolyser green load (MW)"] = eg
-        out["Site green H2 produced (MW)"] = ely_eff * eg
-        out["Site own wind/PV claimed for green H2 (MW)"] = re
-        out["Site GOs bought (MWh/h)"] = gob
-        out["Site GOs sold (MWh/h)"] = gos
-        out["Site green H2 bought (MW)"] = hbg
-        for (a, svc) in thermal:
-            out[f"Site {_THERMAL_LABELS[a]} -> {svc} (MW)"] = v(f"{_THERMAL_VARS[a]}_{svc}")
-        for svc in HEAT_SERVICES:
-            out[f"Site gas boiler -> {svc} (MW)"] = v(_BACKUP_VARS[svc])
-        out["Site legacy chiller -> cooling (MW)"] = v("legacy_cold")
-        out["day_of_year"] = np.repeat(days, HOURS_PER_DAY)
-        out["day_weight"] = weight_flat
-        out.attrs.update({"objective": z_cost, "p_elec": p_elec_z, "p_h2": p_h2_z, "host_zone": host_zones[u],
-                          "site_name": units[u][1].name,
-                          "sizing": sizings[u], "capacities": {a: sizings[u][a] for a in ASSETS},
-                          "site": site_z, "cut_coeffs": cut_coeffs[u] if cut_coeffs else None,
-                          "green_h2_share": (float((weight_flat * (ely_eff * eg + hbg)).sum()
-                                                   / (weight_flat * out["Site hydrogen demand (MW)"]).sum())
-                                             if site_z > 0 else None),
-                          "site_coeff": site_coeffs[u] if site_coeffs else None})
-        schedules[u] = out
+            if not bool((flex_da[svc] > 0).any()):
+                continue
+            sh = m.add_variables(coords=coords, name=f"shift_{svc}")
+            band = flex_da[svc] * da[f"demand_{svc}"]
+            m.add_constraints(sh - band * site_on <= 0, name=f"shift_up_{svc}")
+            m.add_constraints(-1 * sh - band * site_on <= 0, name=f"shift_down_{svc}")
+            m.add_constraints(sh.sum("hid") == 0, name=f"shift_net_{svc}")
+            shift[svc] = sh
+        self.shift_svcs = list(shift)
 
-    return {
-        "objective": float(m.objective.value),
-        "objective_by_zone": objective_by_zone,
-        "schedules": schedules,
-        "cut_coeffs": cut_coeffs,
-        "site_coeffs": site_coeffs,
-        "build_seconds": build_s,
-        "solve_seconds": solve_s,
-    }
+        def served(svc, expr):
+            """Supply side of ``svc``'s balance, net of its demand shift."""
+            return expr - shift[svc] if svc in shift else expr
+
+        thermal_elec = sum((1.0 / SITE_TECH.cop(a, svc)) * q for (a, svc), q in thermal.items())
+        m.add_constraints(served("electricity", wind_p + pv_p + batt_dis - batt_ch - ely_p - thermal_elec
+                                                + chp_el - tb_ch - (1.0 / tech.heat_recovery_chiller_cop) * hrc_cool
+                                                + grid_buy - grid_sell)
+                          - da["demand_electricity"] * site_on == 0, name=_BALANCES["electricity"])
+        m.add_constraints(served("hydrogen", ely_eff * ely_p + tank_dis - tank_ch + h2_buy - h2_sell)
+                          - da["demand_hydrogen"] * site_on == 0, name=_BALANCES["hydrogen"])
+        supply = {svc: 1.0 * unmet[svc] for svc in THERMAL_SERVICES}
+        for (a, svc), q in thermal.items():
+            supply[svc] = supply[svc] + q
+        for name in ("chp", "sth", "hrc_heat", "abs"):
+            for svc, q in multi[name].items():
+                supply[svc] = supply[svc] + q
+        supply["space_heat"] = supply["space_heat"] + hw_dis - hw_ch
+        supply["space_cool"] = supply["space_cool"] + cs_dis - cs_ch
+        supply["steam"] = supply["steam"] + tb_dis
+        supply["process_cool"] = supply["process_cool"] + hrc_cool
+        supply["process_heat"] = supply["process_heat"] - (1.0 / tech.absorption_chiller_cop) * sum(multi["abs"].values())
+        for svc in THERMAL_SERVICES:
+            m.add_constraints(served(svc, supply[svc]) - da[f"demand_{svc}"] * site_on == 0, name=_BALANCES[svc])
+
+        green = GREEN_H2
+        go_sell = m.add_variables(lower=0.0, coords=coords, name="go_sell")
+        m.add_constraints(go_sell - grid_sell <= 0, name="go_sell_export")
+        green_cost = -green.go_sell_price_eur_per_mwh * (w * go_sell).sum()
+        if any_green:
+            ely_green = m.add_variables(lower=0.0, coords=coords, name="ely_green")
+            res_to_ely = m.add_variables(lower=0.0, coords=coords, name="res_to_ely")
+            go_buy = m.add_variables(lower=0.0, coords=coords, name="go_buy")
+            h2_buy_green = m.add_variables(lower=0.0, coords=coords, name="h2_buy_green")
+            m.add_constraints(ely_green - ely_p <= 0, name="ely_green_cap")
+            m.add_constraints(ely_green - res_to_ely - go_buy == 0, name="ely_green_matching")
+            m.add_constraints(res_to_ely + go_sell - wind_p - pv_p <= 0, name="res_attribution")
+            m.add_constraints(h2_buy_green - h2_buy <= 0, name="h2_buy_green_cap")
+            annual_h2 = (w * da["demand_hydrogen"]).sum(["day", "hid"])
+            m.add_constraints((w * (ely_eff * ely_green + h2_buy_green)).sum(["day", "hid"])
+                              - green_da * annual_h2 * site_on >= 0, name="green_h2_share")
+            green_cost = (green_cost + green.go_buy_price_eur_per_mwh * (w * go_buy).sum()
+                          + green.green_h2_premium_eur_per_mwh * (w * h2_buy_green).sum())
+
+        unmet_total = sum(unmet[svc] for svc in THERMAL_SERVICES)
+        zero_price = xr.zeros_like(da["wind_cf"])
+        m.add_objective((w * zero_price * grid_buy).sum() + (w * zero_price * grid_sell).sum()
+                        + (w * zero_price * h2_buy).sum() + (w * zero_price * h2_sell).sum()
+                        + tech.unmet_demand_penalty_eur_per_mwh * (w * unmet_total).sum()
+                        + sto_cost * sum((w * x).sum() for x in (batt_ch, batt_dis, tank_ch, tank_dis, hw_ch, hw_dis,
+                                                                  cs_ch, cs_dis, tb_ch, tb_dis))
+                        + (tech.biogas_price_eur_per_mwh / tech.chp_electric_efficiency) * (w * chp_el).sum()
+                        + green_cost)
+
+        M = m.matrices
+        vpos = np.full(m._xCounter, -1, dtype=np.int64)
+        vpos[M.vlabels] = np.arange(len(M.vlabels))
+        self.var_pos = {}
+        for name in m.variables:
+            pos = vpos[m.variables[name].labels.values]
+            self.var_pos[name] = pos
+        self.cap_pos = {a: self.var_pos[f"cap_{a}"] for a in ASSETS}
+        self.site_pos = self.var_pos["site_on"]
+        self.price_pos = {k: self.var_pos[k].ravel() for k in ("grid_buy", "grid_sell", "h2_buy", "h2_sell")}
+        for name in (*(f"cap_{a}" for a in ASSETS), "site_on", *self.price_pos):
+            assert (self.var_pos[name] >= 0).all(), f"{name} is missing from the HiGHS model"
+        self.h = to_highspy(m, set_names=False)
+        self.h.setOptionValue("output_flag", not quiet)
+        del m, M
+        self.setup_seconds = time.time() - t0
+
+    def solve(self, capacities: dict[str, dict], sites: dict[str, float], return_duals: bool = True) -> dict:
+        """Solve at ``capacities[u]`` (MW per asset) and ``sites[u]`` (on/off, default 1) for every unit;
+        returns the same result dict as ``_solve_sites``."""
+        t0 = time.time()
+        tech, green = SITE_TECH, GREEN_H2
+        h, unit_ids, H = self.h, self.unit_ids, self.H
+        sizings, prices = {}, {}
+        for u in unit_ids:
+            z, _ = self.units[u]
+            sizing = {a: float(capacities[u].get(a, 0.0)) for a in ASSETS}
+            sizing["battery_mwh"] = sizing["battery_mw"] * self.cfgs[u].g_investor_battery_duration_hours
+            sizing["tank_mwh"] = sizing["tank_mw"] * self.cfgs[u].g_investor_tank_duration_hours
+            sizings[u] = sizing
+            wind_cf_norm, pv_cf_norm = self.cf[u]
+            elec_zone, h2_zone, erows, hrows = self.frames[u]
+            prices[u] = proxy_price_series(elec_zone, self.hours, h2_zone=h2_zone, edf=erows, hdf=hrows,
+                                           wind_gen_add=wind_cf_norm * sizing["wind_mw"],
+                                           pv_gen_add=pv_cf_norm * sizing["pv_mw"],
+                                           battery_add=sizing["battery_mw"],
+                                           electrolyser_add=sizing["electrolyser_mw"], tank_add=sizing["tank_mw"])
+        site_vals = {u: float(sites.get(u, 1.0)) for u in unit_ids}
+
+        fixed_idx = np.concatenate([self.cap_pos[a] for a in ASSETS] + [self.site_pos]).astype(np.int32)
+        fixed_val = np.array([sizings[u][a] for a in ASSETS for u in unit_ids]
+                             + [site_vals[u] for u in unit_ids], dtype=float)
+        h.changeColsBounds(len(fixed_idx), fixed_idx, fixed_val, fixed_val)
+        wf = self.weight_flat
+        cost = {"grid_buy": [wf * (prices[u][0] + tech.grid_import_fee_eur_per_mwh) for u in unit_ids],
+                "grid_sell": [-wf * prices[u][0] for u in unit_ids],
+                "h2_buy": [wf * (prices[u][1] + tech.h2_import_fee_eur_per_mwh) for u in unit_ids],
+                "h2_sell": [-wf * prices[u][1] for u in unit_ids]}
+        cost_idx = np.concatenate([self.price_pos[k] for k in cost]).astype(np.int32)
+        cost_val = np.concatenate([np.concatenate(cost[k]) for k in cost])
+        h.changeColsCost(len(cost_idx), cost_idx, cost_val)
+        build_s = time.time() - t0
+
+        t1 = time.time()
+        h.run()
+        if h.getModelStatus() != highspy.HighsModelStatus.kOptimal:
+            h.clearSolver()
+            h.setOptionValue("presolve", "off")
+            h.run()
+            h.setOptionValue("presolve", "choose")
+        solve_s = time.time() - t1
+        if h.getModelStatus() != highspy.HighsModelStatus.kOptimal:
+            raise RuntimeError(f"site solve failed: {h.modelStatusToString(h.getModelStatus())}")
+
+        sol = h.getSolution()
+        col = np.asarray(sol.col_value)
+        cut_coeffs = site_coeffs = None
+        if return_duals:
+            rc = np.asarray(sol.col_dual)
+            cut_coeffs = {u: {a: float(rc[self.cap_pos[a][i]]) for a in ASSETS} for i, u in enumerate(unit_ids)}
+            site_coeffs = {u: float(rc[self.site_pos[i]]) for i, u in enumerate(unit_ids)}
+
+        penalty = tech.unmet_demand_penalty_eur_per_mwh
+        weight_flat, ely_eff, sto_cost = self.weight_flat, self.ely_eff, self.sto_cost
+        schedules, objective_by_zone = {}, {}
+        for i, u in enumerate(unit_ids):
+            def v(name):
+                return col[self.var_pos[name][i]].reshape(-1)
+            p_elec_z, p_h2_z = prices[u]
+            gb, gs, hb, hs = v("grid_buy"), v("grid_sell"), v("h2_buy"), v("h2_sell")
+            unmet_mw = sum(v(_UNMET_VARS[svc]) for svc in THERMAL_SERVICES)
+            bc, bd, tc, td = v("batt_ch"), v("batt_dis"), v("tank_ch"), v("tank_dis")
+            sto_mwh = bc + bd + tc + td + sum(v(f"{k}_{d}") for k in ("hw", "cs", "tb") for d in ("ch", "dis"))
+            chp = v("chp_el")
+            fuel = chp / tech.chp_electric_efficiency
+            zero = np.zeros(H)
+            gos = v("go_sell")
+            gob, hbg, eg, re = ((v("go_buy"), v("h2_buy_green"), v("ely_green"), v("res_to_ely"))
+                                if self.any_green else (zero, zero, zero, zero))
+            z_cost = float((weight_flat * ((p_elec_z + tech.grid_import_fee_eur_per_mwh) * gb - p_elec_z * gs
+                                           + (p_h2_z + tech.h2_import_fee_eur_per_mwh) * hb - p_h2_z * hs
+                                           + penalty * unmet_mw + sto_cost * sto_mwh
+                                           + tech.biogas_price_eur_per_mwh * fuel
+                                           + green.go_buy_price_eur_per_mwh * gob
+                                           - green.go_sell_price_eur_per_mwh * gos
+                                           + green.green_h2_premium_eur_per_mwh * hbg)).sum())
+            objective_by_zone[u] = z_cost
+
+            site_z = site_vals[u]
+            out = pd.DataFrame({"hour": np.arange(H)})
+            for svc in _BALANCES:
+                out[f"Site {svc} demand (MW)"] = site_z * np.asarray(self.da[f"demand_{svc}"].sel(unit=u).values).reshape(-1)
+                out[f"Site {svc} demand shift (MW)"] = v(f"shift_{svc}") if svc in self.shift_svcs else 0.0
+            out["Site wind (MW)"] = v("wind_p")
+            out["Site pv (MW)"] = v("pv_p")
+            out["Site battery discharge (MW)"] = bd
+            out["Site battery charge (-) (MW)"] = -bc
+            out["Site grid import (MW)"] = gb
+            out["Site grid export (-) (MW)"] = -gs
+            out["Site electrolyser load (-) (MW)"] = -v("ely_p")
+            out["Site electrolyser production (MW)"] = ely_eff * v("ely_p")
+            out["Site tank discharge (MW)"] = td
+            out["Site tank charge (-) (MW)"] = -tc
+            out["Site H2 import (MW)"] = hb
+            out["Site H2 export (-) (MW)"] = -hs
+            out["Site electrolyser green load (MW)"] = eg
+            out["Site green H2 produced (MW)"] = ely_eff * eg
+            out["Site own wind/PV claimed for green H2 (MW)"] = re
+            out["Site GOs bought (MWh/h)"] = gob
+            out["Site GOs sold (MWh/h)"] = gos
+            out["Site green H2 bought (MW)"] = hbg
+            for (a, svc) in self.thermal_keys:
+                q = v(f"{_THERMAL_VARS[a]}_{svc}")
+                out[f"Site {_THERMAL_LABELS[a]} -> {svc} (MW)"] = q
+                out[f"Site {_THERMAL_LABELS[a]} electricity (-) (MW)"] = -q / tech.cop(a, svc)
+            out["Site CHP electricity (MW)"] = chp
+            out["Site CHP biogas (MW)"] = fuel
+            for name, svcs in _MULTI_OUTPUTS.items():
+                for svc in svcs:
+                    out[f"Site {_MULTI_LABELS[name]} -> {svc} (MW)"] = v(f"{name}_{svc}")
+            hrc = v("hrc_cool")
+            out["Site heat-recovery chiller -> process_cool (MW)"] = hrc
+            out["Site heat-recovery chiller electricity (-) (MW)"] = -hrc / tech.heat_recovery_chiller_cop
+            out["Site absorption chiller heat (-) (MW)"] = -sum(v(f"abs_{svc}") for svc in _COOL_SERVICES) \
+                / tech.absorption_chiller_cop
+            for k, label in (("hw", "hot-water storage"), ("cs", "cold storage"), ("tb", "thermal battery")):
+                out[f"Site {label} discharge (MW)"] = v(f"{k}_dis")
+                out[f"Site {label} charge (-) (MW)"] = -v(f"{k}_ch")
+            for svc in THERMAL_SERVICES:
+                out[f"Site unmet {svc} demand (MW)"] = v(_UNMET_VARS[svc])
+            out["day_of_year"] = np.repeat(self.days, HOURS_PER_DAY)
+            out["day_weight"] = weight_flat
+            out.attrs.update({"objective": z_cost, "p_elec": p_elec_z, "p_h2": p_h2_z,
+                              "host_zone": self.host_zones[u], "site_name": self.units[u][1].name,
+                              "sizing": sizings[u], "capacities": {a: sizings[u][a] for a in ASSETS},
+                              "site": site_z, "cut_coeffs": cut_coeffs[u] if cut_coeffs else None,
+                              "green_h2_share": (float((weight_flat * (ely_eff * eg + hbg)).sum()
+                                                       / (weight_flat * out["Site hydrogen demand (MW)"]).sum())
+                                                 if site_z > 0 else None),
+                              "site_coeff": site_coeffs[u] if site_coeffs else None})
+            schedules[u] = out
+
+        return {
+            "objective": float(h.getInfo().objective_function_value),
+            "objective_by_zone": objective_by_zone,
+            "schedules": schedules,
+            "cut_coeffs": cut_coeffs,
+            "site_coeffs": site_coeffs,
+            "build_seconds": build_s,
+            "solve_seconds": solve_s,
+        }
+
+
+def _solve_sites(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, dict], sites: dict[str, float],
+                 days: list[int], day_weights: list[float], block_len: int,
+                 return_duals: bool, edf, hdf, quiet: bool, scenario: str | None) -> dict:
+    """Build every unit's site LP (see ``SiteLP``) and solve it once at ``capacities`` and ``sites``."""
+    t0 = time.time()
+    lp = SiteLP(units, days, day_weights, block_len, edf, hdf, quiet, scenario)
+    result = lp.solve(capacities, sites, return_duals)
+    result["build_seconds"] = time.time() - t0 - result["solve_seconds"]
+    return result
+
+
+_PRICE_FRAMES: dict = {}
+_SITE_LPS: dict = {}
+
+
+def set_price_frames(frames: dict) -> None:
+    """Keep each scenario's ``(edf, hdf)`` price frames in this process for ``solve_unit``; used as a
+    worker initializer so the frames are sent once per worker instead of with every job."""
+    _PRICE_FRAMES.clear()
+    _PRICE_FRAMES.update(frames)
+
+
+def solve_unit(unit: str, entry: tuple[str, SiteSpec], capacities: dict, site: float, rep_days_per_month: int,
+               scenario: str, quiet: bool = False, day_selection: str = "first") -> dict:
+    """Solve one unit's site LP for ``scenario`` at ``capacities`` and on/off ``site``, reusing the
+    ``SiteLP`` this process already built for that unit and scenario (built on first use with the
+    frames from ``set_price_frames``). Same result dict as ``solve_joint``."""
+    key = (unit, scenario, rep_days_per_month, day_selection)
+    lp = _SITE_LPS.get(key)
+    setup_s = 0.0
+    if lp is None:
+        days, day_weights = _sample_days(rep_days_per_month, day_selection)
+        edf, hdf = _PRICE_FRAMES[scenario]
+        lp = _SITE_LPS[key] = SiteLP({unit: entry}, days, day_weights, HOURS_PER_DAY, edf, hdf, quiet, scenario)
+        setup_s = lp.setup_seconds
+    result = lp.solve({unit: capacities}, {unit: site})
+    result["build_seconds"] += setup_s
+    for out in result["schedules"].values():
+        out.attrs.update({"annualized_hours": TOTAL_YEAR_HOURS, "rep_days_per_month": rep_days_per_month,
+                          "sampled_days": lp.days})
+    return result
 
 
 def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
@@ -751,4 +894,4 @@ if __name__ == "__main__":
         print(df.describe().to_string())
     print(f"\nhours solved: {df.attrs['n_hours']} (annualized as {df.attrs['annualized_hours']}) | "
           f"build: {df.attrs['build_seconds']:.1f}s | solve: {df.attrs['solve_seconds']:.1f}s")
-    print("operating cost (EUR, energy purchases + backup fuel - sales):", round(df.attrs["objective"], 2))
+    print("operating cost (EUR, energy purchases + unmet demand penalty - sales):", round(df.attrs["objective"], 2))

@@ -5,7 +5,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
 from . import geo, runner, services
-from .forms import ASSET_LABELS, PlanRunForm
+from .forms import ASSET_LABELS, MWH_ASSETS, PlanRunForm
 from .models import PlanRun
 
 
@@ -110,4 +110,6 @@ def catalog(request):
         "service_labels": services.SERVICE_LABELS,
         "asset_labels": ASSET_LABELS,
         "baseline_label": services.scenario_label(services.BASELINE_SCENARIO),
+        "cap_rules": services.cap_rule_rows(),
+        "mwh_assets": sorted(MWH_ASSETS),
     })

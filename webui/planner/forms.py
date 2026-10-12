@@ -9,38 +9,78 @@ ASSET_LABELS = {
     "wind_mw": "Wind",
     "pv_mw": "Solar PV",
     "battery_mw": "Battery",
+    "chp_mw": "Biogas CHP",
     "heat_pump_mw": "Heat pump",
+    "hot_water_storage_mw": "Hot-water storage",
+    "ac_chiller_mw": "AC chiller",
+    "cold_storage_mw": "Chilled-water / ice storage",
     "industrial_heat_pump_mw": "Industrial heat pump",
+    "solar_thermal_mw": "Solar thermal",
     "electric_boiler_mw": "Electric boiler",
-    "electric_chiller_mw": "Electric chiller",
+    "thermal_battery_mw": "Thermal battery",
+    "electric_chiller_mw": "Process chiller",
+    "heat_recovery_chiller_mw": "Heat-recovery chiller",
+    "absorption_chiller_mw": "Absorption chiller",
     "electrolyser_mw": "Electrolyser",
     "tank_mw": "H2 storage",
 }
-MWH_ASSETS = {"battery_mw", "tank_mw"}
+ASSET_SERVES = {
+    "wind_mw": ["electricity"], "pv_mw": ["electricity"], "battery_mw": ["electricity"],
+    "chp_mw": ["electricity", "space_heat", "process_heat"],
+    "heat_pump_mw": ["space_heat"], "hot_water_storage_mw": ["space_heat"],
+    "ac_chiller_mw": ["space_cool"], "cold_storage_mw": ["space_cool"],
+    "industrial_heat_pump_mw": ["process_heat"], "solar_thermal_mw": ["space_heat", "process_heat"],
+    "electric_boiler_mw": ["steam"], "thermal_battery_mw": ["steam"],
+    "electric_chiller_mw": ["process_cool"], "heat_recovery_chiller_mw": ["process_cool", "space_heat", "process_heat"],
+    "absorption_chiller_mw": ["space_cool", "process_cool"],
+    "electrolyser_mw": ["hydrogen"], "tank_mw": ["hydrogen"],
+}
+FIRM_SUPPLY = {
+    "space_heat": {"heat_pump_mw": 1.0, "chp_mw": 0.45 / 0.40},
+    "space_cool": {"ac_chiller_mw": 1.0, "absorption_chiller_mw": 1.0},
+    "process_heat": {"industrial_heat_pump_mw": 1.0, "chp_mw": 0.45 / 0.40},
+    "steam": {"electric_boiler_mw": 1.0, "thermal_battery_mw": 1.0},
+    "process_cool": {"electric_chiller_mw": 1.0, "heat_recovery_chiller_mw": 1.0, "absorption_chiller_mw": 1.0},
+}
+PART_SUPPLY = {
+    "space_heat": ["solar_thermal_mw", "heat_recovery_chiller_mw", "hot_water_storage_mw"],
+    "space_cool": ["cold_storage_mw"],
+    "process_heat": ["solar_thermal_mw", "heat_recovery_chiller_mw"],
+    "steam": [], "process_cool": [],
+}
+MARKET_SUPPLY = {"electricity": ["wind_mw", "pv_mw", "chp_mw", "battery_mw"], "hydrogen": ["electrolyser_mw", "tank_mw"]}
+MWH_ASSETS = {"battery_mw", "tank_mw", "hot_water_storage_mw", "cold_storage_mw", "thermal_battery_mw"}
 MAX_CANDIDATES_PER_ASSET = 8
 MAX_SITES = 6
 CUSTOM_FIELD_RE = re.compile(r"^custom_name__(\d+)$")
 
 
+def range_text(bounds: list[int] | None) -> str:
+    """A trained error range as shown beside its box, e.g. "trained −30 to +74%"; empty when unknown."""
+    if not bounds:
+        return ""
+    lo, hi = bounds
+    sign = lambda v: f"+{v}" if v > 0 else str(v).replace("-", "−")
+    return f"trained {sign(lo)} to {sign(hi)}%"
+
+
+def plain(value):
+    """A default shown in a number box: whole numbers without a trailing .0, others as they are."""
+    if value is None or isinstance(value, bool):
+        return value
+    return int(value) if float(value).is_integer() else value
+
+
 class PlanRunForm(forms.Form):
     name = forms.CharField(max_length=120, required=False, label="Run name",
                            widget=forms.TextInput(attrs={"placeholder": "e.g. Baseline 1.5B, PV only"}))
+    budget_limited = forms.BooleanField(required=False, initial=True, label="Limited budget")
+    budget = forms.FloatField(required=False, min_value=1e6, initial=1_500_000_000, label="Total CAPEX budget (EUR)",
+                              help_text="Raw, unannualized budget across all sites.")
     all_countries = forms.BooleanField(required=False, initial=True, label="All eligible countries")
     countries = forms.MultipleChoiceField(required=False, label="Candidate site countries",
                                           widget=forms.CheckboxSelectMultiple)
-    n_sites = forms.IntegerField(min_value=1, max_value=MAX_SITES, initial=1, label="Sites to build",
-                                 help_text="Each site has its own settings in step 2. The optimizer picks a "
-                                           "country for each site; several sites may share a country.")
-    budget = forms.FloatField(min_value=1e6, initial=1_500_000_000, label="Total CAPEX budget (EUR)",
-                              help_text="Raw, unannualized budget across all sites.")
-    disabled_assets = forms.MultipleChoiceField(
-        required=False, label="Excluded asset types",
-        choices=[(a, label) for a, label in ASSET_LABELS.items()],
-        widget=forms.CheckboxSelectMultiple,
-    )
-    max_units_per_candidate = forms.IntegerField(
-        min_value=0, initial=0, label="Max units per product",
-        help_text="Cap on how many units of any single product size can be built. 0 = no cap.")
+    n_sites = forms.IntegerField(min_value=1, max_value=MAX_SITES, initial=1, widget=forms.HiddenInput)
 
     discount_rate_pct = forms.FloatField(min_value=0, max_value=30, initial=5, label="Discount rate (%)")
     risk_measure = forms.ChoiceField(
@@ -56,7 +96,7 @@ class PlanRunForm(forms.Form):
                                             label="Representative days per month",
                                             help_text="More days = more accurate but slower.")
     gap_tol = forms.FloatField(min_value=0.0001, max_value=0.5, initial=0.01, label="Optimality gap tolerance")
-    max_iters = forms.IntegerField(min_value=1, max_value=100, initial=30, label="Max Benders iterations")
+    max_iters = forms.IntegerField(min_value=1, max_value=500, initial=100, label="Max Benders iterations")
     master_time_limit = forms.FloatField(min_value=10, max_value=3600, initial=180,
                                          label="Master time limit (s)")
     workers = forms.IntegerField(min_value=1, max_value=8, initial=2, label="Parallel workers",
@@ -69,45 +109,55 @@ class PlanRunForm(forms.Form):
         self.baseline = services.BASELINE_SCENARIO
         self.defaults = {self.baseline: all_scenarios[self.baseline]}
         self.scenario_countries = sorted(services.eligible_countries())
+        trained = services.trained_error_ranges()
+        self.error_ranges = {c: trained.get(c) for c in self.scenario_countries}
         self.fields["countries"].choices = [(c, country_label(c)) for c in services.eligible_countries()]
 
         self.site_defaults = services.site_defaults()
         self.demand_services = services.demand_services()
         self.demand_service_labels = [services.SERVICE_LABELS[s] for s in self.demand_services]
+        self.catalog_defaults = services.capex_assumptions_defaults()
+        self.assets = self.catalog_defaults["assets"]
+        default_caps = self.catalog_defaults["default_max_mw"]
         for i in range(MAX_SITES):
             self.fields[f"site_name__{i}"] = forms.CharField(
                 max_length=40, required=False, initial=f"Site {i + 1}", label="Name")
             self.fields[f"site_green__{i}"] = forms.FloatField(
-                min_value=0, max_value=100, initial=round(self.site_defaults["green_share"] * 100, 4),
+                min_value=0, max_value=100, initial=plain(round(self.site_defaults["green_share"] * 100, 4)),
                 label="Minimum green hydrogen share (%)")
-            self.fields[f"site_flex__{i}"] = forms.FloatField(
-                min_value=0, max_value=50, initial=round(self.site_defaults["flex_fraction"] * 100, 4),
-                label="Demand flexibility (%)")
             for service in self.demand_services:
                 self.fields[f"site_peak__{i}__{service}"] = forms.FloatField(
-                    min_value=0, initial=round(self.site_defaults["peaks_mw"][service], 4),
+                    min_value=0, initial=plain(round(self.site_defaults["peaks_mw"][service], 4)),
                     label=f"{services.SERVICE_LABELS[service]} (MW)")
+                self.fields[f"site_flex__{i}__{service}"] = forms.FloatField(
+                    min_value=0, max_value=50, initial=plain(round(self.site_defaults["flex_fraction"][service] * 100, 4)),
+                    label=f"{services.SERVICE_LABELS[service]} flexibility (±%)")
+            for asset in self.assets:
+                self.fields[f"site_asset__{i}__{asset}"] = forms.BooleanField(
+                    required=False, initial=False, label=ASSET_LABELS[asset])
+                self.fields[f"site_maxmw__{i}__{asset}"] = forms.FloatField(
+                    required=False, min_value=0, initial=plain(default_caps[asset]),
+                    label=f"{ASSET_LABELS[asset]} maximum (MW)",
+                    widget=forms.NumberInput(attrs={"step": "any", "data-maxmw": asset}))
 
-        self.catalog_defaults = services.capex_assumptions_defaults()
-        self.assets = self.catalog_defaults["assets"]
         for asset in self.assets:
             rows = self.catalog_defaults["catalog"][asset]
             lifetime_default = rows[0]["lifetime_years"] if rows else 1.0
             self.fields[f"cat_lifetime__{asset}"] = forms.FloatField(
-                min_value=0.1, max_value=100, initial=lifetime_default, label="Lifetime (yr)")
+                min_value=0.1, max_value=100, initial=plain(lifetime_default), label="Lifetime (yr)")
             for i in range(MAX_CANDIDATES_PER_ASSET):
                 c = rows[i] if i < len(rows) else None
                 self.fields[f"cat_mw__{asset}__{i}"] = forms.FloatField(
-                    required=False, min_value=0.001, initial=c["mw"] if c else None, label="Size (MW)")
+                    required=False, min_value=0.001, initial=plain(c["mw"]) if c else None, label="Size (MW)")
                 self.fields[f"cat_capex__{asset}__{i}"] = forms.FloatField(
-                    required=False, min_value=0, initial=c["capex_eur"] if c else None, label="CAPEX (EUR)")
+                    required=False, min_value=0, initial=plain(c["capex_eur"]) if c else None, label="CAPEX (EUR)")
                 if asset in MWH_ASSETS:
                     self.fields[f"cat_mwh__{asset}__{i}"] = forms.FloatField(
-                        required=False, min_value=0, initial=c["mwh"] if c else None, label="Energy (MWh)")
+                        required=False, min_value=0, initial=plain(c["mwh"]) if c else None, label="Energy (MWh)")
 
         self.fields["scenario_include__" + self.baseline] = forms.BooleanField(required=False, initial=True)
         self.fields["scenario_prob__" + self.baseline] = forms.FloatField(
-            min_value=0, max_value=100, initial=100.0, label="Probability (%)")
+            min_value=0, max_value=100, initial=100, label="Probability (%)")
         self.custom_indices = sorted({int(m.group(1)) for k in (self.data or {})
                                       if (m := CUSTOM_FIELD_RE.match(k))})
         for i in self.custom_indices:
@@ -116,13 +166,36 @@ class PlanRunForm(forms.Form):
             self.fields[f"custom_prob__{i}"] = forms.FloatField(
                 min_value=0, max_value=100, initial=0, label="Probability (%)")
             for c in self.scenario_countries:
-                self.fields[f"custom_wind__{i}__{c}"] = forms.FloatField(
-                    min_value=0, max_value=100, initial=0, label=f"{c} wind error vs baseline (%)")
-                self.fields[f"custom_solar__{i}__{c}"] = forms.FloatField(
-                    min_value=0, max_value=100, initial=0, label=f"{c} solar error vs baseline (%)")
+                for kind in ("wind", "solar"):
+                    lo, hi = self._error_bounds(c, kind)
+                    self.fields[f"custom_{kind}__{i}__{c}"] = forms.FloatField(
+                        min_value=lo, max_value=hi, initial=0, label=f"{c} {kind} error vs baseline (%)",
+                        error_messages={"min_value": f"Outside the accepted range ({lo} to {hi}%%).",
+                                        "max_value": f"Outside the accepted range ({lo} to {hi}%%)."},
+                        widget=forms.NumberInput(attrs={"step": "any"}))
+
+    def _error_bounds(self, country: str, kind: str) -> list[int]:
+        """Lowest and highest error (%) accepted for ``country``'s ``kind`` (wind or solar): the trained
+        range, or -100 to 100 when the training samples aren't available."""
+        r = self.error_ranges.get(country)
+        return r[kind] if r else [-100, 100]
+
+    @property
+    def scenario_country_rows(self) -> list[dict]:
+        """Each scenario country's accepted wind and solar error bounds and their display text, for the
+        template a new scenario card is built from."""
+        return [{"code": c, "wind": self._error_bounds(c, "wind"), "solar": self._error_bounds(c, "solar"),
+                 "wind_text": range_text(self.error_ranges[c] and self.error_ranges[c]["wind"]),
+                 "solar_text": range_text(self.error_ranges[c] and self.error_ranges[c]["solar"])}
+                for c in self.scenario_countries]
+
+    @property
+    def fill_bounds(self) -> dict:
+        """Bounds of the "All countries" fill boxes: the range every country accepts."""
+        return {k: [max(self._error_bounds(c, k)[0] for c in self.scenario_countries),
+                    min(self._error_bounds(c, k)[1] for c in self.scenario_countries)] for k in ("wind", "solar")}
 
     COUNTRY_TABLE_COLUMNS = 4
-    ASSET_TABLE_COLUMNS = 3
 
     def _table_rows(self, field: str, cols: int) -> list[list]:
         """A checkbox field's options chunked into table rows of ``cols`` cells."""
@@ -135,17 +208,34 @@ class PlanRunForm(forms.Form):
         return self._table_rows("countries", self.COUNTRY_TABLE_COLUMNS)
 
     @property
-    def disabled_asset_table_rows(self) -> list[list]:
-        """Excluded-technology checkboxes laid out as table rows."""
-        return self._table_rows("disabled_assets", self.ASSET_TABLE_COLUMNS)
+    def site_rules(self) -> dict:
+        """What the page's script needs to fill default maximum MW and show each demand's coverage."""
+        return {"cap_rules": self.catalog_defaults["cap_rules"], "serves": ASSET_SERVES, "firm": FIRM_SUPPLY,
+                "part": PART_SUPPLY, "market": MARKET_SUPPLY, "asset_labels": ASSET_LABELS,
+                "service_labels": dict(zip(self.demand_services, self.demand_service_labels))}
 
     @property
     def site_rows(self) -> list[dict]:
-        """One card per possible site: its name, green share, flexibility and daily peak fields."""
+        """One card per possible site: its name, green share, each demand's peak and flexibility, and
+        each asset's active box and maximum MW."""
         return [{"index": i, "name": self[f"site_name__{i}"], "green": self[f"site_green__{i}"],
-                 "flex": self[f"site_flex__{i}"],
-                 "peaks": [self[f"site_peak__{i}__{svc}"] for svc in self.demand_services]}
+                 "peaks": [self[f"site_peak__{i}__{svc}"] for svc in self.demand_services],
+                 "flexes": [self[f"site_flex__{i}__{svc}"] for svc in self.demand_services],
+                 "assets": [{"key": a, "label": ASSET_LABELS[a], "active": self[f"site_asset__{i}__{a}"],
+                             "maxmw": self[f"site_maxmw__{i}__{a}"],
+                             "serves": ", ".join(services.SERVICE_LABELS[s] for s in ASSET_SERVES[a])}
+                            for a in self.assets],
+                 "services": self.demand_services}
                 for i in range(MAX_SITES)]
+
+    def _site_assets(self, data: dict, i: int) -> list[str]:
+        """Assets ticked as active at site ``i``."""
+        return [a for a in self.assets if data.get(f"site_asset__{i}__{a}")]
+
+    def _active_anywhere(self, data: dict) -> list[str]:
+        """Assets active at one or more of the run's sites, in catalog order."""
+        used = {a for i in range(data.get("n_sites") or 0) for a in self._site_assets(data, i)}
+        return [a for a in self.assets if a in used]
 
     @property
     def catalog_rows(self) -> list[dict]:
@@ -179,8 +269,10 @@ class PlanRunForm(forms.Form):
     def custom_scenario_rows(self) -> list[dict]:
         """One card per custom scenario the user added: name, probability and each country's wind/solar error."""
         return [{"index": i, "name": self[f"custom_name__{i}"], "prob": self[f"custom_prob__{i}"],
-                 "countries": [{"code": c, "wind": self[f"custom_wind__{i}__{c}"],
-                                "solar": self[f"custom_solar__{i}__{c}"]} for c in self.scenario_countries]}
+                 "countries": [{"code": r["code"], "wind": self[f"custom_wind__{i}__{r['code']}"],
+                                "solar": self[f"custom_solar__{i}__{r['code']}"],
+                                "wind_text": r["wind_text"], "solar_text": r["solar_text"]}
+                               for r in self.scenario_country_rows]}
                 for i in self.custom_indices]
 
     def _included_scenarios(self, data: dict) -> list[str]:
@@ -197,10 +289,15 @@ class PlanRunForm(forms.Form):
         data = super().clean()
         if not data.get("all_countries") and not data.get("countries"):
             self.add_error("countries", "Select at least one country or choose all countries.")
+        if data.get("budget_limited") and data.get("budget") is None:
+            self.add_error("budget", "Enter a budget, or untick Limited budget to plan without one.")
         n_sites = data.get("n_sites") or 0
         names = [(data.get(f"site_name__{i}") or "").strip() or f"Site {i + 1}" for i in range(n_sites)]
         if len(set(names)) != len(names):
             self.add_error(None, f"Each site needs its own name; got {', '.join(names)}.")
+        for i, name in enumerate(names):
+            if not self._site_assets(data, i):
+                self.add_error(None, f"{name}: activate at least one asset.")
         included = self._included_scenarios(data)
         if not included:
             self.add_error(None, "Select at least one uncertainty scenario.")
@@ -213,7 +310,7 @@ class PlanRunForm(forms.Form):
         if data["risk_measure"] == "cvar" and data.get("cvar_alpha") is None:
             self.add_error("cvar_alpha", "Enter a confidence level for CVaR (two or more scenarios are included).")
 
-        for asset in self.assets:
+        for asset in self._active_anywhere(data):
             count = 0
             for i in range(MAX_CANDIDATES_PER_ASSET):
                 mw = data.get(f"cat_mw__{asset}__{i}")
@@ -236,8 +333,9 @@ class PlanRunForm(forms.Form):
 
     def params(self) -> dict:
         d = self.cleaned_data
+        active_anywhere = self._active_anywhere(d)
         catalog_overrides = {}
-        for asset in self.assets:
+        for asset in active_anywhere:
             candidates = []
             for i in range(MAX_CANDIDATES_PER_ASSET):
                 mw = d.get(f"cat_mw__{asset}__{i}")
@@ -253,7 +351,10 @@ class PlanRunForm(forms.Form):
         sites = [{"name": (d.get(f"site_name__{i}") or "").strip() or f"Site {i + 1}",
                   "peaks_mw": {svc: d[f"site_peak__{i}__{svc}"] for svc in self.demand_services},
                   "green_share": d[f"site_green__{i}"] / 100,
-                  "flex_fraction": d[f"site_flex__{i}"] / 100}
+                  "flex_fraction": {svc: d[f"site_flex__{i}__{svc}"] / 100 for svc in self.demand_services},
+                  "active_assets": self._site_assets(d, i),
+                  "max_mw": {a: d[f"site_maxmw__{i}__{a}"] for a in self._site_assets(d, i)
+                             if d.get(f"site_maxmw__{i}__{a}") is not None}}
                  for i in range(d["n_sites"])]
 
         included = self._included_scenarios(d)
@@ -280,9 +381,9 @@ class PlanRunForm(forms.Form):
             "countries": sorted(d["countries"]),
             "n_sites": d["n_sites"],
             "sites": sites,
-            "budget": d["budget"],
-            "disabled_assets": list(d["disabled_assets"]),
-            "max_units_per_candidate": d["max_units_per_candidate"],
+            "budget": d["budget"] if d["budget_limited"] else None,
+            "active_assets": active_anywhere,
+            "disabled_assets": [a for a in self.assets if a not in active_anywhere],
             "scenarios": included,
             "scenario_labels": labels,
             "scenario_overrides": overrides,

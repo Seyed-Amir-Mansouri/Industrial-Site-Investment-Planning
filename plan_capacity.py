@@ -84,6 +84,15 @@ def green_h2_summary(schedule: pd.DataFrame) -> dict[str, float]:
             "go_bought_mwh": annual("Site GOs bought (MWh/h)"), "go_sold_mwh": annual("Site GOs sold (MWh/h)")}
 
 
+def unmet_demand_summary(schedule: pd.DataFrame) -> dict[str, float]:
+    """Annual heat and cooling demand (MWh/yr) of one site's representative-day schedule that the new assets left unmet."""
+    w = schedule["day_weight"]
+    out = {f"unmet_{svc}_mwh": float((schedule[f"Site unmet {svc} demand (MW)"] * w).sum())
+           for svc in hp.THERMAL_SERVICES}
+    out["unmet_total_mwh"] = sum(out.values())
+    return out
+
+
 def _unit_id(site: str, country: str) -> str:
     """Label of one site placed in one candidate country."""
     return f"{site}@{country}"
@@ -97,17 +106,26 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                 scenario_probs: dict[str, float] | None = None,
                 workers: int | None = None,
                 max_units_per_candidate: int | None = None,
-                sites: list[hp.SiteSpec] | None = None):
+                sites: list[hp.SiteSpec] | None = None, core_cuts: bool = True):
     """Run the Benders loop: master MILP proposes where each site goes and its capacities, joint subproblems (one per scenario) price them and return cuts, repeat to convergence.
 
     Every site in ``sites`` (default: one default site) is placed in exactly one of ``countries``;
     several sites may share a country. Internally each (site, country) pair is a unit with its own
-    capacities and its own on/off placement. Each iteration adds two cuts per scenario: one at the
-    trial point itself, so the master can't propose the same plan again without paying its true
-    recourse cost, and one at a Pareto core point that starts inside the feasible region (every
-    unit a fractional placement, every asset a mid-grid size within its site cap) and moves halfway
-    toward each trial point. If HiGHS presolve fails on the master, it is re-solved once with
-    presolve off."""
+    capacities, its own on/off placement and its own recourse variable per scenario. Before the
+    first iteration every unit is dispatched once per scenario with the site off and nothing built;
+    that costs nothing, and its cut holds the unit's recourse at or above 0 whenever the site isn't
+    placed there, while its slopes give a first estimate of placing the site there. Each unit is also
+    dispatched once at its maximum capacities, whose cut bounds how far extra capacity can lower its
+    recourse, so the master can't overbuild against the steep zero-point slopes. Each iteration
+    dispatches only the units the master placed, each site in its chosen country on its own LP,
+    once per scenario, and adds one cut per scenario and placed unit at that trial point, so the
+    master can't propose the same plan again without paying its true recourse cost. Units not
+    placed cost nothing and keep the cuts from earlier visits. With ``core_cuts`` (the default) each
+    placed unit also gets a cut at a Pareto core point that starts inside the feasible region (a fractional
+    placement, every asset a mid-grid size within its site cap) and moves halfway toward each trial
+    point. Each unit and scenario always runs in the same worker, which keeps its LP and only
+    updates the capacities, on/off placement and prices before re-solving from the last basis. If
+    HiGHS presolve fails on the master, it is re-solved once with presolve off."""
     scenario_probs = scenario_probs if scenario_probs is not None else {s: 1.0 / len(DEFAULT_SCENARIOS)
                                                                           for s in DEFAULT_SCENARIOS}
     if len(scenario_probs) > 1 and cvar_alpha is None:
@@ -120,6 +138,16 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     unit_ids = list(units)
     unit_country = {_unit_id(sp.name, c): c for sp in sites for c in countries}
     site_units = {sp.name: [_unit_id(sp.name, c) for c in countries] for sp in sites}
+    twin_groups: dict[tuple, list[str]] = {}
+    for sp in sites:
+        twin_groups.setdefault(sp.settings_key(), []).append(sp.name)
+    site_twins = {name: group for group in twin_groups.values() for name in group}
+    twins = {u: [_unit_id(n, unit_country[u]) for n in site_twins[units[u][1].name]] for u in unit_ids}
+    rep_unit = {u: twins[u][0] for u in unit_ids}
+    symmetric_sites = [group for group in twin_groups.values() if len(group) > 1]
+    if symmetric_sites:
+        print("Sites with identical settings share every cut in a country and are placed in country order: "
+             + "; ".join(", ".join(group) for group in symmetric_sites))
     cand_mw = {u: cand_mw_c[unit_country[u]] for u in unit_ids}
     cand_capex = {u: cand_capex_c[unit_country[u]] for u in unit_ids}
     site_caps = {sp.name: hp.site_max_mw(sp, capex_cfg) for sp in sites}
@@ -147,7 +175,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
 
     m = hp.build_master(unit_ids, cand_mw, cand_capex, budget, crf, capex_cfg.theta_lower_bound_eur,
                         scenario_probs=scenario_probs, cvar_alpha=cvar_alpha, site_max_mw=site_max_mw,
-                        max_units_per_candidate=max_units_per_candidate, site_units=site_units)
+                        max_units_per_candidate=max_units_per_candidate, site_units=site_units,
+                        symmetric_sites=symmetric_sites)
 
     core_cap = {u: {a: min(float(sum([0.0] + list(cand_mw[u][a])) / (len(cand_mw[u][a]) + 1)),
                            0.5 * site_max_mw[u][a])
@@ -155,17 +184,67 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     core_site = {u: 1.0 / len(countries) for u in unit_ids}
 
     best_ub, best_capacities, best_capex, best_capex_by_asset = float("inf"), None, None, None
-    best_units, best_sites, best_green = None, None, None
+    best_units, best_sites, best_green, best_unmet = None, None, None, None
     log = []
     per_unit_log = {u: [] for u in unit_ids}
     gap = float("inf")
 
     n_workers = workers if workers is not None else min(4, os.cpu_count() or 1)
-    executor = ProcessPoolExecutor(max_workers=n_workers) if n_workers > 1 else None
-    if executor is not None:
-        print(f"Subproblems will run across {n_workers} worker processes "
-             f"(each scenario's trial-point and core-point solves are independent).")
+    executors = ([ProcessPoolExecutor(max_workers=1, initializer=ohp.set_price_frames, initargs=(price_frames,))
+                  for _ in range(n_workers)] if n_workers > 1 else None)
+    if executors is None:
+        ohp.set_price_frames(price_frames)
+    else:
+        print(f"Subproblems will run across {n_workers} worker processes; each site, country and scenario "
+             f"always runs in the same one, which keeps its LP and restarts it from the last solve.")
+    rep_ids = list(dict.fromkeys(rep_unit.values()))
+    unit_slot = {(s, u): i % n_workers for i, (s, u) in enumerate((s, u) for s in scenario_probs for u in rep_ids)}
+
+    def point_key(s, u, caps, placed):
+        """Key of one subproblem solve; twin units (identical sites in one country) share it."""
+        return s, rep_unit[u], tuple(float(caps[a]) for a in hp.ASSETS), float(placed)
+
+    def solve_points(points):
+        """Solve each ``(tag, scenario, unit) -> (capacities, site)`` point; twin units share one LP and a
+        point two of them need is solved once. Returns the results by key plus the summed build and
+        solve seconds of the solves actually run."""
+        jobs = {}
+        for (tag, s, u), (caps, placed) in points.items():
+            jobs.setdefault(point_key(s, u, caps, placed), (caps, placed))
+        if executors is None:
+            done = {j: ohp.solve_unit(j[1], units[j[1]], caps, placed, rep_days_per_month, j[0], quiet_solver)
+                    for j, (caps, placed) in jobs.items()}
+        else:
+            futures = {j: executors[unit_slot[j[0], j[1]]].submit(ohp.solve_unit, j[1], units[j[1]], caps, placed,
+                                                                   rep_days_per_month, j[0], quiet_solver)
+                       for j, (caps, placed) in jobs.items()}
+            done = {j: f.result() for j, f in futures.items()}
+        out = {}
+        for (tag, s, u), (caps, placed) in points.items():
+            r = done[point_key(s, u, caps, placed)]
+            rep = rep_unit[u]
+            out[tag, s, u] = {**r, **{k: {u: r[k][rep]} for k in ("objective_by_zone", "schedules", "cut_coeffs",
+                                                                  "site_coeffs")}}
+        return (out, sum(r["build_seconds"] for r in done.values()),
+                sum(r["solve_seconds"] for r in done.values()))
+
     try:
+        t_seed = time.time()
+        seed_points = {"zero": ({u: {a: 0.0 for a in hp.ASSETS} for u in unit_ids}, {u: 0.0 for u in unit_ids}),
+                       "max": ({u: dict(site_max_mw[u]) for u in unit_ids}, {u: 1.0 for u in unit_ids})}
+        seed_jobs = [(tag, s, u) for tag in seed_points for s in scenario_probs for u in unit_ids]
+        seeds, _, _ = solve_points({(tag, s, u): (seed_points[tag][0][u], seed_points[tag][1][u])
+                                    for tag, s, u in seed_jobs})
+        for tag, (caps, placed) in seed_points.items():
+            for s in scenario_probs:
+                hp.add_optimality_cut(m, unit_ids, 0,
+                                      {u: seeds[tag, s, u]["objective_by_zone"][u] for u in unit_ids},
+                                      {u: seeds[tag, s, u]["cut_coeffs"][u] for u in unit_ids}, caps, cand_mw,
+                                      scenario=s, lam={u: seeds[tag, s, u]["site_coeffs"][u] for u in unit_ids},
+                                      site_star=placed, tag=tag)
+        del seeds
+        print(f"Seed cuts: {len(seed_jobs)} (every site in every country, per scenario, once with the site off "
+             f"and nothing built and once at its maximum capacities) in {time.time() - t_seed:.1f}s")
         for it in range(1, max_iters + 1):
             t_master = time.time()
             status, cond = m.solve(solver_name="highs", output_flag=False, time_limit=master_time_limit,
@@ -183,50 +262,45 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
             master_cut_off = (cond == "time_limit")
 
             t_sub = time.time()
-            sub_build_s = sub_solve_s = 0.0
             n_cuts = 0
 
-            def solve_all(caps, placed):
-                if executor is not None:
-                    futures = {s: executor.submit(ohp.solve_joint, units, caps, rep_days_per_month,
-                                                  return_duals=True, edf=price_frames[s][0],
-                                                  hdf=price_frames[s][1], quiet=quiet_solver, scenario=s,
-                                                  sites=placed)
-                               for s in scenario_probs}
-                    return {s: f.result() for s, f in futures.items()}
-                return {s: ohp.solve_joint(units, caps, rep_days_per_month, return_duals=True,
-                                           edf=price_frames[s][0], hdf=price_frames[s][1],
-                                           quiet=quiet_solver, scenario=s, sites=placed)
-                        for s in scenario_probs}
+            placed_units = [u for u in unit_ids if site_star[u] > 0.5]
 
-            results = solve_all(cap_star, site_star)
-            results_core = solve_all(core_cap, core_site)
+            points = {("trial", s, u): (cap_star[u], site_star[u]) for s in scenario_probs for u in placed_units}
+            if core_cuts:
+                points.update({("core", s, u): (core_cap[u], core_site[u])
+                               for s in scenario_probs for u in placed_units})
+            solved, sub_build_s, sub_solve_s = solve_points(points)
+            results = {(s, u): r for (tag, s, u), r in solved.items() if tag == "trial"}
+            cut_points = [("trial", results, cap_star, site_star)]
+            if core_cuts:
+                cut_points.append(("core", {(s, u): r for (tag, s, u), r in solved.items() if tag == "core"},
+                                   core_cap, core_site))
 
             total_Q = 0.0
             Q_total_by_scenario: dict[str, float] = {}
             Q_by_unit = {u: 0.0 for u in unit_ids}
             Q_by_unit_by_scenario: dict[str, dict[str, float]] = {}
             for s, prob in scenario_probs.items():
-                result = results[s]
-                sub_build_s += result["build_seconds"]
-                sub_solve_s += result["solve_seconds"]
-                total_Q += prob * float(result["objective"])
-                Q_total_by_scenario[s] = float(result["objective"])
-                Q_s = {u: result["objective_by_zone"][u] for u in unit_ids}
+                for tag, solved, caps, placed in cut_points:
+                    cut_done = set()
+                    for u in placed_units:
+                        r = solved[s, u]
+                        key = point_key(s, u, caps[u], placed[u])
+                        targets = [t for t in twins[u] if (t, key) not in cut_done]
+                        cut_done.update((t, key) for t in targets)
+                        hp.add_optimality_cut(m, targets, it, {t: r["objective_by_zone"][u] for t in targets},
+                                              {t: r["cut_coeffs"][u] for t in targets},
+                                              {t: caps[u] for t in targets}, cand_mw, scenario=s,
+                                              lam={t: r["site_coeffs"][u] for t in targets},
+                                              site_star={t: placed[u] for t in targets}, tag=f"{tag}_{u}")
+                        n_cuts += len(targets)
+                Q_s = {u: results[s, u]["objective_by_zone"][u] if u in placed_units else 0.0 for u in unit_ids}
                 Q_by_unit_by_scenario[s] = Q_s
+                Q_total_by_scenario[s] = sum(Q_s.values())
+                total_Q += prob * Q_total_by_scenario[s]
                 for u in unit_ids:
                     Q_by_unit[u] += prob * Q_s[u]
-                hp.add_optimality_cut(m, unit_ids, it, Q_s, result["cut_coeffs"], cap_star, cand_mw,
-                                      scenario=s, lam=result["site_coeffs"], site_star=site_star, tag="trial")
-                n_cuts += 1
-
-                result_core = results_core[s]
-                sub_build_s += result_core["build_seconds"]
-                sub_solve_s += result_core["solve_seconds"]
-                hp.add_optimality_cut(m, unit_ids, it, result_core["objective_by_zone"], result_core["cut_coeffs"],
-                                      core_cap, cand_mw, scenario=s, lam=result_core["site_coeffs"],
-                                      site_star=core_site)
-                n_cuts += 1
             sub_s = time.time() - t_sub
 
             for u in unit_ids:
@@ -253,7 +327,11 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                 best_sites = site_star
                 best_green = [{"site": units[u][1].name, "country": unit_country[u], "scenario": s,
                                "probability": scenario_probs[s],
-                               **green_h2_summary(results[s]["schedules"][u])}
+                               **green_h2_summary(results[s, u]["schedules"][u])}
+                              for u in unit_ids if site_star[u] > 0.5 for s in scenario_probs]
+                best_unmet = [{"site": units[u][1].name, "country": unit_country[u], "scenario": s,
+                               "probability": scenario_probs[s],
+                               **unmet_demand_summary(results[s, u]["schedules"][u])}
                               for u in unit_ids if site_star[u] > 0.5 for s in scenario_probs]
             gap = (best_ub - lb) / max(abs(best_ub), 1e-6)
             log.append({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
@@ -280,13 +358,13 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
             print(f"WARNING: reached --max-iters={max_iters} without closing the gap "
                  f"(final gap {gap:.4f}) -- results below are the best FOUND, not proven optimal")
     finally:
-        if executor is not None:
-            executor.shutdown(wait=True)
+        for ex in executors or []:
+            ex.shutdown(wait=True)
 
     return {"capacities": best_capacities, "capex": best_capex, "objective": best_ub, "log": pd.DataFrame(log),
             "units": units, "unit_country": unit_country, "host_zone": host_zone, "price_frames": price_frames,
             "per_unit_log": per_unit_log, "capex_by_asset": best_capex_by_asset, "unit_counts": best_units,
-            "placed": best_sites, "green": best_green}
+            "placed": best_sites, "green": best_green, "unmet": best_unmet}
 
 
 def main() -> None:
@@ -312,7 +390,8 @@ def main() -> None:
     ap.add_argument("--budget", type=float, default=None,
                     help=f"total CAPEX budget across every site, EUR, raw/unannualized "
                          f"(default {hp.CapexAssumptions().default_budget_eur:,.0f})")
-    ap.add_argument("--max-iters", type=int, default=30)
+    ap.add_argument("--no-budget", action="store_true", help="plan without any CAPEX budget limit")
+    ap.add_argument("--max-iters", type=int, default=100)
     ap.add_argument("--gap-tol", type=float, default=0.01, help="relative Benders gap, default 0.01 (1%%)")
     ap.add_argument("--discount-rate", type=float, default=None, help="for the capital recovery factor")
     ap.add_argument("--lifetime-years", type=float, default=None,
@@ -344,6 +423,10 @@ def main() -> None:
                          "parallel (they're mutually independent); default min(4, cpu_count) -- "
                          "raise this if your machine has memory headroom for more. "
                          "Pass 1 to force sequential (e.g. for debugging).")
+    ap.add_argument("--core-cuts", action=argparse.BooleanOptionalAction, default=True,
+                    help="also dispatch each placed site at a moving Pareto core point every iteration "
+                         "and add that cut too (two cuts per scenario and site instead of one); on by "
+                         "default, --no-core-cuts turns it off")
     ap.add_argument("--max-units-per-candidate", type=int, default=0,
                     help="max buildable units of each individual candidate product per "
                          "site/asset (the default catalog has one product per asset, built as many "
@@ -358,7 +441,9 @@ def main() -> None:
         capex_cfg.discount_rate = args.discount_rate
     if args.lifetime_years is not None:
         capex_cfg.lifetime_years = {a: args.lifetime_years for a in hp.ASSETS}
-    budget = args.budget if args.budget is not None else capex_cfg.default_budget_eur
+    if args.no_budget and args.budget is not None:
+        ap.error("--budget and --no-budget can't be used together")
+    budget = None if args.no_budget else (args.budget if args.budget is not None else capex_cfg.default_budget_eur)
 
     names = ([s.strip() for s in args.scenarios.split(",") if s.strip()] if args.scenarios
              else list(DEFAULT_SCENARIOS))
@@ -395,7 +480,8 @@ def main() -> None:
     print(f"Candidate countries: {countries} | sites to build: {len(sites)} (each in one country; sites may share one)")
     crfs = capex_cfg.capital_recovery_factors()
     crf_str = ", ".join(f"{a}={crfs[a]:.4f}({capex_cfg.lifetime_years[a]:.0f}yr)" for a in hp.ASSETS)
-    print(f"Budget: {budget:,.0f} EUR (raw/unannualized) | CRF @ {capex_cfg.discount_rate:.1%} discount: "
+    budget_str = "no limit" if budget is None else f"{budget:,.0f} EUR (raw/unannualized)"
+    print(f"Budget: {budget_str} | CRF @ {capex_cfg.discount_rate:.1%} discount: "
          f"{crf_str}")
     units_note = ("unbounded" if args.max_units_per_candidate <= 0
                  else f"max {args.max_units_per_candidate} units/candidate")
@@ -410,14 +496,20 @@ def main() -> None:
     print(f"Green H2: hourly-matched additional renewables | GOs buy {green.go_buy_price_eur_per_mwh:g} / sell "
           f"{green.go_sell_price_eur_per_mwh:g} EUR/MWh | certified green H2 premium "
           f"{green.green_h2_premium_eur_per_mwh:g} EUR/MWh")
-    print(f"Sites (daily peaks MW x per-unit curves in {hp.demand.SITE_DEMAND_CSV.relative_to(ROOT)}):")
+    print(f"Sites (annual peaks MW x per-unit curves in {hp.demand.SITE_DEMAND_CSV.relative_to(ROOT)}):")
     for sp in sites:
         annual = hp.annual_demand_mwh(sp.peaks_mw)
-        print(f"  {sp.name}: green H2 >= {sp.green_share:.0%}, flexibility +/-{sp.flex_fraction:.0%} | peaks "
+        flex = set(sp.flex_fraction.values())
+        flex_str = (f"+/-{flex.pop():.0%}" if len(flex) == 1
+                    else ", ".join(f"{k} +/-{v:.0%}" for k, v in sp.flex_fraction.items()))
+        print(f"  {sp.name}: green H2 >= {sp.green_share:.0%}, flexibility {flex_str} | peaks "
               + ", ".join(f"{k}={v:g}" for k, v in sp.peaks_mw.items())
               + " | MWh/yr " + ", ".join(f"{k}={v:,.0f}" for k, v in annual.items()))
-    print(f"Backup: gas boiler heat {tech.gas_heat_cost_eur_per_mwh_th:.1f} EUR/MWh_th, legacy chiller "
-          f"COP {tech.legacy_chiller_cop:g} | grid import fee {tech.grid_import_fee_eur_per_mwh:g} EUR/MWh, "
+        if sp.active_assets is not None or sp.max_mw:
+            caps = hp.site_max_mw(sp, capex_cfg)
+            print("    assets (max MW): " + ", ".join(f"{a}={caps[a]:g}" for a in hp.ASSETS if caps[a] > 0))
+    print(f"No existing plant on site: unmet heat/cooling demand penalty "
+          f"{tech.unmet_demand_penalty_eur_per_mwh:,.0f} EUR/MWh | grid import fee {tech.grid_import_fee_eur_per_mwh:g} EUR/MWh, "
           f"H2 import fee {tech.h2_import_fee_eur_per_mwh:g} EUR/MWh")
     print(f"Exchange caps: grid=unlimited, H2 pipeline=unlimited")
     if disabled_assets:
@@ -427,6 +519,9 @@ def main() -> None:
     else:
         print(f"Capacity-uncertainty scenarios (CVaR_{cvar_alpha:.2f} risk measure): {scenario_probs}")
 
+    print("Benders cuts: one per scenario and site each iteration, for the country the site is placed in "
+          "(only placed sites are dispatched)" + (", plus one at a core point" if args.core_cuts else ""))
+
     t0 = time.time()
     res = run_benders(
         countries, budget, args.max_iters, args.gap_tol, capex_cfg,
@@ -435,7 +530,7 @@ def main() -> None:
         disabled_assets=disabled_assets, scenario_probs=scenario_probs, workers=args.workers,
         max_units_per_candidate=(args.max_units_per_candidate
                                  if args.max_units_per_candidate > 0 else None),
-        sites=sites)
+        sites=sites, core_cuts=args.core_cuts)
     elapsed = time.time() - t0
     units, unit_country, host_zone = res["units"], res["unit_country"], res["host_zone"]
     chosen = {units[u][1].name: u for u in units if res["placed"][u] > 0.5}
@@ -450,8 +545,8 @@ def main() -> None:
     cap_df = pd.DataFrame(rows)
     print(cap_df.to_string(index=False))
     print(f"\nChosen site(s): {', '.join(f'{sp.name} -> {unit_country[chosen[sp.name]]}' for sp in sites)}")
-    print(f"Total raw CAPEX: {res['capex']:,.0f} EUR (budget {budget:,.0f} EUR, "
-         f"{res['capex'] / budget:.1%} used)")
+    print(f"Total raw CAPEX: {res['capex']:,.0f} EUR "
+         + ("(no budget limit)" if budget is None else f"(budget {budget:,.0f} EUR, {res['capex'] / budget:.1%} used)"))
     risk_label = ("deterministic" if cvar_alpha is None else f"CVaR_{cvar_alpha:.2f}")
     print(f"Best objective (annualized CAPEX + {risk_label} 1yr operating cost across "
          f"{len(scenario_probs)} scenarios, EUR, lower=better): {res['objective']:,.0f}")
@@ -460,7 +555,9 @@ def main() -> None:
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
     cap_df.to_csv(f"{out_prefix}_capacities.csv", index=False)
     res["log"].to_csv(f"{out_prefix}_convergence.csv", index=False)
-    pd.DataFrame([{"site": sp.name, "green_share": sp.green_share, "flex_fraction": sp.flex_fraction,
+    pd.DataFrame([{"site": sp.name, "green_share": sp.green_share,
+                   **{f"flex_{k}": v for k, v in sp.flex_fraction.items()},
+                   "active_assets": ",".join(sp.active_assets or hp.ASSETS),
                    **{f"peak_{k}_mw": v for k, v in sp.peaks_mw.items()},
                    **{f"annual_{k}_mwh": v for k, v in hp.annual_demand_mwh(sp.peaks_mw).items()}}
                   for sp in sites]).to_csv(f"{out_prefix}_sites.csv", index=False)
@@ -481,8 +578,13 @@ def main() -> None:
         print(f"Green H2 at {name} ({g['country'].iloc[0]}): expected share {share:.1%} of H2 demand "
               f"(target {targets[name]:.0%}), GOs bought {float((g['go_bought_mwh'] * g['probability']).sum()):,.0f} "
               f"/ sold {float((g['go_sold_mwh'] * g['probability']).sum()):,.0f} MWh/yr")
+    unmet_df = pd.DataFrame(res["unmet"])
+    unmet_df.to_csv(f"{out_prefix}_unmet_demand.csv", index=False)
+    for name, g in unmet_df.groupby("site", sort=False):
+        total = float((g["unmet_total_mwh"] * g["probability"]).sum())
+        print(f"Unmet heat/cooling demand at {name} ({g['country'].iloc[0]}): expected {total:,.0f} MWh/yr")
     print(f"\nwrote {out_prefix}_capacities.csv, {out_prefix}_sites.csv, {out_prefix}_convergence.csv, "
-          f"{out_prefix}_units.csv, {out_prefix}_green_h2.csv")
+          f"{out_prefix}_units.csv, {out_prefix}_green_h2.csv, {out_prefix}_unmet_demand.csv")
 
     if args.export_schedules:
         chosen_units = {u: units[u] for u in chosen.values()}
