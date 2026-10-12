@@ -333,7 +333,7 @@
     <div class="section-head">
       <div>
         <h2><span class="step">05</span>Uncertainty scenarios</h2>
-        <p class="lede">The Baseline assumes every country's wind and solar capacity is installed as planned, following the ENTSO-E TYNDP National Trends 2030 scenario behind the price models. To test what happens if generation falls short of that plan, add a scenario and enter, for each country, the wind and solar error compared with the Baseline: a positive error is the share of the site's own output lost, a negative one is extra output. Beside each box is the range the price models were trained on for that country, from 130% of the Baseline's installed capacity down to the lowest level in the training scenarios; a value outside it turns red and is not accepted. The Baseline is planned on its own by default (100%, deterministic). Probabilities must add up to 100%; with two or more scenarios the risk measure switches to CVaR.</p>
+        <p class="lede">The Baseline uses the wind and solar capacity each country plans to install by 2030 (ENTSO-E TYNDP National Trends). A scenario changes that capacity in each country: +20% means 20% more installed than planned, −20% means 20% less, and the site's own wind and solar produce that much more or less. The range under each box is what the price models were trained on; values outside it turn red and are not accepted. Probabilities must add up to 100%. With one scenario the plan is deterministic; with two or more it uses CVaR.</p>
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
         <span id="prob-total" class="total ok"></span>
@@ -346,7 +346,7 @@
           <div class="scenario-title">
             {{ form.baseline_row.include }}
             <span>{{ form.baseline_row.name }}</span>
-            <span class="lede" style="font-size:12px;font-weight:400;">no wind or solar shortfall</span>
+            <span class="lede" style="font-size:12px;font-weight:400;">capacity as planned</span>
           </div>
           <label class="prob-field">Probability {{ form.baseline_row.prob }} %</label>
         </div>
@@ -362,9 +362,9 @@
         </div>
         {% for f in row.prob.errors %}<div class="error">{{ f }}</div>{% endfor %}
         <details open>
-          <summary>Country error % compared with the Baseline (wind / solar)</summary>
+          <summary>Change in installed capacity compared with the Baseline (%)</summary>
           <table style="margin-top:8px;">
-            <thead><tr><th>Country</th><th>Wind error %</th><th>Solar error %</th></tr></thead>
+            <thead><tr><th>Country</th><th>Wind (%)</th><th>Solar (%)</th></tr></thead>
             <tbody>
               <tr><td><em>All countries</em></td><td><input type="number" data-fill="wind" min="{{ form.fill_bounds.wind.0 }}" max="{{ form.fill_bounds.wind.1 }}" step="any" placeholder="set all"></td><td><input type="number" data-fill="solar" min="{{ form.fill_bounds.solar.0 }}" max="{{ form.fill_bounds.solar.1 }}" step="any" placeholder="set all"></td></tr>
               {% for c in row.countries %}
@@ -390,9 +390,9 @@
           </div>
         </div>
         <details open>
-          <summary>Country error % compared with the Baseline (wind / solar)</summary>
+          <summary>Change in installed capacity compared with the Baseline (%)</summary>
           <table style="margin-top:8px;">
-            <thead><tr><th>Country</th><th>Wind error %</th><th>Solar error %</th></tr></thead>
+            <thead><tr><th>Country</th><th>Wind (%)</th><th>Solar (%)</th></tr></thead>
             <tbody>
               <tr><td><em>All countries</em></td><td><input type="number" data-fill="wind" min="{{ form.fill_bounds.wind.0 }}" max="{{ form.fill_bounds.wind.1 }}" step="any" placeholder="set all"></td><td><input type="number" data-fill="solar" min="{{ form.fill_bounds.solar.0 }}" max="{{ form.fill_bounds.solar.1 }}" step="any" placeholder="set all"></td></tr>
               {% for c in form.scenario_country_rows %}

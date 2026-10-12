@@ -56,7 +56,7 @@ CUSTOM_FIELD_RE = re.compile(r"^custom_name__(\d+)$")
 
 
 def range_text(bounds: list[int] | None) -> str:
-    """A trained error range as shown beside its box, e.g. "trained −30 to +74%"; empty when unknown."""
+    """A trained range as shown below its box, e.g. "trained −73 to +30%"; empty when unknown."""
     if not bounds:
         return ""
     lo, hi = bounds
@@ -169,20 +169,20 @@ class PlanRunForm(forms.Form):
                 for kind in ("wind", "solar"):
                     lo, hi = self._error_bounds(c, kind)
                     self.fields[f"custom_{kind}__{i}__{c}"] = forms.FloatField(
-                        min_value=lo, max_value=hi, initial=0, label=f"{c} {kind} error vs baseline (%)",
+                        min_value=lo, max_value=hi, initial=0, label=f"{c} {kind} capacity change vs baseline (%)",
                         error_messages={"min_value": f"Outside the accepted range ({lo} to {hi}%%).",
                                         "max_value": f"Outside the accepted range ({lo} to {hi}%%)."},
                         widget=forms.NumberInput(attrs={"step": "any"}))
 
     def _error_bounds(self, country: str, kind: str) -> list[int]:
-        """Lowest and highest error (%) accepted for ``country``'s ``kind`` (wind or solar): the trained
-        range, or -100 to 100 when the training samples aren't available."""
+        """Lowest and highest capacity change (%) accepted for ``country``'s ``kind`` (wind or solar): the
+        trained range, or -100 to 100 when the training samples aren't available."""
         r = self.error_ranges.get(country)
         return r[kind] if r else [-100, 100]
 
     @property
     def scenario_country_rows(self) -> list[dict]:
-        """Each scenario country's accepted wind and solar error bounds and their display text, for the
+        """Each scenario country's accepted wind and solar change bounds and their display text, for the
         template a new scenario card is built from."""
         return [{"code": c, "wind": self._error_bounds(c, "wind"), "solar": self._error_bounds(c, "solar"),
                  "wind_text": range_text(self.error_ranges[c] and self.error_ranges[c]["wind"]),
@@ -373,8 +373,8 @@ class PlanRunForm(forms.Form):
                 "custom": True,
                 "label": name,
                 "probability": d[f"custom_prob__{i}"] / total,
-                "wind": {c: round(1 - d[f"custom_wind__{i}__{c}"] / 100, 6) for c in self.scenario_countries},
-                "solar": {c: round(1 - d[f"custom_solar__{i}__{c}"] / 100, 6) for c in self.scenario_countries},
+                "wind": {c: round(1 + d[f"custom_wind__{i}__{c}"] / 100, 6) for c in self.scenario_countries},
+                "solar": {c: round(1 + d[f"custom_solar__{i}__{c}"] / 100, 6) for c in self.scenario_countries},
             }
         return {
             "all_countries": d["all_countries"],
