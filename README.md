@@ -16,17 +16,6 @@ dispatch engine's per-scenario output (`elec_samples.parquet`/`h2_samples.parque
 under `data_exchange/01_dispatch_output__train_input/`, built by `price_model/extract.py`
 from each scenario's `hourly_balance_{elec,h2}.csv`).
 
-Hourly inputs of each zone's model:
-
-| Model | Own zone | Calendar | System and neighbours |
-|---|---|---|---|
-| Electricity | demand, residual load (demand − wind − solar), wind and solar generation, battery dispatch | month, season, hour | total neighbour and system demand and residual load; each adjacent zone's demand and residual load; the electricity price of the 5 most correlated zones |
-| Hydrogen | H2 demand, SMR output, electrolyser output, H2 storage dispatch | month, season, hour | total neighbour and system H2 demand; each adjacent zone's H2 demand; the H2 price of the 5 most correlated zones |
-
-Installed capacity is not a model input: wind and solar reach the electricity model through
-their generation and the residual load. The hydrogen model has no wind, solar or electricity
-price input.
-
 ```python
 from price_model import electricity_price, hydrogen_price
 
@@ -259,24 +248,15 @@ change in installed wind and in installed solar capacity, in % compared with the
 each country: positive for more capacity than planned, negative for less. A scenario is priced
 in two steps:
 
-1. It takes its price-model inputs from the trained dispatch scenario whose country capacities
-   are closest to its own (least squares over every country's wind, solar, battery,
-   electrolyser and tank capacity, the scenario's other assets counting as the Baseline's; ties
-   go to the Baseline). This brings in that run's neighbouring-zone prices, which the models
-   lean on most.
+1. It takes the price-model inputs of the trained dispatch scenario whose country capacities are
+   closest to its own.
 2. It rescales each country's wind and solar generation, and the residual load that follows,
-   from that run's level to the scenario's (+20% gives 120% of the Baseline, -20% gives 80%).
+   to the scenario's capacities (+20% gives 120% of the Baseline, -20% gives 80%).
 
-The price models then predict each hour's electricity and hydrogen prices from those inputs.
-The site's own wind and PV generation is added to its zone's wind and solar generation (and
-taken off its residual load) in every scenario, the Baseline included; its own battery,
-electrolyser and tank scale the zone's battery, electrolyser and storage dispatch. The site's
-capacity factors and demand are the same in every scenario, so a scenario changes the plan only
-through prices. Electricity prices follow system-wide changes closely (DE averages about
-55 EUR/MWh at +20% everywhere and 97 EUR/MWh at -60%, close to the dispatch runs). A change in
-only one or two countries moves prices little, because every trained run changes all countries
-together. Hydrogen prices move only through the neighbouring hydrogen prices of the chosen run,
-so they change little between scenarios. Each country's change must stay within the range
+The price models then predict the electricity and hydrogen prices from those inputs. The site's
+own generation and storage are added to its zone's inputs in every scenario, and its demand and
+capacity factors are the same in every scenario, so a scenario changes the plan only through
+prices. Each country's change must stay within the range
 the price models were trained on: from the lowest level in the training scenarios (about -68% to
 -80% depending on the country) up to 130% of the Baseline's capacity (+30%). The New run page
 shows that range under every box; it is read from the training samples (`elec_samples.parquet`). The web app passes them to the planner in the run's scenario overrides file
