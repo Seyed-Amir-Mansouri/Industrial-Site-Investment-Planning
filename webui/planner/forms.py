@@ -242,10 +242,13 @@ class PlanRunForm(forms.Form):
     def catalog_rows(self) -> list[dict]:
         rows = []
         for asset in self.assets:
+            default = (self.catalog_defaults["catalog"][asset] or [{}])[0]
             rows.append({
                 "asset": asset,
                 "label": ASSET_LABELS[asset],
                 "has_mwh": asset in MWH_ASSETS,
+                "default": {k: plain(default[k]) if default.get(k) is not None else ""
+                            for k in ("mw", "mwh", "capex_eur")},
                 "lifetime": self[f"cat_lifetime__{asset}"],
                 "candidates": [
                     {
