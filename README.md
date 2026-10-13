@@ -169,12 +169,15 @@ green load, the wind/PV claimed for it, GOs bought and sold, and green hydrogen 
   (0.5 MW, EUR 300k) and absorption chiller (0.5 MW, EUR 200k) entries are indicative 2030 costs in the
   range of public technology catalogues (e.g. the Danish Energy Agency's). Replace them with
   vendor quotes for a real site. Thermal assets are sized in MW of heat or cooling output, the
-  stores in MW of charge and discharge, and the CHP in MW of electricity.
+  stores in MW of charge and discharge, and the CHP in MW of electricity. Each storage product
+  also has its energy (MWh): a site's store holds the MWh of the products built (battery 2 h,
+  hot-water and chilled-water / ice 6 h, thermal battery 8 h and H2 tank 16.6 h in the defaults),
+  so products with different durations can be mixed.
 - `SiteTechParams`: COPs and efficiencies (heat pump 3.0, AC chiller 3.5, industrial heat pump
   2.5, electric boiler 0.99, process chiller 4.5, heat-recovery chiller 3.0 with all rejected heat
   usable, absorption chiller 0.7 per MWh of process heat), the biogas CHP (40% electric, up to 45%
-  heat, biogas at 60 EUR/MWh), the stores (hot-water and chilled-water / ice 6h at 95%, thermal
-  battery 8h at 95%; solar thermal follows the site's PV profile), the unmet heat/cooling demand
+  heat, biogas at 60 EUR/MWh), the thermal stores' efficiency (hot-water, chilled-water / ice and
+  thermal battery 95%; solar thermal follows the site's PV profile), the unmet heat/cooling demand
   penalty (5,000 EUR/MWh) and the grid and hydrogen import fees (15 and 0 EUR/MWh).
 - `CapexAssumptions.cap_rules` (`CAP_RULES`): the default most MW of each asset one site may host,
   a factor times the sum of the site's annual peaks of the demands it serves, rounded up to a
@@ -235,7 +238,7 @@ without a site has no demand and no capacity, so it costs nothing.
 
 **Planning scenarios**
 
-By default a run plans over the **Baseline** (`p100`, no capacity shortfall) alone, with 100%
+By default a run plans over the **Baseline** (`p100`, capacities as planned) alone, with 100%
 probability, and is solved **deterministically**. To plan under uncertainty, add scenarios; with
 two or more the risk measure is **CVaR** at `--cvar-alpha` (default 0.8). There is no
 expected-value option.
@@ -245,13 +248,18 @@ default (`default_scenarios`).
 
 Further scenarios are your own, added on the New run page: each has a name, a probability and a
 change in installed wind and in installed solar capacity, in % compared with the Baseline, for
-each country: positive for more capacity than planned, negative for less. A scenario takes its
-price-model inputs from the trained dispatch scenario whose country capacities are closest to
-its own (least squares over all countries), then rescales each country's wind and solar
-capacity, the generation it produces and the residual load that follows to the scenario's
-values (+20% gives 120% of the Baseline capacity, -20% gives 80%), so the electricity and
-hydrogen prices reflect that generation mix. The site's own wind/PV capacity factors are the
-same in every scenario; its own capacity is added on top of the country's. Each country's change must stay within the range
+each country: positive for more capacity than planned, negative for less. A scenario is priced
+in two steps:
+
+1. It takes the price-model inputs of the trained dispatch scenario whose country capacities are
+   closest to its own.
+2. It rescales each country's wind and solar generation, and the residual load that follows,
+   to the scenario's capacities (+20% gives 120% of the Baseline, -20% gives 80%).
+
+The price models then predict the electricity and hydrogen prices from those inputs. The site's
+own generation and storage are added to its zone's inputs in every scenario, and its demand and
+capacity factors are the same in every scenario, so a scenario changes the plan only through
+prices. Each country's change must stay within the range
 the price models were trained on: from the lowest level in the training scenarios (about -68% to
 -80% depending on the country) up to 130% of the Baseline's capacity (+30%). The New run page
 shows that range under every box; it is read from the training samples (`elec_samples.parquet`). The web app passes them to the planner in the run's scenario overrides file
@@ -264,7 +272,7 @@ shows that range under every box; it is read from the training samples (`elec_sa
 | `--gap-tol G` | 0.01 (1%) | Relative Benders convergence gap |
 | `--master-time-limit S` | 180 | Wall-time cap (seconds) per master MILP solve. The master gets genuinely hard to solve to proven optimality as cuts accumulate at large scale, so this bounds it instead; the Benders lower bound is still read from HiGHS's own proven dual bound, so the result stays mathematically rigorous even when the search is cut off early. |
 | `--core-cuts` / `--no-core-cuts` | on | Also dispatch each placed site at a moving Pareto core point every iteration and add that cut too (two cuts per scenario and site instead of one). `--no-core-cuts` keeps only the trial-point cut. |
-| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (one row per site: its chosen country and capacities)/`_sites.csv` (each site's settings and annual demand)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each site's green hydrogen and GO totals per scenario)/`_unmet_demand.csv` (each site's unmet heat and cooling demand per scenario)/(with `--export-schedules`) `_schedule_<site>_<country>_<scenario>.csv` |
+| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (one row per site: its chosen country, MW per asset and MWh per storage asset)/`_sites.csv` (each site's settings and annual demand)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each site's green hydrogen and GO totals per scenario)/`_unmet_demand.csv` (each site's unmet heat and cooling demand per scenario)/(with `--export-schedules`) `_schedule_<site>_<country>_<scenario>.csv` |
 | `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each chosen site's representative-day schedule: every demand, asset output, grid and H2 import/export, and any unmet demand |
 
 Each iteration adds one optimality cut per scenario and site, for the country the site is
@@ -377,9 +385,11 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      and code; click one to select it. *Select all* and *Clear* sit above them. Ticking *All
      eligible countries* turns the country picks off.
   4. **Candidate catalog:** one card per technology active at one or more sites, listing the
-     products the optimizer may build: size (MW), CAPEX and, for the storage assets, energy (MWh), plus one
+     products the optimizer may build: size (MW), CAPEX and, for the storage assets, energy (MWh, the
+     energy the store holds), plus one
      lifetime per technology. You can edit any value, add products with **+ Add candidate**
-     (up to 8 per technology) or remove them by clearing their row, and each card has a
+     (up to 8 per technology; a new row starts from the technology's default product) or
+     remove them with **Remove** (each technology keeps at least one), and each card has a
      **Reset to default** button. Technologies may have different numbers of products. The
      edits apply to this run only (written to `catalog_overrides.json` in the run's output
      folder and passed to the planner through `PLANNER_CATALOG_OVERRIDES`); the defaults in
@@ -396,7 +406,7 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   6. **Economics:** discount rate, the risk measure and the CVaR confidence level. The risk
      measure follows the scenarios: **Deterministic** with one scenario, **CVaR** with two or
      more. Lifetimes are set per technology in the candidate catalog.
-  7. **Solver settings:** representative days per month, optimality gap, maximum
+  7. **Solver settings:** days per month (representative days solved per month), optimality gap, maximum
      Benders iterations, master time limit and parallel workers.
 
   Each section has its own **Reset this section** button. Each scenario card has a
@@ -456,7 +466,7 @@ says otherwise.
 | File | Folder | Where it comes from | What uses it |
 |---|---|---|---|
 | `zones_2030.parquet`, `networks_2030.parquet`, `marginal_price_electricity_2030.parquet`, `marginal_price_hydrogen_2030.parquet`, `crossborder_electricity_2030.parquet`, `crossborder_hydrogen_2030.parquet`, `hydro_*_2030.parquet`, `smr_production_2030.parquet` | `inputs/` | In git | Dispatch engine and planner |
-| `uncertainty_scenarios.json` | `inputs/` | In git | Planner (scenario probabilities and country error factors) |
+| `uncertainty_scenarios.json` | `inputs/` | In git | Planner (the Baseline scenario and its probability) |
 | `site_demand.csv` | `inputs/` | In git | Planner (per-unit hourly demand curves for the year, shared by all sites; each site's annual peaks come with the site) |
 | `elec_adjacency.json`, `h2_adjacency.json` | `inputs/` | In git (rewritten by `build_dataset.py`) | Price models |
 | `electricity_model.joblib`, `hydrogen_model.joblib` and the `*_metrics.csv` files | `data_exchange/02_train_output__benders_input/` | In git (written by `train_model.py`) | Planner |

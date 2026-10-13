@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from .config import ASSETS
+from .config import ASSETS, CAPACITY_ASSET, CAPACITY_KEYS
 
 
 def build_master(units: list[str], cand_mw: dict[str, dict[str, np.ndarray]],
@@ -101,8 +101,9 @@ def add_optimality_cut(m: linopy.Model, units: list[str], iteration: int,
                        site_star: dict[str, float] | None = None, tag: str = "core") -> None:
     """Add one Benders optimality cut per unit in ``units`` (for one scenario, or the only one) to
     the master, each bounding that unit's own ``theta``. ``mu`` are the recourse cost's
-    sensitivities to each asset's MW, ``lam`` its sensitivity to the site's on/off (its internal
-    demand switching on), both taken at ``cap_star``/``site_star``."""
+    sensitivities to each asset's MW and each storage asset's MWh (``CAPACITY_KEYS``), ``lam`` its
+    sensitivity to the site's on/off (its internal demand switching on), both taken at
+    ``cap_star``/``site_star``."""
     y = m.variables["y"]
     site = m.variables["site"]
     theta = m.variables["theta"]
@@ -110,9 +111,10 @@ def add_optimality_cut(m: linopy.Model, units: list[str], iteration: int,
     k_idx = y.coords["k"]
     base = f"cut_{tag}_{scenario}_{iteration}" if scenario is not None else f"cut_{tag}_{iteration}"
     for c in units:
-        cap_expr = sum(mu[c][a] * (xr.DataArray(cand_mw[c][a], coords=[k_idx]) * y.sel(unit=c, asset=a)).sum("k")
-                       for a in ASSETS)
-        rhs = Q[c] - sum(mu[c][a] * cap_star[c][a] for a in ASSETS)
+        cap_expr = sum(mu[c][a] * (xr.DataArray(cand_mw[c][a], coords=[k_idx])
+                                   * y.sel(unit=c, asset=CAPACITY_ASSET[a])).sum("k")
+                       for a in CAPACITY_KEYS)
+        rhs = Q[c] - sum(mu[c][a] * cap_star[c][a] for a in CAPACITY_KEYS)
         if lam is not None:
             cap_expr = cap_expr + lam[c] * site.sel(unit=c)
             rhs -= lam[c] * site_star[c]
@@ -135,13 +137,14 @@ def cvar_value(values: dict[str, float], probs: dict[str, float], alpha: float) 
 
 def extract_capacities(m: linopy.Model, units: list[str],
                        cand_mw: dict[str, dict[str, np.ndarray]]) -> dict[str, dict[str, float]]:
-    """Read the master's current ``y`` solution and translate it into total MW per (unit, asset)."""
+    """Read the master's current ``y`` solution and translate it into total MW per (unit, asset), plus
+    total MWh per storage asset."""
     y_sol = m.variables["y"].solution
     out: dict[str, dict[str, float]] = {}
     for c in units:
         out[c] = {}
-        for a in ASSETS:
-            counts = np.rint(y_sol.sel(unit=c, asset=a).to_numpy())
+        for a in CAPACITY_KEYS:
+            counts = np.rint(y_sol.sel(unit=c, asset=CAPACITY_ASSET[a]).to_numpy())
             out[c][a] = float(np.sum(counts * cand_mw[c][a]))
     return out
 
