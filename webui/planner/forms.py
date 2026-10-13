@@ -93,8 +93,9 @@ class PlanRunForm(forms.Form):
                                   help_text="Higher α focuses on the worst tail of scenarios.")
 
     rep_days_per_month = forms.IntegerField(min_value=1, max_value=29, initial=7,
-                                            label="Representative days per month",
-                                            help_text="More days = more accurate but slower.")
+                                            label="Days per month",
+                                            help_text="Representative days solved per month, weighted to cover the "
+                                                      "whole month. More days = more accurate but slower.")
     gap_tol = forms.FloatField(min_value=0.0001, max_value=0.5, initial=0.01, label="Optimality gap tolerance")
     max_iters = forms.IntegerField(min_value=1, max_value=500, initial=100, label="Max Benders iterations")
     master_time_limit = forms.FloatField(min_value=10, max_value=3600, initial=180,

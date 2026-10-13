@@ -48,9 +48,10 @@ def load_uncertainty_scenarios() -> dict:
     """Scenarios from ``inputs/uncertainty_scenarios.json``, with a run's overrides applied.
 
     The override file (``PLANNER_SCENARIO_OVERRIDES``) may edit existing scenarios and add custom
-    ones marked ``"custom": true``: a custom scenario takes its market prices from
-    ``price_scenario`` (default the baseline ``p100``) and derates only the site's own wind/PV by
-    the errors it gives."""
+    ones marked ``"custom": true``: a custom scenario starts from the price data of
+    ``price_scenario`` (default the trained dispatch scenario nearest to its capacities, see
+    ``nearest_trained_scenario``) with each country's wind and solar capacity then scaled to the
+    factors it gives (see ``scale_country_vre``)."""
     scenarios = json.loads(UNCERTAINTY_SCENARIOS_PATH.read_text())["scenarios"]
     override_path = os.environ.get(SCENARIO_OVERRIDES_ENV)
     if override_path:
@@ -58,8 +59,35 @@ def load_uncertainty_scenarios() -> dict:
             if name in scenarios:
                 scenarios[name].update(edit)
             elif edit.get("custom"):
-                scenarios[name] = {"price_scenario": BASELINE_SCENARIO, **edit}
+                scenarios[name] = {"price_scenario": edit.get("price_scenario") or nearest_trained_scenario(edit),
+                                   **edit}
     return scenarios
+
+
+@lru_cache(maxsize=1)
+def trained_capacity_ratios() -> pd.DataFrame:
+    """Each trained dispatch scenario's installed capacity per country relative to the Baseline's: one
+    row per scenario, columns ``(kind, country)`` with ``kind`` one of ``"wind"``, ``"solar"``,
+    ``"battery"``, ``"electrolyser"`` and ``"tank"``."""
+    cols = {"wind_capacity_mw": "wind", "pv_capacity_mw": "solar", "battery_capacity_mw": "battery",
+            "electrolyser_capacity_mw": "electrolyser", "tank_capacity_mw": "tank"}
+    path = ROOT / "data_exchange" / "01_dispatch_output__train_input" / "elec_samples.parquet"
+    df = pd.read_parquet(path, columns=["scenario", "zone", *cols])
+    per_zone = df.groupby(["scenario", "zone"])[list(cols)].max().reset_index()
+    per_zone["country"] = per_zone["zone"].str[:2]
+    per_country = per_zone.groupby(["scenario", "country"])[list(cols)].sum()
+    ratio = (per_country / per_country.loc[BASELINE_SCENARIO].replace(0.0, np.nan)).fillna(1.0)
+    return ratio.rename(columns=cols).unstack("country")
+
+
+def nearest_trained_scenario(scenario: dict) -> str:
+    """The trained dispatch scenario whose country capacities are closest (least squares over every
+    country) to ``scenario``: its ``wind``/``solar`` factors, a country it doesn't list counting as 1,
+    and every other asset at the Baseline's capacity. Ties go to the Baseline."""
+    ratios = trained_capacity_ratios()
+    ratios = ratios.loc[[BASELINE_SCENARIO, *(s for s in ratios.index if s != BASELINE_SCENARIO)]]
+    target = np.array([scenario.get(kind, {}).get(country, 1.0) for kind, country in ratios.columns])
+    return str(ratios.index[int(np.argmin(((ratios.to_numpy() - target) ** 2).sum(axis=1)))])
 
 
 def price_scenario(scenario: str) -> str:
@@ -69,16 +97,32 @@ def price_scenario(scenario: str) -> str:
     return sc.get("price_scenario", scenario)
 
 
-def scenario_capacity_scale(scenario: str | None, country: str) -> tuple[float, float]:
-    """(wind_scale, solar_scale) of the site's OWN wind/PV output in this scenario and country: 1 minus
-    the scenario's error compared with the baseline, applied as given; (1.0, 1.0) for no scenario,
-    an unknown one or a country it doesn't list."""
-    if not scenario:
-        return 1.0, 1.0
-    sc = load_uncertainty_scenarios().get(scenario)
-    if sc is None:
-        return 1.0, 1.0
-    return sc.get("wind", {}).get(country, 1.0), sc.get("solar", {}).get(country, 1.0)
+def scale_country_vre(df: pd.DataFrame, scenario: str) -> pd.DataFrame:
+    """``df`` (price-model samples of a custom ``scenario``'s ``price_scenario``, one row per zone and
+    hour) with each country's wind and solar capacity rescaled from that scenario's level to the
+    custom scenario's ``wind``/``solar`` factors (1.2 = 20% more than the Baseline), together with
+    the wind and solar generation they produce and the residual load and VRE totals that follow from
+    it. Unchanged for a scenario that isn't custom; a country the scenario doesn't list is taken at
+    the Baseline's capacity."""
+    sc = load_uncertainty_scenarios().get(scenario, {})
+    if not sc.get("custom"):
+        return df
+    source = trained_capacity_ratios().loc[sc["price_scenario"]]
+    df = df.copy()
+    country = df["zone"].str[:2]
+    for kind, gen_col, cap_col in (("wind", "wind", "wind_capacity_mw"), ("solar", "solar", "pv_capacity_mw")):
+        target = country.map(sc.get(kind, {})).fillna(1.0).astype(float)
+        factor = (target / country.map(source[kind]).fillna(1.0)).to_numpy()
+        if cap_col in df.columns:
+            df[cap_col] = df[cap_col].to_numpy() * factor
+        if gen_col in df.columns:
+            extra = df[gen_col].to_numpy() * (factor - 1.0)
+            df[gen_col] = df[gen_col].to_numpy() + extra
+            if "vre" in df.columns:
+                df["vre"] = df["vre"].to_numpy() + extra
+            if "residual_load" in df.columns:
+                df["residual_load"] = df["residual_load"].to_numpy() - extra
+    return df
 
 
 def _month_boundaries(total_days: int = TOTAL_YEAR_DAYS, n_months: int = N_MONTHS) -> list[int]:
@@ -168,8 +212,8 @@ def _zone_raw_profile(zone: str, hours_key: tuple[int, ...]):
     """Capacity- and scenario-independent part of ``sizing_and_profiles``: host-zone validation,
     wind/PV donor resolution, and the raw normalized capacity-factor profiles.
     Cached because it's invariant across every scenario/trial-point/core-point call within a
-    Benders run for a given zone and representative-hour selection -- only the scenario derating
-    and the candidate's own MW sizing (applied by the caller) actually vary call to call."""
+    Benders run for a given zone and representative-hour selection -- only the candidate's own MW
+    sizing (applied by the caller) varies call to call."""
     hours = np.array(hours_key, dtype=int)
     start_day = int(hours.min()) // HOURS_PER_DAY + 1
     end_day = int(hours.max()) // HOURS_PER_DAY + 1
@@ -202,27 +246,19 @@ def _zone_raw_profile(zone: str, hours_key: tuple[int, ...]):
     return host_zone, wind_donor, pv_donor, wind_cf_norm, pv_cf_norm
 
 
-def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict, scenario: str | None = None):
+def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict):
     """Resolve this site's sizing (``capacities`` plus derived storage MWh) and wind/PV availability
-    upper bounds for the given year-hour positions. If ``scenario`` is given, the site's OWN wind/PV
-    capacity factor (and hence its own available-capacity bound and its own contribution to the price
-    feature row) is derated by that scenario's error compared with the baseline (see
-    ``scenario_capacity_scale``). The rest of the system's price features come from the scenario's
-    price data, untouched."""
+    upper bounds for the given year-hour positions. The site's own capacity factors are the same in
+    every scenario; a scenario acts through its price data."""
     start_day = int(hours.min()) // HOURS_PER_DAY + 1
     end_day = int(hours.max()) // HOURS_PER_DAY + 1
     cfg = _run_config(zone, start_day, end_day)
-    country = zone[:2]
     sizing = {a: float(capacities.get(a, 0.0)) for a in ASSETS}
     sizing["battery_mwh"] = sizing["battery_mw"] * cfg.g_investor_battery_duration_hours
     sizing["tank_mwh"] = sizing["tank_mw"] * cfg.g_investor_tank_duration_hours
 
     hours_key = tuple(int(h) for h in hours)
     host_zone, wind_donor, pv_donor, wind_cf_norm, pv_cf_norm = _zone_raw_profile(zone, hours_key)
-
-    wind_scale, pv_scale = scenario_capacity_scale(scenario, country)
-    wind_cf_norm = wind_cf_norm * wind_scale
-    pv_cf_norm = pv_cf_norm * pv_scale
 
     wind_upper = wind_cf_norm * sizing["wind_mw"]
     pv_upper = pv_cf_norm * sizing["pv_mw"]
@@ -258,12 +294,15 @@ def _backfill_required_price_cols(df: pd.DataFrame, raw_df: pd.DataFrame, target
 
 
 def enriched_elec_df(scenario: str = _BACKTEST_SCENARIO) -> pd.DataFrame:
-    """Full elec_samples.parquet enriched with neighbour/candidate-price columns, filtered to one capacity scenario."""
+    """Full elec_samples.parquet enriched with neighbour/candidate-price columns, filtered to one capacity
+    scenario; a custom scenario uses its ``price_scenario``'s samples with its country wind and solar
+    scaling applied (``scale_country_vre``)."""
     ROOT_IN = ROOT / "inputs"
     ROOT_EXCHANGE = ROOT / "data_exchange" / "01_dispatch_output__train_input"
     edf = pd.read_parquet(ROOT_EXCHANGE / "elec_samples.parquet")
     if "scenario" in edf.columns:
-        edf = edf[edf["scenario"] == scenario].drop(columns="scenario")
+        edf = edf[edf["scenario"] == price_scenario(scenario)].drop(columns="scenario")
+    edf = scale_country_vre(edf, scenario)
     raw_edf = edf
     eadj = load_adjacency(ROOT_IN / "elec_adjacency.json")
     edf, _ = add_neighbor_features(edf, "demand", eadj, "residual_load")
@@ -273,12 +312,15 @@ def enriched_elec_df(scenario: str = _BACKTEST_SCENARIO) -> pd.DataFrame:
 
 
 def enriched_h2_df(scenario: str = _BACKTEST_SCENARIO) -> pd.DataFrame:
-    """Full h2_samples.parquet enriched with neighbour/candidate-price columns, filtered to one capacity scenario."""
+    """Full h2_samples.parquet enriched with neighbour/candidate-price columns, filtered to one capacity
+    scenario; a custom scenario uses its ``price_scenario``'s samples with its country wind and solar
+    capacity scaled (``scale_country_vre``)."""
     ROOT_IN = ROOT / "inputs"
     ROOT_EXCHANGE = ROOT / "data_exchange" / "01_dispatch_output__train_input"
     hdf = pd.read_parquet(ROOT_EXCHANGE / "h2_samples.parquet")
     if "scenario" in hdf.columns:
-        hdf = hdf[hdf["scenario"] == scenario].drop(columns="scenario")
+        hdf = hdf[hdf["scenario"] == price_scenario(scenario)].drop(columns="scenario")
+    hdf = scale_country_vre(hdf, scenario)
     raw_hdf = hdf
     hadj = load_adjacency(ROOT_IN / "h2_adjacency.json")
     hdf, _ = add_neighbor_features(hdf, "h2_demand", hadj, None)
@@ -383,8 +425,8 @@ class SiteLP:
     """Every unit's site LP over ``days`` (``day_weights`` per day), cut into blocks of ``block_len``
     hours (24 = representative days, each its own storage cycle; the whole horizon = one contiguous
     run), built once as a HiGHS model and re-solved for any capacities and site choice. A unit is one
-    site placed in one zone: ``units[u] = (zone, spec)``, the zone giving prices, wind/PV profiles and
-    the scenario derating, the ``SiteSpec`` giving demand peaks, green hydrogen share and flexibility.
+    site placed in one zone: ``units[u] = (zone, spec)``, the zone giving prices and wind/PV profiles,
+    the ``SiteSpec`` giving demand peaks, green hydrogen share and flexibility.
     ``sites[u]`` scales unit ``u``'s internal demand: 1 = the site is built there, 0 = not (default 1).
     The site's ``flex_fraction`` of each service lets each hour's demand of that service move by up
     to that fraction of itself, netting to zero over each block.
@@ -438,7 +480,7 @@ class SiteLP:
         stacks = {k: [] for k in ("wind_cf", "pv_cf", *(f"demand_{s}" for s in _BALANCES))}
         for u in unit_ids:
             z, spec = units[u]
-            cfg, _, host_zone, _, _, _, _, wind_cf_norm, pv_cf_norm = sizing_and_profiles(z, self.hours, {}, scenario)
+            cfg, _, host_zone, _, _, _, _, wind_cf_norm, pv_cf_norm = sizing_and_profiles(z, self.hours, {})
             self.cfgs[u], self.host_zones[u] = cfg, host_zone
             self.cf[u] = (wind_cf_norm, pv_cf_norm)
             elec_zone = _ELEC_ZONE_OVERRIDES.get(z[:2], z)
@@ -812,8 +854,7 @@ def solve(zone: str, start_day: int | None = None, end_day: int | None = None,
           spec: SiteSpec | None = None) -> pd.DataFrame:
     """Solve one site's LP over a contiguous day range or representative-day sample, priced by the proxy models.
     ``spec`` gives the site's demand peaks, green hydrogen share and flexibility (default: a default site).
-    ``scenario``, if given, derates the site's OWN wind/PV capacity (see
-    ``sizing_and_profiles``) -- pass the same scenario name used to build ``edf``/``hdf``."""
+    ``scenario`` names the scenario ``edf``/``hdf`` were built for."""
     representative = rep_days_per_month is not None
     if representative:
         if start_day is not None or end_day is not None:
@@ -855,9 +896,8 @@ def solve_joint(units: dict[str, tuple[str, SiteSpec]], capacities: dict[str, di
                 scenario: str | None = None, sites: dict[str, float] | None = None) -> dict:
     """Solve every unit's site LP jointly (representative-day horizon only) for a given trial capacity
     vector and site choice. ``units[u] = (zone, spec)`` places site ``spec`` in ``zone``; ``sites[u]``
-    = 1 if that placement is built (default all 1). ``scenario``, if given, derates every unit's own
-    wind/PV capacity (see ``sizing_and_profiles``) -- pass the same scenario name used to
-    build ``edf``/``hdf``."""
+    = 1 if that placement is built (default all 1). ``scenario`` names the scenario ``edf``/``hdf``
+    were built for."""
     days, day_weights = _sample_days(rep_days_per_month, day_selection)
     result = _solve_sites(units, capacities, sites or {}, days, day_weights, HOURS_PER_DAY,
                           return_duals, edf, hdf, quiet, scenario)
