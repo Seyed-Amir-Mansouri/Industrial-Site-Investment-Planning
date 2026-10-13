@@ -42,6 +42,12 @@ ASSETS = ["wind_mw", "pv_mw", "battery_mw", "chp_mw",
           "electric_chiller_mw", "heat_recovery_chiller_mw", "absorption_chiller_mw",
           "electrolyser_mw", "tank_mw"]
 
+STORAGE_ENERGY = {"battery_mw": "battery_mwh", "hot_water_storage_mw": "hot_water_storage_mwh",
+                  "cold_storage_mw": "cold_storage_mwh", "thermal_battery_mw": "thermal_battery_mwh",
+                  "tank_mw": "tank_mwh"}
+CAPACITY_KEYS = ASSETS + list(STORAGE_ENERGY.values())
+CAPACITY_ASSET = {**{a: a for a in ASSETS}, **{e: a for a, e in STORAGE_ENERGY.items()}}
+
 SERVICES = ["electricity", "space_heat", "space_cool", "process_heat", "steam", "process_cool", "hydrogen"]
 THERMAL_SERVICES = ["space_heat", "space_cool", "process_heat", "steam", "process_cool"]
 
@@ -153,6 +159,8 @@ CANDIDATE_CATALOG: dict[str, list[AssetCandidate]] = {
     ],
 }
 
+DEFAULT_STORAGE_HOURS = {a: CANDIDATE_CATALOG[a][0].mwh / CANDIDATE_CATALOG[a][0].mw for a in STORAGE_ENERGY}
+
 
 @dataclass(frozen=True)
 class SiteTechParams:
@@ -163,7 +171,7 @@ class SiteTechParams:
     and turns ``chp_electric_efficiency`` of it into electricity and up to ``chp_heat_efficiency``
     into space or process heat. The heat-recovery chiller's rejected heat (its cooling plus its
     electricity) can serve space or process heat. Hot-water, chilled-water / ice storage and the
-    thermal battery hold ``*_hours`` of their MW and lose ``1 - *_efficiency`` of what they charge;
+    thermal battery hold the MWh of the products built and lose ``1 - *_efficiency`` of what they charge;
     the thermal battery charges with electricity and discharges steam. The site has no existing plant:
     any heat or cooling the new assets can't supply is left unmet and charged
     ``unmet_demand_penalty_eur_per_mwh``, which keeps every subproblem feasible whatever the master
@@ -183,11 +191,8 @@ class SiteTechParams:
     chp_heat_efficiency: float = 0.45
     biogas_price_eur_per_mwh: float = 60.0
 
-    hot_water_storage_hours: float = 6.0
     hot_water_storage_efficiency: float = 0.95
-    cold_storage_hours: float = 6.0
     cold_storage_efficiency: float = 0.95
-    thermal_battery_hours: float = 8.0
     thermal_battery_efficiency: float = 0.95
 
     unmet_demand_penalty_eur_per_mwh: float = 5000.0

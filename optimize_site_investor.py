@@ -27,8 +27,9 @@ from economic_dispatch import data_loader as ed_dl
 from price_model.multivariate import predict as model_predict
 from price_model.neighbors import add_neighbor_features, add_candidate_neighbor_prices, load_adjacency
 from price_model import api as price_api
-from site_investor_planning.config import (ASSETS, GREEN_H2, SERVICES, SITE_TECH, THERMAL_SERVICES,
-                                          THERMAL_ASSET_SERVICES, SiteSpec)
+from site_investor_planning.config import (ASSETS, CAPACITY_KEYS, DEFAULT_STORAGE_HOURS, GREEN_H2, SERVICES,
+                                          SITE_TECH, STORAGE_ENERGY, THERMAL_SERVICES, THERMAL_ASSET_SERVICES,
+                                          SiteSpec)
 from site_investor_planning.demand import site_demand
 
 HOURS_PER_DAY = 24
@@ -246,6 +247,15 @@ def _zone_raw_profile(zone: str, hours_key: tuple[int, ...]):
     return host_zone, wind_donor, pv_donor, wind_cf_norm, pv_cf_norm
 
 
+def with_storage_energy(capacities: dict) -> dict:
+    """``capacities`` as MW per asset plus MWh per storage asset (``CAPACITY_KEYS``); a storage
+    asset whose MWh isn't given holds its MW times the duration of its default catalog product."""
+    out = {a: float(capacities.get(a, 0.0)) for a in ASSETS}
+    for a, e in STORAGE_ENERGY.items():
+        out[e] = float(capacities[e]) if e in capacities else out[a] * DEFAULT_STORAGE_HOURS[a]
+    return out
+
+
 def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict):
     """Resolve this site's sizing (``capacities`` plus derived storage MWh) and wind/PV availability
     upper bounds for the given year-hour positions. The site's own capacity factors are the same in
@@ -253,9 +263,7 @@ def sizing_and_profiles(zone: str, hours: np.ndarray, capacities: dict):
     start_day = int(hours.min()) // HOURS_PER_DAY + 1
     end_day = int(hours.max()) // HOURS_PER_DAY + 1
     cfg = _run_config(zone, start_day, end_day)
-    sizing = {a: float(capacities.get(a, 0.0)) for a in ASSETS}
-    sizing["battery_mwh"] = sizing["battery_mw"] * cfg.g_investor_battery_duration_hours
-    sizing["tank_mwh"] = sizing["tank_mw"] * cfg.g_investor_tank_duration_hours
+    sizing = with_storage_energy(capacities)
 
     hours_key = tuple(int(h) for h in hours)
     host_zone, wind_donor, pv_donor, wind_cf_norm, pv_cf_norm = _zone_raw_profile(zone, hours_key)
@@ -446,11 +454,12 @@ class SiteLP:
     production plus certified green H2 purchases must reach the site's ``green_share`` of its annual
     hydrogen demand.
 
-    Each asset's MW and each unit's on/off placement are columns fixed at the values being solved,
+    Each asset's MW, each storage asset's MWh and each unit's on/off placement are columns fixed at
+    the values being solved,
     so a new point only changes those bounds and the electricity and hydrogen price costs (the price
     proxy sees the site's own added capacity), and HiGHS restarts from the previous basis. The cut
     coefficients are those fixed columns' reduced costs: each asset's is the sensitivity to its MW
-    across every constraint it bounds, the site's is the sensitivity to switching the site on, which
+    (or MWh) across every constraint it bounds, the site's is the sensitivity to switching the site on, which
     scales every balance's demand, every flexibility band and the green hydrogen requirement. A solve
     HiGHS reports as failed is retried once from scratch with presolve off."""
 
@@ -502,11 +511,10 @@ class SiteLP:
         self.ely_eff = ely_eff = cfg0.g_investor_electrolyser_efficiency
         batt_eff, tank_eff = cfg0.g_investor_battery_efficiency, cfg0.g_investor_tank_efficiency
         self.sto_cost = sto_cost = cfg0.storage_op_cost_eur_per_mwh
-        batt_h, tank_h = cfg0.g_investor_battery_duration_hours, cfg0.g_investor_tank_duration_hours
         soc0_frac = cfg0.initial_soc_fraction
 
         m = linopy.Model()
-        cap = {a: m.add_variables(lower=0.0, upper=0.0, coords=[unit_idx], name=f"cap_{a}") for a in ASSETS}
+        cap = {a: m.add_variables(lower=0.0, upper=0.0, coords=[unit_idx], name=f"cap_{a}") for a in CAPACITY_KEYS}
         site_on = m.add_variables(lower=0.0, upper=0.0, coords=[unit_idx], name="site_on")
 
         def bounded(name, coef, a, cap_name):
@@ -518,22 +526,22 @@ class SiteLP:
         pv_p = bounded("pv_p", da["pv_cf"], "pv_mw", "pv_cap")
         batt_dis = bounded("batt_dis", 1.0, "battery_mw", "batt_dis_cap")
         batt_ch = bounded("batt_ch", 1.0, "battery_mw", "batt_ch_cap")
-        batt_soc = bounded("batt_soc", batt_h, "battery_mw", "batt_soc_cap")
+        batt_soc = bounded("batt_soc", 1.0, "battery_mwh", "batt_soc_cap")
         tank_dis = bounded("tank_dis", 1.0, "tank_mw", "tank_dis_cap")
         tank_ch = bounded("tank_ch", 1.0, "tank_mw", "tank_ch_cap")
-        tank_soc = bounded("tank_soc", tank_h, "tank_mw", "tank_soc_cap")
+        tank_soc = bounded("tank_soc", 1.0, "tank_mwh", "tank_soc_cap")
         ely_p = bounded("ely_p", 1.0, "electrolyser_mw", "ely_cap")
         tech = SITE_TECH
         chp_el = bounded("chp_el", 1.0, "chp_mw", "chp_cap")
         hw_dis = bounded("hw_dis", 1.0, "hot_water_storage_mw", "hw_dis_cap")
         hw_ch = bounded("hw_ch", 1.0, "hot_water_storage_mw", "hw_ch_cap")
-        hw_soc = bounded("hw_soc", tech.hot_water_storage_hours, "hot_water_storage_mw", "hw_soc_cap")
+        hw_soc = bounded("hw_soc", 1.0, "hot_water_storage_mwh", "hw_soc_cap")
         cs_dis = bounded("cs_dis", 1.0, "cold_storage_mw", "cs_dis_cap")
         cs_ch = bounded("cs_ch", 1.0, "cold_storage_mw", "cs_ch_cap")
-        cs_soc = bounded("cs_soc", tech.cold_storage_hours, "cold_storage_mw", "cs_soc_cap")
+        cs_soc = bounded("cs_soc", 1.0, "cold_storage_mwh", "cs_soc_cap")
         tb_dis = bounded("tb_dis", 1.0, "thermal_battery_mw", "tb_dis_cap")
         tb_ch = bounded("tb_ch", 1.0, "thermal_battery_mw", "tb_ch_cap")
-        tb_soc = bounded("tb_soc", tech.thermal_battery_hours, "thermal_battery_mw", "tb_soc_cap")
+        tb_soc = bounded("tb_soc", 1.0, "thermal_battery_mwh", "tb_soc_cap")
         hrc_cool = bounded("hrc_cool", 1.0, "heat_recovery_chiller_mw", "hrc_cap")
         thermal = {(a, svc): m.add_variables(lower=0.0, coords=coords, name=f"{v}_{svc}")
                    for a, v in _THERMAL_VARS.items() for svc in THERMAL_ASSET_SERVICES[a]}
@@ -557,21 +565,19 @@ class SiteLP:
         h2_buy = m.add_variables(lower=0.0, coords=coords, name="h2_buy")
         h2_sell = m.add_variables(lower=0.0, coords=coords, name="h2_sell")
 
-        for name, soc, ch, dis, eff, a, dur in (
-                ("batt", batt_soc, batt_ch, batt_dis, batt_eff, "battery_mw", batt_h),
-                ("tank", tank_soc, tank_ch, tank_dis, tank_eff, "tank_mw", tank_h),
-                ("hw", hw_soc, hw_ch, hw_dis, tech.hot_water_storage_efficiency, "hot_water_storage_mw",
-                 tech.hot_water_storage_hours),
-                ("cs", cs_soc, cs_ch, cs_dis, tech.cold_storage_efficiency, "cold_storage_mw", tech.cold_storage_hours),
-                ("tb", tb_soc, tb_ch, tb_dis, tech.thermal_battery_efficiency, "thermal_battery_mw",
-                 tech.thermal_battery_hours)):
-            m.add_constraints(soc.isel(hid=0) - soc0_frac * dur * cap[a] - eff * ch.isel(hid=0) + dis.isel(hid=0) == 0,
+        for name, soc, ch, dis, eff, e in (
+                ("batt", batt_soc, batt_ch, batt_dis, batt_eff, "battery_mwh"),
+                ("tank", tank_soc, tank_ch, tank_dis, tank_eff, "tank_mwh"),
+                ("hw", hw_soc, hw_ch, hw_dis, tech.hot_water_storage_efficiency, "hot_water_storage_mwh"),
+                ("cs", cs_soc, cs_ch, cs_dis, tech.cold_storage_efficiency, "cold_storage_mwh"),
+                ("tb", tb_soc, tb_ch, tb_dis, tech.thermal_battery_efficiency, "thermal_battery_mwh")):
+            m.add_constraints(soc.isel(hid=0) - soc0_frac * cap[e] - eff * ch.isel(hid=0) + dis.isel(hid=0) == 0,
                               name=f"{name}_balance_0")
             m.add_constraints(soc.isel(hid=slice(1, None)) - soc.isel(hid=slice(None, -1))
                               - eff * ch.isel(hid=slice(1, None)) + dis.isel(hid=slice(1, None)) == 0,
                               name=f"{name}_balance")
             if cfg0.cyclic_storage:
-                m.add_constraints(soc.isel(hid=-1) - soc0_frac * dur * cap[a] >= 0, name=f"{name}_cyclic")
+                m.add_constraints(soc.isel(hid=-1) - soc0_frac * cap[e] >= 0, name=f"{name}_cyclic")
 
         shift = {}
         for svc in _BALANCES:
@@ -646,10 +652,10 @@ class SiteLP:
         for name in m.variables:
             pos = vpos[m.variables[name].labels.values]
             self.var_pos[name] = pos
-        self.cap_pos = {a: self.var_pos[f"cap_{a}"] for a in ASSETS}
+        self.cap_pos = {a: self.var_pos[f"cap_{a}"] for a in CAPACITY_KEYS}
         self.site_pos = self.var_pos["site_on"]
         self.price_pos = {k: self.var_pos[k].ravel() for k in ("grid_buy", "grid_sell", "h2_buy", "h2_sell")}
-        for name in (*(f"cap_{a}" for a in ASSETS), "site_on", *self.price_pos):
+        for name in (*(f"cap_{a}" for a in CAPACITY_KEYS), "site_on", *self.price_pos):
             assert (self.var_pos[name] >= 0).all(), f"{name} is missing from the HiGHS model"
         self.h = to_highspy(m, set_names=False)
         self.h.setOptionValue("output_flag", not quiet)
@@ -657,17 +663,16 @@ class SiteLP:
         self.setup_seconds = time.time() - t0
 
     def solve(self, capacities: dict[str, dict], sites: dict[str, float], return_duals: bool = True) -> dict:
-        """Solve at ``capacities[u]`` (MW per asset) and ``sites[u]`` (on/off, default 1) for every unit;
-        returns the same result dict as ``_solve_sites``."""
+        """Solve at ``capacities[u]`` (MW per asset and MWh per storage asset, see ``with_storage_energy``)
+        and ``sites[u]`` (on/off, default 1) for every unit; returns the same result dict as
+        ``_solve_sites``."""
         t0 = time.time()
         tech, green = SITE_TECH, GREEN_H2
         h, unit_ids, H = self.h, self.unit_ids, self.H
         sizings, prices = {}, {}
         for u in unit_ids:
             z, _ = self.units[u]
-            sizing = {a: float(capacities[u].get(a, 0.0)) for a in ASSETS}
-            sizing["battery_mwh"] = sizing["battery_mw"] * self.cfgs[u].g_investor_battery_duration_hours
-            sizing["tank_mwh"] = sizing["tank_mw"] * self.cfgs[u].g_investor_tank_duration_hours
+            sizing = with_storage_energy(capacities[u])
             sizings[u] = sizing
             wind_cf_norm, pv_cf_norm = self.cf[u]
             elec_zone, h2_zone, erows, hrows = self.frames[u]
@@ -678,8 +683,8 @@ class SiteLP:
                                            electrolyser_add=sizing["electrolyser_mw"], tank_add=sizing["tank_mw"])
         site_vals = {u: float(sites.get(u, 1.0)) for u in unit_ids}
 
-        fixed_idx = np.concatenate([self.cap_pos[a] for a in ASSETS] + [self.site_pos]).astype(np.int32)
-        fixed_val = np.array([sizings[u][a] for a in ASSETS for u in unit_ids]
+        fixed_idx = np.concatenate([self.cap_pos[a] for a in CAPACITY_KEYS] + [self.site_pos]).astype(np.int32)
+        fixed_val = np.array([sizings[u][a] for a in CAPACITY_KEYS for u in unit_ids]
                              + [site_vals[u] for u in unit_ids], dtype=float)
         h.changeColsBounds(len(fixed_idx), fixed_idx, fixed_val, fixed_val)
         wf = self.weight_flat
@@ -708,7 +713,7 @@ class SiteLP:
         cut_coeffs = site_coeffs = None
         if return_duals:
             rc = np.asarray(sol.col_dual)
-            cut_coeffs = {u: {a: float(rc[self.cap_pos[a][i]]) for a in ASSETS} for i, u in enumerate(unit_ids)}
+            cut_coeffs = {u: {a: float(rc[self.cap_pos[a][i]]) for a in CAPACITY_KEYS} for i, u in enumerate(unit_ids)}
             site_coeffs = {u: float(rc[self.site_pos[i]]) for i, u in enumerate(unit_ids)}
 
         penalty = tech.unmet_demand_penalty_eur_per_mwh
@@ -783,7 +788,7 @@ class SiteLP:
             out["day_weight"] = weight_flat
             out.attrs.update({"objective": z_cost, "p_elec": p_elec_z, "p_h2": p_h2_z,
                               "host_zone": self.host_zones[u], "site_name": self.units[u][1].name,
-                              "sizing": sizings[u], "capacities": {a: sizings[u][a] for a in ASSETS},
+                              "sizing": sizings[u], "capacities": {a: sizings[u][a] for a in CAPACITY_KEYS},
                               "site": site_z, "cut_coeffs": cut_coeffs[u] if cut_coeffs else None,
                               "green_h2_share": (float((weight_flat * (ely_eff * eg + hbg)).sum()
                                                        / (weight_flat * out["Site hydrogen demand (MW)"]).sum())

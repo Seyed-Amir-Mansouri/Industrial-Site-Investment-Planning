@@ -10,7 +10,7 @@ from economic_dispatch.config import RunConfig
 
 import math
 
-from .config import ASSETS, CapexAssumptions, SiteSpec
+from .config import ASSETS, STORAGE_ENERGY, CapexAssumptions, SiteSpec
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ZONES_DB = ROOT / "inputs" / "zones_2030.parquet"
@@ -28,7 +28,9 @@ def candidate_site_zones(zones_db=DEFAULT_ZONES_DB, networks_db=DEFAULT_NETWORKS
 
 def build_candidates(countries: list[str], capex_cfg: CapexAssumptions | None = None,
                      zones_db=DEFAULT_ZONES_DB, networks_db=DEFAULT_NETWORKS_DB):
-    """Per-country candidate MW/CAPEX grids and host zones for the given countries.
+    """Per-country candidate MW/CAPEX grids and host zones for the given countries. The MW grid also
+    holds each storage asset's energy (MWh) per product under its ``STORAGE_ENERGY`` key, on the
+    same product index as its MW.
 
     Assets may have different numbers of products in the catalog; shorter lists are padded with
     zero-MW, zero-CAPEX products so every asset has the same grid length in the master, and a
@@ -40,12 +42,16 @@ def build_candidates(countries: list[str], capex_cfg: CapexAssumptions | None = 
         raise ValueError(f"no candidate site for {missing} -- eligible countries: {sorted(site_zones)}")
 
     n_k = max(len(capex_cfg.catalog[a]) for a in ASSETS)
+    for a in STORAGE_ENERGY:
+        if any(not cand.mwh or cand.mwh <= 0 for cand in capex_cfg.catalog[a]):
+            raise ValueError(f"every {a} product needs an energy capacity (mwh > 0)")
 
     def padded(values: list[float]) -> np.ndarray:
         """Candidate values padded with zeros to the longest asset's product count."""
         return np.asarray(values + [0.0] * (n_k - len(values)), dtype=float)
 
     cand_mw_shared = {a: padded([cand.mw for cand in capex_cfg.catalog[a]]) for a in ASSETS}
+    cand_mw_shared.update({e: padded([cand.mwh for cand in capex_cfg.catalog[a]]) for a, e in STORAGE_ENERGY.items()})
     cand_capex_shared = {a: padded([cand.capex_eur for cand in capex_cfg.catalog[a]]) for a in ASSETS}
     cand_mw = {c: dict(cand_mw_shared) for c in countries}
     cand_capex = {c: dict(cand_capex_shared) for c in countries}

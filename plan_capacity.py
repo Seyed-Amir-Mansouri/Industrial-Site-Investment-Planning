@@ -173,9 +173,14 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                         max_units_per_candidate=max_units_per_candidate, site_units=site_units,
                         symmetric_sites=symmetric_sites)
 
+    site_max_cap = {u: {**site_max_mw[u],
+                        **{e: site_max_mw[u][a] * max([mwh / mw for mw, mwh in zip(cand_mw[u][a], cand_mw[u][e])
+                                                       if mw > 0], default=0.0)
+                           for a, e in hp.STORAGE_ENERGY.items()}}
+                    for u in unit_ids}
     core_cap = {u: {a: min(float(sum([0.0] + list(cand_mw[u][a])) / (len(cand_mw[u][a]) + 1)),
-                           0.5 * site_max_mw[u][a])
-                    for a in hp.ASSETS} for u in unit_ids}
+                           0.5 * site_max_cap[u][a])
+                    for a in hp.CAPACITY_KEYS} for u in unit_ids}
     core_site = {u: 1.0 / len(countries) for u in unit_ids}
 
     best_ub, best_capacities, best_capex, best_capex_by_asset = float("inf"), None, None, None
@@ -197,7 +202,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
 
     def point_key(s, u, caps, placed):
         """Key of one subproblem solve; twin units (identical sites in one country) share it."""
-        return s, rep_unit[u], tuple(float(caps[a]) for a in hp.ASSETS), float(placed)
+        return s, rep_unit[u], tuple(float(caps[a]) for a in hp.CAPACITY_KEYS), float(placed)
 
     def solve_points(points):
         """Solve each ``(tag, scenario, unit) -> (capacities, site)`` point; twin units share one LP and a
@@ -225,8 +230,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
 
     try:
         t_seed = time.time()
-        seed_points = {"zero": ({u: {a: 0.0 for a in hp.ASSETS} for u in unit_ids}, {u: 0.0 for u in unit_ids}),
-                       "max": ({u: dict(site_max_mw[u]) for u in unit_ids}, {u: 1.0 for u in unit_ids})}
+        seed_points = {"zero": ({u: {a: 0.0 for a in hp.CAPACITY_KEYS} for u in unit_ids}, {u: 0.0 for u in unit_ids}),
+                       "max": ({u: dict(site_max_cap[u]) for u in unit_ids}, {u: 1.0 for u in unit_ids})}
         seed_jobs = [(tag, s, u) for tag in seed_points for s in scenario_probs for u in unit_ids]
         seeds, _, _ = solve_points({(tag, s, u): (seed_points[tag][0][u], seed_points[tag][1][u])
                                     for tag, s, u in seed_jobs})
@@ -299,7 +304,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
             sub_s = time.time() - t_sub
 
             for u in unit_ids:
-                for a in hp.ASSETS:
+                for a in hp.CAPACITY_KEYS:
                     core_cap[u][a] = _snap(0.5 * core_cap[u][a] + 0.5 * cap_star[u][a])
                 core_site[u] = _snap(0.5 * core_site[u] + 0.5 * site_star[u])
 

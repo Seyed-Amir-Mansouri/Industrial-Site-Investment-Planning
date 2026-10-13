@@ -169,12 +169,15 @@ green load, the wind/PV claimed for it, GOs bought and sold, and green hydrogen 
   (0.5 MW, EUR 300k) and absorption chiller (0.5 MW, EUR 200k) entries are indicative 2030 costs in the
   range of public technology catalogues (e.g. the Danish Energy Agency's). Replace them with
   vendor quotes for a real site. Thermal assets are sized in MW of heat or cooling output, the
-  stores in MW of charge and discharge, and the CHP in MW of electricity.
+  stores in MW of charge and discharge, and the CHP in MW of electricity. Each storage product
+  also has its energy (MWh): a site's store holds the MWh of the products built (battery 2 h,
+  hot-water and chilled-water / ice 6 h, thermal battery 8 h and H2 tank 16.6 h in the defaults),
+  so products with different durations can be mixed.
 - `SiteTechParams`: COPs and efficiencies (heat pump 3.0, AC chiller 3.5, industrial heat pump
   2.5, electric boiler 0.99, process chiller 4.5, heat-recovery chiller 3.0 with all rejected heat
   usable, absorption chiller 0.7 per MWh of process heat), the biogas CHP (40% electric, up to 45%
-  heat, biogas at 60 EUR/MWh), the stores (hot-water and chilled-water / ice 6h at 95%, thermal
-  battery 8h at 95%; solar thermal follows the site's PV profile), the unmet heat/cooling demand
+  heat, biogas at 60 EUR/MWh), the thermal stores' efficiency (hot-water, chilled-water / ice and
+  thermal battery 95%; solar thermal follows the site's PV profile), the unmet heat/cooling demand
   penalty (5,000 EUR/MWh) and the grid and hydrogen import fees (15 and 0 EUR/MWh).
 - `CapexAssumptions.cap_rules` (`CAP_RULES`): the default most MW of each asset one site may host,
   a factor times the sum of the site's annual peaks of the demands it serves, rounded up to a
@@ -269,7 +272,7 @@ shows that range under every box; it is read from the training samples (`elec_sa
 | `--gap-tol G` | 0.01 (1%) | Relative Benders convergence gap |
 | `--master-time-limit S` | 180 | Wall-time cap (seconds) per master MILP solve. The master gets genuinely hard to solve to proven optimality as cuts accumulate at large scale, so this bounds it instead; the Benders lower bound is still read from HiGHS's own proven dual bound, so the result stays mathematically rigorous even when the search is cut off early. |
 | `--core-cuts` / `--no-core-cuts` | on | Also dispatch each placed site at a moving Pareto core point every iteration and add that cut too (two cuts per scenario and site instead of one). `--no-core-cuts` keeps only the trial-point cut. |
-| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (one row per site: its chosen country and capacities)/`_sites.csv` (each site's settings and annual demand)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each site's green hydrogen and GO totals per scenario)/`_unmet_demand.csv` (each site's unmet heat and cooling demand per scenario)/(with `--export-schedules`) `_schedule_<site>_<country>_<scenario>.csv` |
+| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (one row per site: its chosen country, MW per asset and MWh per storage asset)/`_sites.csv` (each site's settings and annual demand)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each site's green hydrogen and GO totals per scenario)/`_unmet_demand.csv` (each site's unmet heat and cooling demand per scenario)/(with `--export-schedules`) `_schedule_<site>_<country>_<scenario>.csv` |
 | `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each chosen site's representative-day schedule: every demand, asset output, grid and H2 import/export, and any unmet demand |
 
 Each iteration adds one optimality cut per scenario and site, for the country the site is
@@ -382,7 +385,8 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      and code; click one to select it. *Select all* and *Clear* sit above them. Ticking *All
      eligible countries* turns the country picks off.
   4. **Candidate catalog:** one card per technology active at one or more sites, listing the
-     products the optimizer may build: size (MW), CAPEX and, for the storage assets, energy (MWh), plus one
+     products the optimizer may build: size (MW), CAPEX and, for the storage assets, energy (MWh, the
+     energy the store holds), plus one
      lifetime per technology. You can edit any value, add products with **+ Add candidate**
      (up to 8 per technology; a new row starts from the technology's default product) or
      remove them with **Remove** (each technology keeps at least one), and each card has a
