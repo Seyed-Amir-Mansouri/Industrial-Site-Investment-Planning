@@ -292,7 +292,7 @@
     <p class="lede" id="catalog-empty">No assets are active yet. Tick assets in the Sites section to edit their candidates here.</p>
     <div style="display:flex;flex-direction:column;gap:0;">
       {% for row in form.catalog_rows %}
-      <div class="catalog-card" data-asset="{{ row.asset }}">
+      <div class="catalog-card" data-asset="{{ row.asset }}" data-default-mw="{{ row.default.mw }}" data-default-mwh="{{ row.default.mwh }}" data-default-capex="{{ row.default.capex_eur }}">
         <div class="section-head" style="margin-bottom:10px;">
           <h3>{{ row.label }}</h3>
           <div style="display:flex;align-items:center;gap:10px;">
@@ -333,7 +333,8 @@
     <div class="section-head">
       <div>
         <h2><span class="step">05</span>Uncertainty scenarios</h2>
-        <p class="lede">Wind and solar output is uncertain. Each scenario changes how much wind and solar capacity each country installs compared with the 2030 plan (ENTSO-E TYNDP National Trends), which shifts the electricity generation mix. A different mix changes electricity and hydrogen prices, and different prices can lead to different investment decisions. Enter each country's change: +20% means 20% more capacity than planned, −20% means 20% less. Keep each value within the trained range shown under its box. Scenario probabilities must add up to 100%.</p>
+        <p class="lede">These scenarios model electricity and hydrogen price uncertainty arising from changes in the European electricity generation mix. Specifically, they represent deviations in installed wind and solar photovoltaic (PV) capacity across European countries from the 2030 ENTSO-E Ten-Year Network Development Plan (TYNDP) National Trends baseline. These changes affect market prices and, consequently, industrial investment decisions.</p>
+        <p class="lede">For each country, enter the percentage change in installed capacity relative to the baseline: +20% means 20% more capacity than planned, while −20% means 20% less. Keep each value within the trained range shown below its input field. Scenario probabilities must sum to 100%.</p>
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
         <span id="prob-total" class="total ok"></span>
@@ -726,6 +727,10 @@
         const next = card.querySelector('.catalog-row.is-empty');
         if (next) {
           next.dataset.open = '1';
+          [['cat_mw__', 'defaultMw'], ['cat_mwh__', 'defaultMwh'], ['cat_capex__', 'defaultCapex']].forEach(([prefix, key]) => {
+            const field = next.querySelector('input[name^="' + prefix + '"]');
+            if (field) field.value = card.dataset[key];
+          });
           const input = next.querySelector('input[type="number"]');
           if (input) input.focus();
         }
