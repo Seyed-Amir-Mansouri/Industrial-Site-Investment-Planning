@@ -16,6 +16,17 @@ dispatch engine's per-scenario output (`elec_samples.parquet`/`h2_samples.parque
 under `data_exchange/01_dispatch_output__train_input/`, built by `price_model/extract.py`
 from each scenario's `hourly_balance_{elec,h2}.csv`).
 
+Hourly inputs of each zone's model:
+
+| Model | Own zone | Calendar | System and neighbours |
+|---|---|---|---|
+| Electricity | demand, residual load (demand − wind − solar), wind and solar generation, battery dispatch | month, season, hour | total neighbour and system demand and residual load; each adjacent zone's demand and residual load; the electricity price of the 5 most correlated zones |
+| Hydrogen | H2 demand, SMR output, electrolyser output, H2 storage dispatch | month, season, hour | total neighbour and system H2 demand; each adjacent zone's H2 demand; the H2 price of the 5 most correlated zones |
+
+Installed capacity is not a model input: wind and solar reach the electricity model through
+their generation and the residual load. The hydrogen model has no wind, solar or electricity
+price input.
+
 ```python
 from price_model import electricity_price, hydrogen_price
 
@@ -235,7 +246,7 @@ without a site has no demand and no capacity, so it costs nothing.
 
 **Planning scenarios**
 
-By default a run plans over the **Baseline** (`p100`, no capacity shortfall) alone, with 100%
+By default a run plans over the **Baseline** (`p100`, capacities as planned) alone, with 100%
 probability, and is solved **deterministically**. To plan under uncertainty, add scenarios; with
 two or more the risk measure is **CVaR** at `--cvar-alpha` (default 0.8). There is no
 expected-value option.
@@ -245,13 +256,27 @@ default (`default_scenarios`).
 
 Further scenarios are your own, added on the New run page: each has a name, a probability and a
 change in installed wind and in installed solar capacity, in % compared with the Baseline, for
-each country: positive for more capacity than planned, negative for less. A scenario takes its
-price-model inputs from the trained dispatch scenario whose country capacities are closest to
-its own (least squares over all countries), then rescales each country's wind and solar
-capacity, the generation it produces and the residual load that follows to the scenario's
-values (+20% gives 120% of the Baseline capacity, -20% gives 80%), so the electricity and
-hydrogen prices reflect that generation mix. The site's own wind/PV capacity factors are the
-same in every scenario; its own capacity is added on top of the country's. Each country's change must stay within the range
+each country: positive for more capacity than planned, negative for less. A scenario is priced
+in two steps:
+
+1. It takes its price-model inputs from the trained dispatch scenario whose country capacities
+   are closest to its own (least squares over every country's wind, solar, battery,
+   electrolyser and tank capacity, the scenario's other assets counting as the Baseline's; ties
+   go to the Baseline). This brings in that run's neighbouring-zone prices, which the models
+   lean on most.
+2. It rescales each country's wind and solar generation, and the residual load that follows,
+   from that run's level to the scenario's (+20% gives 120% of the Baseline, -20% gives 80%).
+
+The price models then predict each hour's electricity and hydrogen prices from those inputs.
+The site's own wind and PV generation is added to its zone's wind and solar generation (and
+taken off its residual load) in every scenario, the Baseline included; its own battery,
+electrolyser and tank scale the zone's battery, electrolyser and storage dispatch. The site's
+capacity factors and demand are the same in every scenario, so a scenario changes the plan only
+through prices. Electricity prices follow system-wide changes closely (DE averages about
+55 EUR/MWh at +20% everywhere and 97 EUR/MWh at -60%, close to the dispatch runs). A change in
+only one or two countries moves prices little, because every trained run changes all countries
+together. Hydrogen prices move only through the neighbouring hydrogen prices of the chosen run,
+so they change little between scenarios. Each country's change must stay within the range
 the price models were trained on: from the lowest level in the training scenarios (about -68% to
 -80% depending on the country) up to 130% of the Baseline's capacity (+30%). The New run page
 shows that range under every box; it is read from the training samples (`elec_samples.parquet`). The web app passes them to the planner in the run's scenario overrides file
@@ -379,7 +404,8 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   4. **Candidate catalog:** one card per technology active at one or more sites, listing the
      products the optimizer may build: size (MW), CAPEX and, for the storage assets, energy (MWh), plus one
      lifetime per technology. You can edit any value, add products with **+ Add candidate**
-     (up to 8 per technology) or remove them by clearing their row, and each card has a
+     (up to 8 per technology; a new row starts from the technology's default product) or
+     remove them with **Remove** (each technology keeps at least one), and each card has a
      **Reset to default** button. Technologies may have different numbers of products. The
      edits apply to this run only (written to `catalog_overrides.json` in the run's output
      folder and passed to the planner through `PLANNER_CATALOG_OVERRIDES`); the defaults in
@@ -396,7 +422,7 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   6. **Economics:** discount rate, the risk measure and the CVaR confidence level. The risk
      measure follows the scenarios: **Deterministic** with one scenario, **CVaR** with two or
      more. Lifetimes are set per technology in the candidate catalog.
-  7. **Solver settings:** representative days per month, optimality gap, maximum
+  7. **Solver settings:** days per month (representative days solved per month), optimality gap, maximum
      Benders iterations, master time limit and parallel workers.
 
   Each section has its own **Reset this section** button. Each scenario card has a
@@ -456,7 +482,7 @@ says otherwise.
 | File | Folder | Where it comes from | What uses it |
 |---|---|---|---|
 | `zones_2030.parquet`, `networks_2030.parquet`, `marginal_price_electricity_2030.parquet`, `marginal_price_hydrogen_2030.parquet`, `crossborder_electricity_2030.parquet`, `crossborder_hydrogen_2030.parquet`, `hydro_*_2030.parquet`, `smr_production_2030.parquet` | `inputs/` | In git | Dispatch engine and planner |
-| `uncertainty_scenarios.json` | `inputs/` | In git | Planner (scenario probabilities and country error factors) |
+| `uncertainty_scenarios.json` | `inputs/` | In git | Planner (the Baseline scenario and its probability) |
 | `site_demand.csv` | `inputs/` | In git | Planner (per-unit hourly demand curves for the year, shared by all sites; each site's annual peaks come with the site) |
 | `elec_adjacency.json`, `h2_adjacency.json` | `inputs/` | In git (rewritten by `build_dataset.py`) | Price models |
 | `electricity_model.joblib`, `hydrogen_model.joblib` and the `*_metrics.csv` files | `data_exchange/02_train_output__benders_input/` | In git (written by `train_model.py`) | Planner |
