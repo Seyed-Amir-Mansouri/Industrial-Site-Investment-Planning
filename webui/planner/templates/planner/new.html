@@ -79,7 +79,7 @@
   #run-form .catalog-table input[type="number"] { width: 100%; padding: 9px 12px; }
   #run-form .catalog-row.is-empty { display: none; }
   #run-form .catalog-table .remove-cell { width: 1%; white-space: nowrap; }
-  #run-form button[data-add-candidate]:disabled { opacity: .4; cursor: not-allowed; }
+  #run-form button[data-add-candidate]:disabled, #run-form button[data-remove-candidate]:disabled { opacity: .4; cursor: not-allowed; }
 
   #run-form .site-card .section-head, #run-form .catalog-card .section-head { border-bottom: 0; padding-bottom: 0; margin-bottom: 14px; }
   #run-form .site-card input[name^="site_name__"] { font: 600 18px var(--serif); background: transparent; border-color: transparent; max-width: 320px; }
@@ -670,10 +670,17 @@
       const rows = Array.from(card.querySelectorAll('.catalog-row'));
       rows.forEach(row => {
         const mwInput = row.querySelector('input[name^="cat_mw__"]');
-        row.classList.toggle('is-empty', !mwInput.value);
+        if (mwInput.value) row.dataset.open = '1';
+        row.classList.toggle('is-empty', !row.dataset.open);
+      });
+      const shown = rows.filter(r => !r.classList.contains('is-empty'));
+      shown.forEach(r => {
+        const btn = r.querySelector('[data-remove-candidate]');
+        btn.disabled = shown.length <= 1;
+        btn.title = shown.length <= 1 ? 'Each asset needs at least one candidate' : '';
       });
       const addBtn = card.querySelector('[data-add-candidate]');
-      if (addBtn) addBtn.disabled = !rows.some(r => r.classList.contains('is-empty'));
+      if (addBtn) addBtn.disabled = shown.length === rows.length;
     }
     function syncCatalogRows() { catalogCards.forEach(syncCatalogCard); }
     function resetField(f) {
@@ -684,6 +691,7 @@
     function resetWithin(scope) {
       scope.querySelectorAll('input, select, textarea').forEach(resetField);
       scope.querySelectorAll('input[data-maxmw]').forEach(i => { delete i.dataset.edited; });
+      scope.querySelectorAll('.catalog-row').forEach(r => { delete r.dataset.open; });
       syncAll();
     }
     function syncAll() {
@@ -717,7 +725,7 @@
         const card = addCandidate.closest('.catalog-card');
         const next = card.querySelector('.catalog-row.is-empty');
         if (next) {
-          next.classList.remove('is-empty');
+          next.dataset.open = '1';
           const input = next.querySelector('input[type="number"]');
           if (input) input.focus();
         }
@@ -759,6 +767,7 @@
       if (removeCandidate) {
         const row = removeCandidate.closest('.catalog-row');
         row.querySelectorAll('input').forEach(i => { i.value = ''; });
+        delete row.dataset.open;
         syncCatalogCard(removeCandidate.closest('.catalog-card'));
         return;
       }
