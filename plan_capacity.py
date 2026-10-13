@@ -166,12 +166,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
 
     print(f"Building enriched price frames for {len(scenario_probs)} capacity scenarios "
          f"(one-time cost, reused by every subproblem solve): {list(scenario_probs)}")
-    frames_by_source = {}
-    for s in scenario_probs:
-        src = ohp.price_scenario(s)
-        if src not in frames_by_source:
-            frames_by_source[src] = (ohp.enriched_elec_df(scenario=src), ohp.enriched_h2_df(scenario=src))
-    price_frames = {s: frames_by_source[ohp.price_scenario(s)] for s in scenario_probs}
+    price_frames = {s: (ohp.enriched_elec_df(scenario=s), ohp.enriched_h2_df(scenario=s)) for s in scenario_probs}
 
     m = hp.build_master(unit_ids, cand_mw, cand_capex, budget, crf, capex_cfg.theta_lower_bound_eur,
                         scenario_probs=scenario_probs, cvar_alpha=cvar_alpha, site_max_mw=site_max_mw,

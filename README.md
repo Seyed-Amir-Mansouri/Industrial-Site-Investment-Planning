@@ -245,9 +245,13 @@ default (`default_scenarios`).
 
 Further scenarios are your own, added on the New run page: each has a name, a probability and a
 change in installed wind and in installed solar capacity, in % compared with the Baseline, for
-each country: positive for more capacity than planned, negative for less. A scenario uses the
-Baseline's market prices and scales the site's own wind/PV output by the same share (+20% gives
-120% of the Baseline output, -20% gives 80%). Each country's change must stay within the range
+each country: positive for more capacity than planned, negative for less. A scenario takes its
+price-model inputs from the trained dispatch scenario whose country capacities are closest to
+its own (least squares over all countries), then rescales each country's wind and solar
+capacity, the generation it produces and the residual load that follows to the scenario's
+values (+20% gives 120% of the Baseline capacity, -20% gives 80%), so the electricity and
+hydrogen prices reflect that generation mix. The site's own wind/PV capacity factors are the
+same in every scenario; its own capacity is added on top of the country's. Each country's change must stay within the range
 the price models were trained on: from the lowest level in the training scenarios (about -68% to
 -80% depending on the country) up to 130% of the Baseline's capacity (+30%). The New run page
 shows that range under every box; it is read from the training samples (`elec_samples.parquet`). The web app passes them to the planner in the run's scenario overrides file
