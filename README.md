@@ -260,7 +260,7 @@ The price models then predict the electricity and hydrogen prices from those inp
 own generation and storage are added to its zone's inputs in every scenario, and its demand and
 capacity factors are the same in every scenario, so a scenario changes the plan only through
 prices. Each country's change must stay within the range
-the price models were trained on: from the lowest level in the training scenarios (about -68% to
+the price models were trained on: from the lowest level in the training scenarios (about -69% to
 -80% depending on the country) up to 130% of the Baseline's capacity (+30%). The New run page
 shows that range under every box; it is read from the training samples (`elec_samples.parquet`). The web app passes them to the planner in the run's scenario overrides file
 (`PLANNER_SCENARIO_OVERRIDES`, entries marked `"custom": true`).
