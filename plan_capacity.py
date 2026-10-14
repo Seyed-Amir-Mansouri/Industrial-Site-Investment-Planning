@@ -10,6 +10,7 @@ from pathlib import Path
 
 import json
 
+import numpy as np
 import pandas as pd
 
 import optimize_site_investor as ohp
@@ -123,9 +124,14 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     placed cost nothing and keep the cuts from earlier visits. With ``core_cuts`` (the default) each
     placed unit also gets a cut at a Pareto core point that starts inside the feasible region (a fractional
     placement, every asset a mid-grid size within its site cap) and moves halfway toward each trial
-    point. Each unit and scenario always runs in the same worker, which keeps its LP and only
+    point. The master also holds hourly heat and cooling balance rows for each unit, first at
+    its site's peak hours and then at every hour a trial plan left demand unmet, but only hours
+    the unit's maximum capacities cover in every scenario, so the master proposes plans that leave
+    nothing unmet where the site caps allow it; if they make the master infeasible (a budget too
+    small to cover demand) they are dropped. Each unit and scenario always runs in the same worker, which keeps its LP and only
     updates the capacities, on/off placement and prices before re-solving from the last basis. If
-    HiGHS presolve fails on the master, it is re-solved once with presolve off."""
+    HiGHS fails on the master, it is re-solved with presolve off and then with a looser integer
+    feasibility tolerance (1e-4), which the steep cuts of a large unmet penalty can need."""
     scenario_probs = scenario_probs if scenario_probs is not None else {s: 1.0 / len(DEFAULT_SCENARIOS)
                                                                           for s in DEFAULT_SCENARIOS}
     if len(scenario_probs) > 1 and cvar_alpha is None:
@@ -242,22 +248,64 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                                       {u: seeds[tag, s, u]["cut_coeffs"][u] for u in unit_ids}, caps, cand_mw,
                                       scenario=s, lam={u: seeds[tag, s, u]["site_coeffs"][u] for u in unit_ids},
                                       site_star=placed, tag=tag)
+        cov_need, cov_ok, cov_hours = {}, {}, {u: set() for u in unit_ids}
+        for u in unit_ids:
+            scheds = [seeds["max", s, u]["schedules"][u] for s in scenario_probs]
+            flex = units[u][1].flex_fraction
+            demand = {svc: scheds[0][f"Site {svc} demand (MW)"].to_numpy() for svc in hp.THERMAL_SERVICES}
+            cov_need[u] = {svc: demand[svc] * (1.0 - flex[svc]) for svc in hp.THERMAL_SERVICES}
+            cov_ok[u] = np.all([sum(sc[f"Site unmet {svc} demand (MW)"].to_numpy() for svc in hp.THERMAL_SERVICES)
+                                <= 1e-6 for sc in scheds], axis=0)
         del seeds
+
+        def add_coverage(u, hours, tag):
+            """Add balance rows to the master for unit ``u`` at each of ``hours`` its maximum
+            capacities cover and that it has no rows for yet."""
+            new = sorted({int(h) for h in hours if cov_ok[u][h]} - cov_hours[u])
+            if new:
+                hp.add_coverage_rows(m, u, tag, {svc: v[new] for svc, v in cov_need[u].items()}, cand_mw)
+                cov_hours[u].update(new)
+
+        def drop_coverage():
+            """Remove every coverage row and its dispatch variables from the master."""
+            for name in [c for c in m.constraints if c.startswith("cov_")]:
+                m.remove_constraints(name)
+            for name in [v for v in m.variables if v.startswith("cov_")]:
+                m.remove_variables(name)
+            for u in unit_ids:
+                cov_hours[u].clear()
+
+        cov_active = True
+        for u in unit_ids:
+            d = {svc: v / max(1.0 - units[u][1].flex_fraction[svc], 1e-9) for svc, v in cov_need[u].items()}
+            combos = [d[svc] for svc in hp.THERMAL_SERVICES if d[svc].max() > 0]
+            combos += [d["space_heat"] + d["process_heat"], d["space_cool"] + d["process_cool"],
+                       d["space_heat"] + d["process_heat"] + (d["space_cool"] + d["process_cool"])
+                       / hp.SITE_TECH.absorption_chiller_cop, sum(d.values())]
+            add_coverage(u, [np.argmax(c) for c in combos], "peak")
+        print(f"Coverage rows: {sum(len(h) for h in cov_hours.values())} unit-hours at each site's peak hours")
         print(f"Seed cuts: {len(seed_jobs)} (every site in every country, per scenario, once with the site off "
              f"and nothing built and once at its maximum capacities) in {time.time() - t_seed:.1f}s")
         for it in range(1, max_iters + 1):
             t_master = time.time()
-            status, cond = m.solve(solver_name="highs", output_flag=False, time_limit=master_time_limit,
-                                   presolve="on", parallel="on")
+            solve_opts = dict(solver_name="highs", output_flag=False, time_limit=master_time_limit, parallel="on")
+            status, cond = m.solve(presolve="on", **solve_opts)
+            if status != "ok" and "infeasible" in str(cond) and any(cov_hours.values()):
+                drop_coverage()
+                cov_active = False
+                print("NOTE: the coverage rows made the master infeasible (the budget can't pay for "
+                     "enough capacity to meet demand); they are dropped and the run goes on with cuts only.")
+                status, cond = m.solve(presolve="on", **solve_opts)
             if status != "ok":
-                status, cond = m.solve(solver_name="highs", output_flag=False, time_limit=master_time_limit,
-                                       presolve="off", parallel="on")
+                status, cond = m.solve(presolve="off", **solve_opts)
+            if status != "ok":
+                status, cond = m.solve(presolve="on", mip_feasibility_tolerance=1e-4, **solve_opts)
             master_s = time.time() - t_master
             if status != "ok":
                 raise RuntimeError(f"master solve failed at iteration {it}: {status}/{cond}")
             cap_star = hp.extract_capacities(m, unit_ids, cand_mw)
             site_star = hp.extract_sites(m, unit_ids)
-            lb = float(m.solver_model.getInfo().mip_dual_bound)
+            lb = hp.master_bound(m)
             master_mip_gap = float(m.solver_model.getInfo().mip_gap)
             master_cut_off = (cond == "time_limit")
 
@@ -302,6 +350,11 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                 for u in unit_ids:
                     Q_by_unit[u] += prob * Q_s[u]
             sub_s = time.time() - t_sub
+            if cov_active:
+                for (s, u), r in results.items():
+                    sched = r["schedules"][u]
+                    unmet_cols = [sched[f"Site unmet {svc} demand (MW)"].to_numpy() for svc in hp.THERMAL_SERVICES]
+                    add_coverage(u, [np.argmax(c) for c in unmet_cols if c.max() > 1e-6], f"it{it}_{s}")
 
             for u in unit_ids:
                 for a in hp.CAPACITY_KEYS:

@@ -289,7 +289,10 @@ can't propose the same plan again without paying its true cost). Countries a sit
 in aren't dispatched and keep the cuts from earlier visits. By default each placed site also
 gets a cut from a solve at a moving core point (Papadakos-style Pareto-optimal cuts);
 core-point values that decay below 1e-3 are set to zero, which keeps the subproblem numerically
-stable. If HiGHS fails on the master or a subproblem, it's re-solved once with presolve off.
+stable. If HiGHS fails on the master or a subproblem, it's re-solved once with presolve off; a
+master that still fails is re-solved with a looser integer feasibility tolerance (1e-4), which
+the steep cuts of the large unmet penalty can need. For the same reason the master works in
+million EUR: in EUR its cut slopes reach about 1e11 per MW and HiGHS returns wrong bounds.
 
 ### How the Benders solve works
 
@@ -308,7 +311,15 @@ the country the master placed it in), iterating between them:
    while its slopes give the master a first estimate of placing the site there. Each site is also
    dispatched once in every country at its maximum capacities; that cut bounds how much extra
    capacity can lower the site's cost, so the master can't overbuild against the steep slopes of
-   the first one. The scenarios' totals are combined
+   the first one. The master also holds hourly heat and cooling balance rows for each site and
+   country: a relaxed dispatch of the heat and cooling assets (storage limited only by its MW)
+   that must meet each service's demand, less its flexibility band, in a set of hours. They
+   start at the site's peak hours and grow by every hour a trial plan left demand unmet, but
+   only hours the site's maximum capacities cover in every scenario. The 1,000,000 EUR/MWh
+   unmet penalty makes the cuts so steep that the master would otherwise take many rounds to
+   learn how much to build; with these rows its first plans already leave nothing unmet. If
+   they make the master infeasible (a budget too small to meet demand) they are dropped and the
+   run goes on with cuts only. The scenarios' totals are combined
    via CVaR at `--cvar-alpha` (default 0.8); with a single scenario it is just that scenario's
    recourse (deterministic).
 2. **Subproblems (LP, one HiGHS model per site, country and scenario, `optimize_site_investor.
