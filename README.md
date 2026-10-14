@@ -54,9 +54,10 @@ should be, using the price models above as a price-taker market signal.
   released.
   The site buys any electricity or hydrogen deficit at the modeled market price plus an
   import fee, and sells any surplus at the market price. There is no existing plant on
-  site: heat or cooling the new assets can't supply is left unmet and charged a penalty (5,000
-  EUR/MWh by default), so every hour stays solvable whatever the new assets are, and in practice
-  the planner builds enough to cover demand. Each run reports any unmet demand per site in
+  site: heat or cooling the new assets can't supply is left unmet and charged a penalty
+  (1,000,000 EUR/MWh by default), so every hour stays solvable whatever the new assets are. The
+  penalty is far above the yearly cost of any asset per MW, so the planner never leaves demand
+  unmet to save on building when the site caps allow enough capacity. Each run reports any unmet demand per site in
   `_unmet_demand.csv`. `solve` runs one site on its own, either over a contiguous day range or
   a representative-day sample. `solve_joint` runs every candidate country's site LP
   together in one model (still independent problems, just solved in one call). It's the only
@@ -178,16 +179,23 @@ green load, the wind/PV claimed for it, GOs bought and sold, and green hydrogen 
   usable, absorption chiller 0.7 per MWh of process heat), the biogas CHP (40% electric, up to 45%
   heat, biogas at 60 EUR/MWh), the thermal stores' efficiency (hot-water, chilled-water / ice and
   thermal battery 95%; solar thermal follows the site's PV profile), the unmet heat/cooling demand
-  penalty (5,000 EUR/MWh) and the grid and hydrogen import fees (15 and 0 EUR/MWh).
+  penalty (1,000,000 EUR/MWh) and the grid and hydrogen import fees (15 and 0 EUR/MWh).
 - `CapexAssumptions.cap_rules` (`CAP_RULES`): the default most MW of each asset one site may host,
-  a factor times the sum of the site's annual peaks of the demands it serves, rounded up to a
-  whole MW. Heat and cooling assets and their stores get 1.25 times the peak they serve (25%
-  headroom) and solar thermal 1.25 times space heating plus process heat; wind and PV 7.5 times
-  and the battery 5 times the electricity peak (they also sell to the market), the biogas CHP 1.25
-  times the electricity peak; the electrolyser 1.25 times the hydrogen peak divided by its 68%
-  efficiency (it is sized in MW of electricity) and the H2 tank 1.25 times the hydrogen peak. At
-  the default peaks that is 60 MW wind and PV, 40 MW battery, 10 MW CHP, 3 MW electrolyser and
-  2 MW tank. A demand with a 0 MW peak gives its assets a 0 MW default. A site's own `max_mw`
+  large enough for the asset to cover on its own every peak it can serve: a factor times the
+  site's weighted annual peaks of the demands it serves, rounded up to a whole number of its
+  smallest product and then to a whole MW. Heat and cooling assets and their stores get 1.25
+  times the peak they serve (25% headroom); the biogas CHP 1.25 times the larger of the
+  electricity peak and the heat for space heating, process heat and the absorption chiller's
+  drive (both cooling peaks divided by its 0.7 COP), in MW of electricity (x 0.40 / 0.45); the
+  industrial heat pump 1.25 times process heat plus that drive heat; the thermal battery 1.25
+  times the steam peak divided by its 95% efficiency; solar thermal 1.25 times space heating plus
+  process heat; the absorption chiller 1.25 times both cooling peaks; wind and PV 7.5 times and
+  the battery 5 times the electricity peak (they also sell to the market); the electrolyser 1.25
+  times the hydrogen peak divided by its 68% efficiency (it is sized in MW of electricity) and the
+  H2 tank 1.25 times the hydrogen peak. At the default peaks that is 60 MW wind and PV, 40 MW
+  battery, 21 MW CHP, 18 MW industrial heat pump, 3 MW electrolyser and 2 MW tank. With these
+  defaults every demand an active asset firmly serves is covered and the plan leaves nothing
+  unmet. A demand with a 0 MW peak gives its assets a 0 MW default. A site's own `max_mw`
   replaces the rule (`default_max_mw` and `site_max_mw` in `candidates.py`).
 
 ### `plan_capacity.py` flags
@@ -371,7 +379,9 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      unticked; enter the site's demand and tick the assets it may build. Each asset shows the demands it serves and a *Max MW* box, filled from the default
      rule (whole MW) and following the peaks until you type your own value (decimals are fine).
      The **Coverage** row colors each demand: green *Covered* when the active assets' firm
-     capacity reaches the peak, amber *Partly* when it falls short or only solar thermal,
+     capacity reaches every peak at once, at the most their Max MW lets the catalog products
+     build and counting the CHP's heat and the absorption chiller once across all the demands
+     they serve (a covered demand is never left unmet in the plan), amber *Partly* when it falls short or only solar thermal,
      recovered heat or storage serves it, red *Unmet* when nothing active serves it (all of it
      would be charged the unmet-demand penalty), blue *Market* for electricity or hydrogen bought
      on the market, and grey *No demand*; hover a chip for the numbers. A red or amber demand

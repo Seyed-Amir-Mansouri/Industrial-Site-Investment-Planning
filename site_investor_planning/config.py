@@ -76,27 +76,6 @@ THERMAL_ASSET_SERVICES = {
     "electric_chiller_mw": ["process_cool"],
 }
 
-CAP_RULES: dict[str, tuple[float, list[str]]] = {
-    "wind_mw": (7.5, ["electricity"]),
-    "pv_mw": (7.5, ["electricity"]),
-    "battery_mw": (5.0, ["electricity"]),
-    "chp_mw": (1.25, ["electricity"]),
-    "heat_pump_mw": (1.25, ["space_heat"]),
-    "hot_water_storage_mw": (1.25, ["space_heat"]),
-    "ac_chiller_mw": (1.25, ["space_cool"]),
-    "cold_storage_mw": (1.25, ["space_cool"]),
-    "industrial_heat_pump_mw": (1.25, ["process_heat"]),
-    "solar_thermal_mw": (1.25, ["space_heat", "process_heat"]),
-    "electric_boiler_mw": (1.25, ["steam"]),
-    "thermal_battery_mw": (1.25, ["steam"]),
-    "electric_chiller_mw": (1.25, ["process_cool"]),
-    "heat_recovery_chiller_mw": (1.25, ["process_cool"]),
-    "absorption_chiller_mw": (1.25, ["space_cool", "process_cool"]),
-    "electrolyser_mw": (1.25 / 0.68, ["hydrogen"]),
-    "tank_mw": (1.25, ["hydrogen"]),
-}
-
-
 class AssetCandidate(NamedTuple):
     """One discrete candidate product for an asset: MW, absolute CAPEX (EUR), and design lifetime (years)."""
     mw: float
@@ -175,7 +154,8 @@ class SiteTechParams:
     the thermal battery charges with electricity and discharges steam. The site has no existing plant:
     any heat or cooling the new assets can't supply is left unmet and charged
     ``unmet_demand_penalty_eur_per_mwh``, which keeps every subproblem feasible whatever the master
-    proposes and in practice makes the planner build enough capacity. The site buys and sells electricity and hydrogen at the modeled market price and pays
+    proposes. It is far above the yearly cost of any asset per MW, so the planner never leaves
+    demand unmet to save on building when the site caps allow enough capacity. The site buys and sells electricity and hydrogen at the modeled market price and pays
     the import fees (network charges, levies) on every MWh it buys.
     """
 
@@ -195,7 +175,7 @@ class SiteTechParams:
     cold_storage_efficiency: float = 0.95
     thermal_battery_efficiency: float = 0.95
 
-    unmet_demand_penalty_eur_per_mwh: float = 5000.0
+    unmet_demand_penalty_eur_per_mwh: float = 1_000_000.0
 
     grid_import_fee_eur_per_mwh: float = 15.0
     h2_import_fee_eur_per_mwh: float = 0.0
@@ -210,6 +190,33 @@ class SiteTechParams:
 
 
 SITE_TECH = SiteTechParams()
+
+
+_CHP_MW_PER_HEAT = SITE_TECH.chp_electric_efficiency / SITE_TECH.chp_heat_efficiency
+_ABS_DRIVE = 1.0 / SITE_TECH.absorption_chiller_cop
+_COOLING_DRIVE = {"space_cool": _ABS_DRIVE, "process_cool": _ABS_DRIVE}
+
+CAP_RULES: dict[str, tuple[float, list[dict[str, float]]]] = {
+    "wind_mw": (7.5, [{"electricity": 1.0}]),
+    "pv_mw": (7.5, [{"electricity": 1.0}]),
+    "battery_mw": (5.0, [{"electricity": 1.0}]),
+    "chp_mw": (1.25, [{"electricity": 1.0},
+                      {svc: _CHP_MW_PER_HEAT * w for svc, w in
+                       {"space_heat": 1.0, "process_heat": 1.0, **_COOLING_DRIVE}.items()}]),
+    "heat_pump_mw": (1.25, [{"space_heat": 1.0}]),
+    "hot_water_storage_mw": (1.25, [{"space_heat": 1.0}]),
+    "ac_chiller_mw": (1.25, [{"space_cool": 1.0}]),
+    "cold_storage_mw": (1.25, [{"space_cool": 1.0}]),
+    "industrial_heat_pump_mw": (1.25, [{"process_heat": 1.0, **_COOLING_DRIVE}]),
+    "solar_thermal_mw": (1.25, [{"space_heat": 1.0, "process_heat": 1.0}]),
+    "electric_boiler_mw": (1.25, [{"steam": 1.0}]),
+    "thermal_battery_mw": (1.25, [{"steam": 1.0 / SITE_TECH.thermal_battery_efficiency}]),
+    "electric_chiller_mw": (1.25, [{"process_cool": 1.0}]),
+    "heat_recovery_chiller_mw": (1.25, [{"process_cool": 1.0}]),
+    "absorption_chiller_mw": (1.25, [{"space_cool": 1.0, "process_cool": 1.0}]),
+    "electrolyser_mw": (1.25 / 0.68, [{"hydrogen": 1.0}]),
+    "tank_mw": (1.25, [{"hydrogen": 1.0}]),
+}
 
 
 @dataclass(frozen=True)
@@ -285,13 +292,18 @@ class SiteSpec:
 class CapexAssumptions:
     """Candidate catalog plus annualization/budget parameters for the Benders master problem.
 
-    ``cap_rules`` set the default largest MW of each asset one site may host: the factor times the
-    sum of the site's annual peaks of the listed demands, rounded up to a whole MW. Heat and cooling
-    assets and their stores get 1.25 times the peak they serve (25% headroom), solar thermal 1.25
-    times space plus process heat, wind and PV 7.5 times and the battery 5 times the electricity
-    peak (they also sell to the market), the CHP 1.25 times the electricity peak, the electrolyser
-    1.25 times the hydrogen peak divided by its 68% efficiency (it is sized in MW of electricity),
-    and the H2 tank 1.25 times the hydrogen peak. A site's own ``max_mw`` replaces these.
+    ``cap_rules`` set the default largest MW of each asset one site may host, large enough for the
+    asset to cover on its own every peak it can serve: the factor times the largest of its weighted
+    peak sums, rounded up to a whole number of its smallest product and then to a whole MW. Heat and
+    cooling assets and their stores get 1.25 times the peak they serve (25% headroom); the biogas
+    CHP 1.25 times the larger of the electricity peak and the heat for space heating, process heat
+    and the absorption chiller's drive (both cooling peaks divided by its COP) in MW of electricity;
+    the industrial heat pump 1.25 times process heat plus that drive heat; the thermal battery 1.25
+    times the steam peak divided by its efficiency; solar thermal 1.25 times space plus process heat;
+    the absorption chiller 1.25 times both cooling peaks; wind and PV 7.5 times and the battery 5
+    times the electricity peak (they also sell to the market); the electrolyser 1.25 times the
+    hydrogen peak divided by its 68% efficiency (it is sized in MW of electricity), and the H2 tank
+    1.25 times the hydrogen peak. A site's own ``max_mw`` replaces these.
     """
 
     catalog: dict[str, list[AssetCandidate]] = field(default_factory=lambda: dict(CANDIDATE_CATALOG))
@@ -300,7 +312,7 @@ class CapexAssumptions:
     default_budget_eur: float = 1_500_000_000.0
     theta_lower_bound_eur: float = -1e8
 
-    cap_rules: dict[str, tuple[float, list[str]]] = field(default_factory=lambda: dict(CAP_RULES))
+    cap_rules: dict[str, tuple[float, list[dict[str, float]]]] = field(default_factory=lambda: dict(CAP_RULES))
 
     lifetime_years: dict[str, float] = field(init=False)
 

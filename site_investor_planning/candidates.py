@@ -60,12 +60,24 @@ def build_candidates(countries: list[str], capex_cfg: CapexAssumptions | None = 
     return cand_mw, cand_capex, host_zone
 
 
+def rule_mw(rule: tuple[float, list[dict[str, float]]], peaks_mw: dict[str, float], product_mw: float) -> float:
+    """One cap rule at these annual peaks: its factor times the largest of its weighted peak sums,
+    rounded up to a whole number of ``product_mw`` products and then to a whole MW."""
+    factor, groups = rule
+    need = round(factor * max(sum(w * peaks_mw.get(s, 0.0) for s, w in g.items()) for g in groups), 6)
+    if need <= 0:
+        return 0.0
+    if product_mw > 0:
+        need = round(math.ceil(round(need / product_mw, 6)) * product_mw, 6)
+    return float(math.ceil(need))
+
+
 def default_max_mw(peaks_mw: dict[str, float], capex_cfg: CapexAssumptions | None = None) -> dict[str, float]:
-    """Default largest MW of each asset for a site with these annual peaks: each ``cap_rules`` factor
-    times the sum of the peaks it names, rounded up to a whole MW."""
+    """Default largest MW of each asset for a site with these annual peaks: each ``cap_rules`` rule
+    (see ``rule_mw``) with the asset's smallest catalog product."""
     capex_cfg = capex_cfg or CapexAssumptions()
-    return {a: float(math.ceil(round(factor * sum(peaks_mw.get(s, 0.0) for s in services), 6)))
-            for a, (factor, services) in capex_cfg.cap_rules.items()}
+    return {a: rule_mw(rule, peaks_mw, min((c.mw for c in capex_cfg.catalog[a] if c.mw > 0), default=0.0))
+            for a, rule in capex_cfg.cap_rules.items()}
 
 
 def site_max_mw(spec: SiteSpec, capex_cfg: CapexAssumptions | None = None) -> dict[str, float]:

@@ -87,7 +87,7 @@ def capex_assumptions_defaults():
         "catalog": {a: [c._asdict() for c in cfg.catalog[a]] for a in hp.ASSETS},
         "discount_rate": cfg.discount_rate,
         "budget": cfg.default_budget_eur,
-        "cap_rules": {a: [factor, list(svcs)] for a, (factor, svcs) in cfg.cap_rules.items()},
+        "cap_rules": {a: [factor, [dict(g) for g in groups]] for a, (factor, groups) in cfg.cap_rules.items()},
         "default_max_mw": hp.default_max_mw(site_defaults()["peaks_mw"], cfg),
         "lifetime_years": dict(cfg.lifetime_years),
     }
@@ -127,9 +127,16 @@ def cap_rule_rows() -> list[dict]:
     cfg = hp.CapexAssumptions()
     example = hp.default_max_mw(hp.SiteSpec(name="Site 1").peaks_mw, cfg)
     rows = []
-    for a, (factor, svcs) in cfg.cap_rules.items():
-        basis = " + ".join(SERVICE_LABELS[s][0].lower() + SERVICE_LABELS[s][1:] if i else SERVICE_LABELS[s]
-                           for i, s in enumerate(svcs))
+    for a, (factor, groups) in cfg.cap_rules.items():
+        sums = []
+        for g in groups:
+            terms = [(SERVICE_LABELS[svc] if i == 0 else SERVICE_LABELS[svc][0].lower() + SERVICE_LABELS[svc][1:],
+                      w) for i, (svc, w) in enumerate(g.items())]
+            sums.append(" + ".join(label if abs(w - 1.0) < 1e-9 else f"{w:.2f} × {label[0].lower() + label[1:]}"
+                                   for label, w in terms))
+        parts = [t[0].lower() + t[1:] for t in sums]
+        basis = sums[0] if len(sums) == 1 else "The larger of " + " and ".join(
+            f"({t})" if len(g) > 1 else t for t, g in zip(parts, groups))
         rule = (f"1.25 × peak ÷ 68% efficiency (= {factor:.2f} × peak)" if a == "electrolyser_mw"
                 else f"{factor:g} × peak")
         rows.append({"asset": a, "rule": rule, "basis": basis, "example": example[a]})

@@ -241,7 +241,7 @@
     <details class="cap-rule">
       <summary>What the coverage colors mean</summary>
       <p class="lede">The default <em>Max MW</em> of each asset follows the site's peaks; the rule is explained on the <a href="{% url 'catalog' %}">Catalog</a> page.</p>
-      <p class="lede"> <span class="cov ok">Covered</span> the active assets can supply the peak; <span class="cov warn">Partly</span> firm capacity is below the peak, or only solar or recovered heat serves it; <span class="cov bad">Unmet</span> nothing active serves it, so all of it is charged as unmet demand; <span class="cov market">Market</span> bought from the grid or the hydrogen market; <span class="cov none">No demand</span>.</p>
+      <p class="lede"> <span class="cov ok">Covered</span> the active assets can supply every peak at once at the most their Max MW lets the catalog products build, counting the CHP's heat and the absorption chiller once across all the demands they serve, so the plan leaves none of it unmet; <span class="cov warn">Partly</span> firm capacity is below the peak, or only solar or recovered heat serves it; <span class="cov bad">Unmet</span> nothing active serves it, so all of it is charged as unmet demand; <span class="cov market">Market</span> bought from the grid or the hydrogen market; <span class="cov none">No demand</span>.</p>
     </details>
     {{ form.site_rules|json_script:"site-rules" }}
   </div>
@@ -540,10 +540,39 @@
       card.querySelectorAll('input[name^="site_peak__"]').forEach(i => { peaks[i.name.split('__')[2]] = parseFloat(i.value) || 0; });
       return peaks;
     }
+    function productSizes(asset) {
+      const cat = document.querySelector('.catalog-card[data-asset="' + asset + '"]');
+      const sizes = cat ? Array.from(cat.querySelectorAll('input[name^="cat_mw__"]')).map(i => parseFloat(i.value)).filter(v => v > 0) : [];
+      const fallback = RULES.default_product_mw[asset];
+      return sizes.length ? sizes : (fallback > 0 ? [fallback] : []);
+    }
+    const r6 = x => Math.round(x * 1e6) / 1e6;
     function ruleCap(asset, peaks) {
-      const [factor, svcs] = RULES.cap_rules[asset];
-      const v = factor * svcs.reduce((sum, svc) => sum + (peaks[svc] || 0), 0);
-      return Math.ceil(Math.round(v * 1e6) / 1e6);
+      const [factor, groups] = RULES.cap_rules[asset];
+      let need = r6(factor * Math.max(...groups.map(g => Object.entries(g).reduce((sum, [svc, w]) => sum + w * (peaks[svc] || 0), 0))));
+      if (need <= 0) return 0;
+      const sizes = productSizes(asset);
+      if (sizes.length) {
+        const p = Math.min(...sizes);
+        need = r6(Math.ceil(r6(need / p)) * p);
+      }
+      return Math.ceil(need);
+    }
+    function buildable(asset, cap) {
+      const sizes = productSizes(asset);
+      if (!(cap > 0) || !sizes.length) return 0;
+      if (sizes.length === 1) return r6(Math.floor(r6(cap / sizes[0])) * sizes[0]);
+      const step = 100, n = Math.floor(cap * step + 1e-6);
+      const steps = sizes.map(p => Math.round(p * step)).filter(k => k > 0);
+      const reach = new Uint8Array(n + 1);
+      reach[0] = 1;
+      let best = 0;
+      for (let i = 0; i <= n; i++) {
+        if (!reach[i]) continue;
+        best = i;
+        steps.forEach(k => { if (i + k <= n) reach[i + k] = 1; });
+      }
+      return best / step;
     }
     const maxInputs = card => Array.from(card.querySelectorAll('input[data-maxmw]'));
     function initEdited(card) {
@@ -562,15 +591,40 @@
       card.querySelectorAll('input[name^="site_asset__"]:checked').forEach(box => {
         const a = box.name.split('__')[2];
         const v = parseFloat(card.querySelector('input[data-maxmw="' + a + '"]').value);
-        active[a] = isNaN(v) ? ruleCap(a, peaks) : v;
+        active[a] = buildable(a, isNaN(v) ? ruleCap(a, peaks) : v);
       });
-      const on = a => (active[a] || 0) > 0;
+      const cap = a => active[a] || 0;
+      const on = a => cap(a) > 0;
+      const ABS = 'absorption_chiller_mw';
       const heatSupplied = Object.keys(RULES.firm.process_heat).some(on);
+      const isShared = a => a in RULES.shared_heat || a === ABS;
+      const dedicated = svc => Object.entries(RULES.firm[svc] || {})
+        .filter(([a]) => !isShared(a)).reduce((sum, [a, k]) => sum + cap(a) * k, 0);
+      const peak = svc => peaks[svc] || 0;
+      const rem = {};
+      ['space_heat', 'process_heat', 'space_cool', 'process_cool'].forEach(svc => { rem[svc] = Math.max(0, peak(svc) - dedicated(svc)); });
+      const sharedHeat = Object.entries(RULES.shared_heat).reduce((sum, [a, k]) => sum + cap(a) * k, 0);
+      const heatNeed = rem.space_heat + rem.process_heat;
+      const heatShort = Math.max(0, heatNeed - sharedHeat);
+      const spareHeat = Math.max(0, sharedHeat - heatNeed) + Math.max(0, dedicated('process_heat') - peak('process_heat'));
+      const coolNeed = rem.space_cool + rem.process_cool;
+      const absOut = Math.min(cap(ABS), spareHeat * RULES.absorption_cop);
+      const coolShort = Math.max(0, coolNeed - absOut);
+      const shortfall = {
+        space_heat: Math.min(rem.space_heat, heatShort), process_heat: Math.min(rem.process_heat, heatShort),
+        space_cool: Math.min(rem.space_cool, coolShort), process_cool: Math.min(rem.process_cool, coolShort),
+        steam: Math.max(0, peak('steam') - dedicated('steam')),
+      };
+      const heatNote = heatNeed > 0 && sharedHeat > 0
+        ? ' The CHP gives ' + fmt(sharedHeat) + ' MW of heat, shared between space heating, process heat and the absorption chiller.' : '';
+      const coolNote = coolNeed > 0 && on(ABS)
+        ? ' The absorption chiller can deliver ' + fmt(absOut) + ' MW with the heat left after heating, shared between space and process cooling.' : '';
+      const sharedNote = { space_heat: heatNote, process_heat: heatNote, space_cool: coolNote, process_cool: coolNote };
       const status = {};
       Object.keys(SVC_LABELS).forEach(svc => {
-        const peak = peaks[svc] || 0;
+        const pk = peak(svc);
         let level, text, tip;
-        if (peak <= 0) {
+        if (pk <= 0) {
           level = 'none'; text = 'No demand'; tip = 'This site has no ' + SVC_LABELS[svc].toLowerCase() + ' demand.';
         } else if (RULES.market[svc]) {
           const own = RULES.market[svc].filter(on).map(a => ASSET_NAMES[a]);
@@ -581,24 +635,25 @@
             tip = 'No on-site asset serves it, so all of it is bought ' + (svc === 'electricity' ? 'from the grid.' : 'on the hydrogen market.');
           }
         } else {
-          let firm = 0;
           const firmNames = [], part = RULES.part[svc].filter(on).map(a => ASSET_NAMES[a]);
-          Object.entries(RULES.firm[svc]).forEach(([a, k]) => {
+          Object.keys(RULES.firm[svc]).forEach(a => {
             if (!on(a)) return;
-            if (a === 'absorption_chiller_mw' && !heatSupplied) { part.push(ASSET_NAMES[a] + ' (no process heat supplier to drive it)'); return; }
-            firm += active[a] * k;
+            if (a === ABS && !heatSupplied) { part.push(ASSET_NAMES[a] + ' (no process heat supplier to drive it)'); return; }
             firmNames.push(ASSET_NAMES[a]);
           });
+          const short = shortfall[svc] || 0;
           if (!firmNames.length && !part.length) {
             level = 'bad'; text = 'Unmet';
-            tip = 'No active asset serves it: all of the ' + fmt(peak) + ' MW peak is left unmet and charged the unmet-demand penalty.';
+            tip = 'No active asset serves it: all of the ' + fmt(pk) + ' MW peak is left unmet and charged the unmet-demand penalty.';
           } else if (!firmNames.length) {
             level = 'warn'; text = 'Partly'; tip = 'Only ' + part.join(', ') + ': demand is unmet whenever they cannot supply it.';
-          } else if (firm + 1e-9 < peak) {
+          } else if (short > 1e-6) {
             level = 'warn'; text = 'Partly';
-            tip = 'Firm capacity ' + fmt(firm) + ' MW (' + firmNames.join(', ') + ') is below the ' + fmt(peak) + ' MW peak.';
+            tip = 'Firm supply (' + firmNames.join(', ') + ') falls ' + fmt(short) + ' MW short of the ' + fmt(pk)
+              + ' MW peak at the most that can be built.' + (sharedNote[svc] || '') + ' Raise their Max MW.';
           } else {
-            level = 'ok'; text = 'Covered'; tip = fmt(firm) + ' MW firm (' + firmNames.join(', ') + ') for a ' + fmt(peak) + ' MW peak.';
+            level = 'ok'; text = 'Covered';
+            tip = 'Firm supply (' + firmNames.join(', ') + ') covers the ' + fmt(pk) + ' MW peak at the most that can be built.' + (sharedNote[svc] || '');
           }
         }
         status[svc] = level;
@@ -794,6 +849,10 @@
       if (/^site_peak__/.test(e.target.name || '')) fillDefaults(card);
       siteCoverage(card);
     });
+    assetCatalogCards.forEach(cat => cat.addEventListener('input', function (e) {
+      if (!/^cat_mw__/.test(e.target.name || '')) return;
+      siteCards.forEach(card => { fillDefaults(card); siteCoverage(card); });
+    }));
     countryInputs.forEach(c => c.addEventListener('change', syncCountryRows));
     riskRadios.forEach(r => r.addEventListener('change', syncRisk));
     function syncFills(card) {

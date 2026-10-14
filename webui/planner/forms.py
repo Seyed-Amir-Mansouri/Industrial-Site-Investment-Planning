@@ -39,7 +39,7 @@ FIRM_SUPPLY = {
     "space_heat": {"heat_pump_mw": 1.0, "chp_mw": 0.45 / 0.40},
     "space_cool": {"ac_chiller_mw": 1.0, "absorption_chiller_mw": 1.0},
     "process_heat": {"industrial_heat_pump_mw": 1.0, "chp_mw": 0.45 / 0.40},
-    "steam": {"electric_boiler_mw": 1.0, "thermal_battery_mw": 1.0},
+    "steam": {"electric_boiler_mw": 1.0, "thermal_battery_mw": 0.95},
     "process_cool": {"electric_chiller_mw": 1.0, "heat_recovery_chiller_mw": 1.0, "absorption_chiller_mw": 1.0},
 }
 PART_SUPPLY = {
@@ -48,6 +48,8 @@ PART_SUPPLY = {
     "process_heat": ["solar_thermal_mw", "heat_recovery_chiller_mw"],
     "steam": [], "process_cool": [],
 }
+SHARED_HEAT = {"chp_mw": 0.45 / 0.40}
+ABSORPTION_COP = 0.7
 MARKET_SUPPLY = {"electricity": ["wind_mw", "pv_mw", "chp_mw", "battery_mw"], "hydrogen": ["electrolyser_mw", "tank_mw"]}
 MWH_ASSETS = {"battery_mw", "tank_mw", "hot_water_storage_mw", "cold_storage_mw", "thermal_battery_mw"}
 MAX_CANDIDATES_PER_ASSET = 8
@@ -212,6 +214,9 @@ class PlanRunForm(forms.Form):
     def site_rules(self) -> dict:
         """What the page's script needs to fill default maximum MW and show each demand's coverage."""
         return {"cap_rules": self.catalog_defaults["cap_rules"], "serves": ASSET_SERVES, "firm": FIRM_SUPPLY,
+                "shared_heat": SHARED_HEAT, "absorption_cop": ABSORPTION_COP,
+                "default_product_mw": {a: min((c["mw"] for c in self.catalog_defaults["catalog"][a] if c["mw"] > 0),
+                                              default=0) for a in self.assets},
                 "part": PART_SUPPLY, "market": MARKET_SUPPLY, "asset_labels": ASSET_LABELS,
                 "service_labels": dict(zip(self.demand_services, self.demand_service_labels))}
 
