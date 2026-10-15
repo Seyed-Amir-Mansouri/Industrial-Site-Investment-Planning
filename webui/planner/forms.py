@@ -24,6 +24,13 @@ ASSET_LABELS = {
     "electrolyser_mw": "Electrolyser",
     "tank_mw": "H2 storage",
 }
+FULL_ASSET_LABELS = {
+    **ASSET_LABELS,
+    "pv_mw": "Solar photovoltaic",
+    "chp_mw": "Biogas combined heat and power",
+    "ac_chiller_mw": "Air-conditioning chiller",
+    "tank_mw": "Hydrogen storage",
+}
 ASSET_SERVES = {
     "wind_mw": ["electricity"], "pv_mw": ["electricity"], "battery_mw": ["electricity"],
     "chp_mw": ["electricity", "space_heat", "process_heat"],
@@ -39,7 +46,7 @@ FIRM_SUPPLY = {
     "space_heat": {"heat_pump_mw": 1.0, "chp_mw": 0.45 / 0.40},
     "space_cool": {"ac_chiller_mw": 1.0, "absorption_chiller_mw": 1.0},
     "process_heat": {"industrial_heat_pump_mw": 1.0, "chp_mw": 0.45 / 0.40},
-    "steam": {"electric_boiler_mw": 1.0, "thermal_battery_mw": 1.0},
+    "steam": {"electric_boiler_mw": 1.0, "thermal_battery_mw": 0.95},
     "process_cool": {"electric_chiller_mw": 1.0, "heat_recovery_chiller_mw": 1.0, "absorption_chiller_mw": 1.0},
 }
 PART_SUPPLY = {
@@ -48,6 +55,8 @@ PART_SUPPLY = {
     "process_heat": ["solar_thermal_mw", "heat_recovery_chiller_mw"],
     "steam": [], "process_cool": [],
 }
+SHARED_HEAT = {"chp_mw": 0.45 / 0.40}
+ABSORPTION_COP = 0.7
 MARKET_SUPPLY = {"electricity": ["wind_mw", "pv_mw", "chp_mw", "battery_mw"], "hydrogen": ["electrolyser_mw", "tank_mw"]}
 MWH_ASSETS = {"battery_mw", "tank_mw", "hot_water_storage_mw", "cold_storage_mw", "thermal_battery_mw"}
 MAX_CANDIDATES_PER_ASSET = 8
@@ -73,9 +82,9 @@ def plain(value):
 
 class PlanRunForm(forms.Form):
     name = forms.CharField(max_length=120, required=False, label="Run name",
-                           widget=forms.TextInput(attrs={"placeholder": "e.g. Baseline 1.5B, PV only"}))
+                           widget=forms.TextInput(attrs={"placeholder": "e.g. Baseline 500M, PV only"}))
     budget_limited = forms.BooleanField(required=False, initial=True, label="Limited budget")
-    budget = forms.FloatField(required=False, min_value=1e6, initial=1_500_000_000, label="Total CAPEX budget (EUR)",
+    budget = forms.FloatField(required=False, min_value=1e6, initial=500_000_000, label="Total CAPEX budget (EUR)",
                               help_text="Raw, unannualized budget across all sites.")
     all_countries = forms.BooleanField(required=False, initial=True, label="All eligible countries")
     countries = forms.MultipleChoiceField(required=False, label="Candidate site countries",
@@ -104,7 +113,9 @@ class PlanRunForm(forms.Form):
                                  help_text="Workers solve each iteration's scenario subproblems in parallel. "
                                            "Each one uses significant memory, so use 2 or fewer on constrained machines.")
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, custom_indices: list[int] | None = None, **kwargs):
+        """``custom_indices`` lists the added scenarios to show on an unbound form, such as one
+        filled from an earlier run; a submitted form finds them in its data."""
         super().__init__(*args, **kwargs)
         all_scenarios = services.scenario_defaults()
         self.baseline = services.BASELINE_SCENARIO
@@ -160,7 +171,7 @@ class PlanRunForm(forms.Form):
         self.fields["scenario_prob__" + self.baseline] = forms.FloatField(
             min_value=0, max_value=100, initial=100, label="Probability (%)")
         self.custom_indices = sorted({int(m.group(1)) for k in (self.data or {})
-                                      if (m := CUSTOM_FIELD_RE.match(k))})
+                                      if (m := CUSTOM_FIELD_RE.match(k))} | set(custom_indices or []))
         for i in self.custom_indices:
             self.fields[f"custom_name__{i}"] = forms.CharField(
                 max_length=40, required=False, initial=f"Scenario {i + 1}", label="Name")
@@ -174,6 +185,62 @@ class PlanRunForm(forms.Form):
                         error_messages={"min_value": f"Outside the accepted range ({lo} to {hi}%%).",
                                         "max_value": f"Outside the accepted range ({lo} to {hi}%%)."},
                         widget=forms.NumberInput(attrs={"step": "any"}))
+
+    @staticmethod
+    def initial_from_run(name: str, params: dict) -> tuple[dict, list[int]]:
+        """Initial values that fill the form with an earlier run's settings, and the indices of its
+        added scenarios. Settings an older run didn't record keep their defaults."""
+        init = {"name": f"{name} (copy)" if name else "",
+                "all_countries": params.get("all_countries", True),
+                "countries": params.get("countries", []),
+                "budget_limited": params.get("budget") is not None,
+                "n_sites": params.get("n_sites") or len(params.get("sites") or []) or 1}
+        if params.get("budget") is not None:
+            init["budget"] = plain(params["budget"])
+        for k in ("discount_rate_pct", "cvar_alpha", "rep_days_per_month", "gap_tol", "max_iters",
+                  "master_time_limit", "workers"):
+            if params.get(k) is not None:
+                init[k] = plain(params[k])
+        for i, site in enumerate(params.get("sites") or []):
+            init[f"site_name__{i}"] = site.get("name", f"Site {i + 1}")
+            init[f"site_green__{i}"] = plain(round(float(site.get("green_share", 0)) * 100, 4))
+            flex = site.get("flex_fraction", {})
+            for svc, v in (site.get("peaks_mw") or {}).items():
+                init[f"site_peak__{i}__{svc}"] = plain(v)
+                f = flex.get(svc, 0) if isinstance(flex, dict) else flex
+                init[f"site_flex__{i}__{svc}"] = plain(round(float(f) * 100, 4))
+            for a in site.get("active_assets") or []:
+                init[f"site_asset__{i}__{a}"] = True
+            for a, v in (site.get("max_mw") or {}).items():
+                init[f"site_maxmw__{i}__{a}"] = plain(v)
+        for asset, candidates in (params.get("catalog_overrides") or {}).items():
+            for i in range(MAX_CANDIDATES_PER_ASSET):
+                c = candidates[i] if i < len(candidates) else None
+                init[f"cat_mw__{asset}__{i}"] = plain(c["mw"]) if c else None
+                init[f"cat_capex__{asset}__{i}"] = plain(c["capex_eur"]) if c else None
+                if asset in MWH_ASSETS:
+                    init[f"cat_mwh__{asset}__{i}"] = plain(c["mwh"]) if c and c.get("mwh") is not None else None
+            if candidates:
+                init[f"cat_lifetime__{asset}"] = plain(candidates[0]["lifetime_years"])
+        overrides = params.get("scenario_overrides") or {}
+        scenarios = params.get("scenarios") or []
+        baseline = services.BASELINE_SCENARIO
+        init["scenario_include__" + baseline] = baseline in scenarios
+        if baseline in scenarios and baseline in overrides:
+            init["scenario_prob__" + baseline] = plain(round(overrides[baseline]["probability"] * 100, 4))
+        custom = []
+        for key in scenarios:
+            sc = overrides.get(key, {})
+            if not (key.startswith("custom") and key[6:].isdigit() and sc.get("custom")):
+                continue
+            i = int(key[6:]) - 1
+            custom.append(i)
+            init[f"custom_name__{i}"] = sc.get("label", f"Scenario {i + 1}")
+            init[f"custom_prob__{i}"] = plain(round(sc["probability"] * 100, 4))
+            for kind in ("wind", "solar"):
+                for c, factor in (sc.get(kind) or {}).items():
+                    init[f"custom_{kind}__{i}__{c}"] = plain(round((float(factor) - 1) * 100, 4))
+        return init, custom
 
     def _error_bounds(self, country: str, kind: str) -> list[int]:
         """Lowest and highest capacity change (%) accepted for ``country``'s ``kind`` (wind or solar): the
@@ -212,6 +279,9 @@ class PlanRunForm(forms.Form):
     def site_rules(self) -> dict:
         """What the page's script needs to fill default maximum MW and show each demand's coverage."""
         return {"cap_rules": self.catalog_defaults["cap_rules"], "serves": ASSET_SERVES, "firm": FIRM_SUPPLY,
+                "shared_heat": SHARED_HEAT, "absorption_cop": ABSORPTION_COP,
+                "default_product_mw": {a: min((c["mw"] for c in self.catalog_defaults["catalog"][a] if c["mw"] > 0),
+                                              default=0) for a in self.assets},
                 "part": PART_SUPPLY, "market": MARKET_SUPPLY, "asset_labels": ASSET_LABELS,
                 "service_labels": dict(zip(self.demand_services, self.demand_service_labels))}
 

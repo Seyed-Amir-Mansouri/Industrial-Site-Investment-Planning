@@ -54,9 +54,10 @@ should be, using the price models above as a price-taker market signal.
   released.
   The site buys any electricity or hydrogen deficit at the modeled market price plus an
   import fee, and sells any surplus at the market price. There is no existing plant on
-  site: heat or cooling the new assets can't supply is left unmet and charged a penalty (5,000
-  EUR/MWh by default), so every hour stays solvable whatever the new assets are, and in practice
-  the planner builds enough to cover demand. Each run reports any unmet demand per site in
+  site: heat or cooling the new assets can't supply is left unmet and charged a penalty
+  (1,000,000 EUR/MWh by default), so every hour stays solvable whatever the new assets are. The
+  penalty is far above the yearly cost of any asset per MW, so the planner never leaves demand
+  unmet to save on building when the site caps allow enough capacity. Each run reports any unmet demand per site in
   `_unmet_demand.csv`. `solve` runs one site on its own, either over a contiguous day range or
   a representative-day sample. `solve_joint` runs every candidate country's site LP
   together in one model (still independent problems, just solved in one call). It's the only
@@ -178,16 +179,23 @@ green load, the wind/PV claimed for it, GOs bought and sold, and green hydrogen 
   usable, absorption chiller 0.7 per MWh of process heat), the biogas CHP (40% electric, up to 45%
   heat, biogas at 60 EUR/MWh), the thermal stores' efficiency (hot-water, chilled-water / ice and
   thermal battery 95%; solar thermal follows the site's PV profile), the unmet heat/cooling demand
-  penalty (5,000 EUR/MWh) and the grid and hydrogen import fees (15 and 0 EUR/MWh).
+  penalty (1,000,000 EUR/MWh) and the grid and hydrogen import fees (15 and 0 EUR/MWh).
 - `CapexAssumptions.cap_rules` (`CAP_RULES`): the default most MW of each asset one site may host,
-  a factor times the sum of the site's annual peaks of the demands it serves, rounded up to a
-  whole MW. Heat and cooling assets and their stores get 1.25 times the peak they serve (25%
-  headroom) and solar thermal 1.25 times space heating plus process heat; wind and PV 7.5 times
-  and the battery 5 times the electricity peak (they also sell to the market), the biogas CHP 1.25
-  times the electricity peak; the electrolyser 1.25 times the hydrogen peak divided by its 68%
-  efficiency (it is sized in MW of electricity) and the H2 tank 1.25 times the hydrogen peak. At
-  the default peaks that is 60 MW wind and PV, 40 MW battery, 10 MW CHP, 3 MW electrolyser and
-  2 MW tank. A demand with a 0 MW peak gives its assets a 0 MW default. A site's own `max_mw`
+  large enough for the asset to cover on its own every peak it can serve: a factor times the
+  site's weighted annual peaks of the demands it serves, rounded up to a whole number of its
+  smallest product and then to a whole MW. Heat and cooling assets and their stores get 1.25
+  times the peak they serve (25% headroom); the biogas CHP 1.25 times the larger of the
+  electricity peak and the heat for space heating, process heat and the absorption chiller's
+  drive (both cooling peaks divided by its 0.7 COP), in MW of electricity (x 0.40 / 0.45); the
+  industrial heat pump 1.25 times process heat plus that drive heat; the thermal battery 1.25
+  times the steam peak divided by its 95% efficiency; solar thermal 1.25 times space heating plus
+  process heat; the absorption chiller 1.25 times both cooling peaks; wind and PV 7.5 times and
+  the battery 5 times the electricity peak (they also sell to the market); the electrolyser 1.25
+  times the hydrogen peak divided by its 68% efficiency (it is sized in MW of electricity) and the
+  H2 tank 1.25 times the hydrogen peak. At the default peaks that is 60 MW wind and PV, 40 MW
+  battery, 21 MW CHP, 18 MW industrial heat pump, 3 MW electrolyser and 2 MW tank. With these
+  defaults every demand an active asset firmly serves is covered and the plan leaves nothing
+  unmet. A demand with a 0 MW peak gives its assets a 0 MW default. A site's own `max_mw`
   replaces the rule (`default_max_mw` and `site_max_mw` in `candidates.py`).
 
 ### `plan_capacity.py` flags
@@ -207,7 +215,7 @@ Full, current list also always available via `python plan_capacity.py --help`.
 **Budget / CAPEX**
 | Flag | Default | What it does |
 |---|---|---|
-| `--budget EUR` | 1,500,000,000 | Raw/unannualized CAPEX budget, shared across every site. |
+| `--budget EUR` | 500,000,000 | Raw/unannualized CAPEX budget, shared across every site. |
 | `--no-budget` | off | Plan without any CAPEX budget limit (can't be combined with `--budget`). |
 | `--discount-rate R` | 0.05 | Discount rate for the capital recovery factor |
 | `--lifetime-years N` | catalog's own (30/40/20yr wind/PV/battery, 20/20/25/25/20yr heat pump/AC chiller/industrial heat pump/electric boiler/process chiller, 20/30/25/25/25/20/25yr CHP/hot-water storage/chilled-water storage/solar thermal/thermal battery/heat-recovery chiller/absorption chiller, 25/30yr electrolyser/tank) | Overrides every asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
@@ -260,7 +268,7 @@ The price models then predict the electricity and hydrogen prices from those inp
 own generation and storage are added to its zone's inputs in every scenario, and its demand and
 capacity factors are the same in every scenario, so a scenario changes the plan only through
 prices. Each country's change must stay within the range
-the price models were trained on: from the lowest level in the training scenarios (about -68% to
+the price models were trained on: from the lowest level in the training scenarios (about -69% to
 -80% depending on the country) up to 130% of the Baseline's capacity (+30%). The New run page
 shows that range under every box; it is read from the training samples (`elec_samples.parquet`). The web app passes them to the planner in the run's scenario overrides file
 (`PLANNER_SCENARIO_OVERRIDES`, entries marked `"custom": true`).
@@ -272,7 +280,7 @@ shows that range under every box; it is read from the training samples (`elec_sa
 | `--gap-tol G` | 0.01 (1%) | Relative Benders convergence gap |
 | `--master-time-limit S` | 180 | Wall-time cap (seconds) per master MILP solve. The master gets genuinely hard to solve to proven optimality as cuts accumulate at large scale, so this bounds it instead; the Benders lower bound is still read from HiGHS's own proven dual bound, so the result stays mathematically rigorous even when the search is cut off early. |
 | `--core-cuts` / `--no-core-cuts` | on | Also dispatch each placed site at a moving Pareto core point every iteration and add that cut too (two cuts per scenario and site instead of one). `--no-core-cuts` keeps only the trial-point cut. |
-| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (one row per site: its chosen country, MW per asset and MWh per storage asset)/`_sites.csv` (each site's settings and annual demand)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each site's green hydrogen and GO totals per scenario)/`_unmet_demand.csv` (each site's unmet heat and cooling demand per scenario)/(with `--export-schedules`) `_schedule_<site>_<country>_<scenario>.csv` |
+| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (one row per site: its chosen country, MW per asset and MWh per storage asset)/`_sites.csv` (each site's settings and annual demand)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each site's green hydrogen and GO totals per scenario)/`_unmet_demand.csv` (each site's unmet heat and cooling demand per scenario)/`_market_costs.csv` (what each site buys and sells on each market per scenario, MWh/yr and EUR/yr, adding up to its operating cost)/`_dispatch.csv` (each site's hourly prices and, per balance, its demand after flexibility and each asset's net supply in MW, on the representative days, per scenario)/(with `--export-schedules`) `_schedule_<site>_<country>_<scenario>.csv` |
 | `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each chosen site's representative-day schedule: every demand, asset output, grid and H2 import/export, and any unmet demand |
 
 Each iteration adds one optimality cut per scenario and site, for the country the site is
@@ -281,7 +289,10 @@ can't propose the same plan again without paying its true cost). Countries a sit
 in aren't dispatched and keep the cuts from earlier visits. By default each placed site also
 gets a cut from a solve at a moving core point (Papadakos-style Pareto-optimal cuts);
 core-point values that decay below 1e-3 are set to zero, which keeps the subproblem numerically
-stable. If HiGHS fails on the master or a subproblem, it's re-solved once with presolve off.
+stable. If HiGHS fails on the master or a subproblem, it's re-solved once with presolve off; a
+master that still fails is re-solved with a looser integer feasibility tolerance (1e-4), which
+the steep cuts of the large unmet penalty can need. For the same reason the master works in
+million EUR: in EUR its cut slopes reach about 1e11 per MW and HiGHS returns wrong bounds.
 
 ### How the Benders solve works
 
@@ -300,7 +311,15 @@ the country the master placed it in), iterating between them:
    while its slopes give the master a first estimate of placing the site there. Each site is also
    dispatched once in every country at its maximum capacities; that cut bounds how much extra
    capacity can lower the site's cost, so the master can't overbuild against the steep slopes of
-   the first one. The scenarios' totals are combined
+   the first one. The master also holds hourly heat and cooling balance rows for each site and
+   country: a relaxed dispatch of the heat and cooling assets (storage limited only by its MW)
+   that must meet each service's demand, less its flexibility band, in a set of hours. They
+   start at the site's peak hours and grow by every hour a trial plan left demand unmet, but
+   only hours the site's maximum capacities cover in every scenario. The 1,000,000 EUR/MWh
+   unmet penalty makes the cuts so steep that the master would otherwise take many rounds to
+   learn how much to build; with these rows its first plans already leave nothing unmet. If
+   they make the master infeasible (a budget too small to meet demand) they are dropped and the
+   run goes on with cuts only. The scenarios' totals are combined
    via CVaR at `--cvar-alpha` (default 0.8); with a single scenario it is just that scenario's
    recourse (deterministic).
 2. **Subproblems (LP, one HiGHS model per site, country and scenario, `optimize_site_investor.
@@ -371,7 +390,9 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
      unticked; enter the site's demand and tick the assets it may build. Each asset shows the demands it serves and a *Max MW* box, filled from the default
      rule (whole MW) and following the peaks until you type your own value (decimals are fine).
      The **Coverage** row colors each demand: green *Covered* when the active assets' firm
-     capacity reaches the peak, amber *Partly* when it falls short or only solar thermal,
+     capacity reaches every peak at once, at the most their Max MW lets the catalog products
+     build and counting the CHP's heat and the absorption chiller once across all the demands
+     they serve (a covered demand is never left unmet in the plan), amber *Partly* when it falls short or only solar thermal,
      recovered heat or storage serves it, red *Unmet* when nothing active serves it (all of it
      would be charged the unmet-demand penalty), blue *Market* for electricity or hydrogen bought
      on the market, and grey *No demand*; hover a chip for the numbers. A red or amber demand
@@ -413,11 +434,21 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   **Reset scenario** button. **Reset all settings** at the bottom returns the whole form
   to its defaults. **Run plan** starts the run, and the page opens the run's details.
 - **Run detail** shows one finished run. It has each site with its chosen country, the headline numbers
-  (objective, raw CAPEX, risk measure), installed capacity at each site in MW, the product
-  units built, the green hydrogen results (green share reached, green hydrogen produced and
-  bought, GOs bought and sold, per scenario and probability-weighted), a map of the candidate
-  countries (colored by which demand the capacity serves), the convergence chart of the Benders iterations, the inputs the run used and the
-  solver log.
+  (objective, capital cost, risk measure), the economics of each built technology, a yearly cost
+  table per site (each technology it built with its MW, the units of each product size, its
+  capital cost and annualized capital cost, then what it buys and sells on each market,
+  including unmet heat and cooling charged at the penalty; the totals give the total capital
+  cost and add up to the objective), the green hydrogen results (one row per site: hydrogen
+  used, green hydrogen made and bought, green share and any renewable electricity certificates
+  traded), an hourly operation section (pick a scenario and a range of representative days to
+  see, for each site, its electricity and hydrogen prices and a stacked bar chart per demand
+  balance with every asset that supplies or draws on it and the demand line; balances and assets
+  a site doesn't have are left out), a map of the candidate countries (colored by which demand the capacity serves), the
+  convergence chart of the Benders iterations, the inputs the run used and the solver log. Runs
+  made before the cost table was added don't show it.
+  **Duplicate setup** opens the New run page filled with that run's settings (sites, peaks,
+  flexibility, green share, active assets and maximum MW, catalog products, countries, budget,
+  scenarios, economics and solver settings), named "<run> (copy)", to change and run again.
 - **Compare** puts two completed runs side by side. Pick them from the lists at the top.
   It shows the installed MW by country for each run and the difference between them.
 - **Catalog** shows the example site's demand (the command-line default), how each asset's

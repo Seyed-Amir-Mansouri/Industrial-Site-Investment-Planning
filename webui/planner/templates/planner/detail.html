@@ -39,6 +39,14 @@
   .map-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 14px; }
   .map-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
   .map-legend .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .dispatch-controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; margin-bottom: 8px; }
+  .dispatch-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  .dispatch-controls select { padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); font: inherit; min-width: 120px; }
+  .dispatch-site { margin-top: 22px; }
+  .dispatch-site h3 { font: 600 17px var(--serif); margin: 0 0 6px; }
+  .dispatch-chart { position: relative; height: 260px; margin-top: 14px; }
+  .dispatch-chart h4 { font-size: 13px; font-weight: 600; margin: 0 0 4px; color: var(--ink); }
+  .dispatch-chart canvas { max-height: 236px; }
 </style>
 {% endblock %}
 {% block content %}
@@ -53,7 +61,7 @@
   </div>
   <div style="display:flex;gap:10px">
     <a class="btn ghost" href="{% url 'index' %}">All runs</a>
-    <a class="btn" href="{% url 'new_run' %}">Duplicate setup</a>
+    <a class="btn" href="{% url 'new_run' %}?from={{ run.pk }}">Duplicate setup</a>
   </div>
 </div>
 
@@ -67,7 +75,7 @@
 
 {% if run.status == "done" %}
 <div class="grid kpis" style="margin-bottom:18px">
-  <div class="kpi"><div class="label">Chosen site{{ summary.sites|length|pluralize }}</div><div class="value">{% if summary.sites %}{{ summary.sites|join:", " }}{% else %}—{% endif %}</div><div class="sub">{{ summary.sites|length }} site{{ summary.sites|length|pluralize }} across {% if run.params.all_countries %}all eligible{% else %}{{ run.params.countries|length }}{% endif %} candidate countries</div></div>
+  <div class="kpi"><div class="label">Chosen site{{ summary.sites|length|pluralize }}</div><div class="value">{% for s in summary.sites %}{{ s }}{% if not forloop.last %}<br>{% endif %}{% empty %}—{% endfor %}</div><div class="sub">{{ summary.sites|length }} site{{ summary.sites|length|pluralize }} across {% if run.params.all_countries %}all eligible{% else %}{{ run.params.countries|length }}{% endif %} candidate countries</div></div>
   <div class="kpi"><div class="label">Objective</div><div class="value">€{{ summary.objective_eur|floatformat:"0g" }}</div><div class="sub">annualized CAPEX + risk-adjusted energy cost</div></div>
   <div class="kpi"><div class="label">Raw CAPEX</div><div class="value">€{{ summary.raw_capex_eur|floatformat:"0g" }}</div><div class="sub">{% if run.params.budget %}{% widthratio summary.raw_capex_eur run.params.budget 100 %}% of budget{% endif %}</div></div>
   <div class="kpi"><div class="label">Iterations</div><div class="value">{{ summary.iterations }}</div><div class="sub">{% if summary.converged %}converged{% else %}stopped at limit{% endif %}</div></div>
@@ -77,14 +85,14 @@
 
 <div class="card" style="margin-bottom:18px">
   <h2>Economics</h2>
-  <p class="lede" style="margin-bottom:12px">Capital cost annualized at {{ run.params.discount_rate_pct }}% over each technology's own lifetime, versus the risk-adjusted operating cost.</p>
+  <p class="lede" style="margin-bottom:12px">Capital cost annualized at {{ run.params.discount_rate_pct }}% over each technology's own lifetime, versus the risk-adjusted operating cost. The capital recovery factor is the share of a technology's capital cost paid each year, so that equal yearly payments repay it with interest over its lifetime: r(1+r)<sup>n</sup> / ((1+r)<sup>n</sup> − 1) at discount rate r and lifetime n years. The annualized capital cost is the capital cost times this factor.</p>
   <div class="grid kpis" style="margin-bottom:16px">
     <div class="kpi"><div class="label">Annualized CAPEX</div><div class="value">€{{ economics.annualized_capex_eur|floatformat:"0g" }}</div><div class="sub">per year, over asset lifetimes</div></div>
     <div class="kpi"><div class="label">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }} operating cost{% elif run.params.risk_measure == "deterministic" %}Operating cost{% else %}Expected operating cost{% endif %}</div><div class="value">€{{ economics.operating_cost_eur|floatformat:"0g" }}</div><div class="sub">objective − annualized CAPEX</div></div>
     <div class="kpi"><div class="label">CAPEX per MW</div><div class="value">€{{ economics.capex_per_mw_eur|floatformat:"0g" }}</div><div class="sub">raw CAPEX ÷ total MW built</div></div>
   </div>
   <table>
-    <thead><tr><th>Technology</th><th class="num">Raw CAPEX</th><th class="num">Annualized CAPEX</th><th class="num">CRF</th></tr></thead>
+    <thead><tr><th>Technology</th><th class="num">Capital cost</th><th class="num">Annualized capital cost</th><th class="num">Capital recovery factor</th></tr></thead>
     <tbody>
       {% for a in assets %}
       <tr>
@@ -93,116 +101,89 @@
         <td class="num">€{{ economics.by_asset|lookup:a|lookup:"annualized_eur"|floatformat:"0g" }}</td>
         <td class="num">{{ economics.by_asset|lookup:a|lookup:"crf"|floatformat:4 }}</td>
       </tr>
+      {% empty %}
+      <tr><td colspan="4">No technology was built.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
 
-{% if summary.green_h2 %}
-<div class="card">
-  <h2>Green hydrogen</h2>
-  <p class="lede" style="margin-bottom:12px">How each site meets its own minimum green (RFNBO) share of annual hydrogen demand, and what it trades on the Guarantee of Origin market. All values in MWh per year.</p>
+{% if costs %}
+<div class="card" style="margin-bottom:18px">
+  <h2>Yearly cost by site</h2>
+  <p class="lede" style="margin-bottom:12px">For each site: the capital cost of what it built, spread over each technology's lifetime, with the number of units of each product size and their total capital cost, then what it buys and sells on each market in a year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}. Income is shown as a negative cost. Heat and cooling the site can't supply is charged the unmet-demand penalty. The total is the objective.</p>
   <div style="overflow-x:auto">
   <table>
-    <thead><tr><th>Site</th><th>Country</th><th>Scenario</th><th class="num">Probability</th><th class="num">H2 demand</th><th class="num">Green H2 produced</th><th class="num">Green H2 bought</th><th class="num">Green share</th><th class="num">GOs bought</th><th class="num">GOs sold</th></tr></thead>
+    <thead><tr><th>Cost type</th><th>Item</th><th class="num">Amount</th><th class="num">Units built</th><th class="num">Capital cost (€)</th><th class="num">Cost (€ per year)</th></tr></thead>
+    <tbody>
+      {% for s in costs.sites %}
+      <tr><td colspan="6"><strong>{{ s.site }} → {{ s.country }}</strong></td></tr>
+      {% for r in s.rows %}
+      <tr>
+        <td>{{ r.group }}</td><td>{{ r.label }}</td>
+        <td class="num">{% if r.unit == "MW" %}{{ r.amount|floatformat:"-1" }} MW{% else %}{{ r.amount|floatformat:"0g" }} MWh per year{% endif %}</td>
+        <td class="num">{% for p in r.products %}{{ p.units }} × {{ p.mw }} MW{% if not forloop.last %}<br>{% endif %}{% endfor %}</td>
+        <td class="num">{% if r.unit == "MW" %}{{ r.capex|floatformat:"0g" }}{% endif %}</td>
+        <td class="num">{{ r.eur|floatformat:"0g" }}</td>
+      </tr>
+      {% endfor %}
+      <tr><td></td><td>Investment</td><td></td><td></td><td class="num">{{ s.capex|floatformat:"0g" }}</td><td class="num">{{ s.investment|floatformat:"0g" }}</td></tr>
+      <tr><td></td><td>Operation</td><td></td><td></td><td></td><td class="num">{{ s.operation|floatformat:"0g" }}</td></tr>
+      <tr><td></td><td><strong>{{ s.site }} total</strong></td><td></td><td></td><td class="num"><strong>{{ s.capex|floatformat:"0g" }}</strong></td><td class="num"><strong>{{ s.total|floatformat:"0g" }}</strong></td></tr>
+      {% endfor %}
+      <tr><td colspan="6"><strong>All sites</strong></td></tr>
+      <tr><td></td><td>Investment</td><td></td><td></td><td class="num">{{ costs.capex|floatformat:"0g" }}</td><td class="num">{{ costs.investment|floatformat:"0g" }}</td></tr>
+      <tr><td></td><td>Operation{% if costs.risk_adjustment %} (with a risk adjustment of {{ costs.risk_adjustment|floatformat:"0g" }}: the worst scenarios weigh more than their probability){% endif %}</td><td></td><td></td><td></td><td class="num">{{ costs.operation|floatformat:"0g" }}</td></tr>
+      <tr><td></td><td><strong>Objective</strong></td><td></td><td></td><td></td><td class="num"><strong>{{ costs.grand_total|floatformat:"0g" }}</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+
+{% if summary.green_h2_expected %}
+<div class="card">
+  <h2>Green hydrogen</h2>
+  <p class="lede" style="margin-bottom:12px">Each site must get a minimum share of its hydrogen as green (renewable) hydrogen, either made on site or bought. MWh per year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}.</p>
+  <div style="overflow-x:auto">
+  <table>
+    <thead><tr><th>Site</th><th class="num">Hydrogen used</th><th class="num">Green hydrogen made on site</th><th class="num">Green hydrogen bought</th><th class="num">Green share</th>{% if green_go.bought %}<th class="num">Renewable electricity certificates bought</th>{% endif %}{% if green_go.sold %}<th class="num">Renewable electricity certificates sold</th>{% endif %}</tr></thead>
     <tbody>
       {% for g in summary.green_h2_expected %}
       <tr>
-        <td><strong>{{ g.site }}</strong></td><td><strong>{{ g.country }}</strong></td><td><strong>Weighted</strong></td><td class="num">100%</td>
-        <td class="num"><strong>{{ g.h2_demand_mwh|floatformat:"0g" }}</strong></td>
-        <td class="num"><strong>{{ g.green_h2_produced_mwh|floatformat:"0g" }}</strong></td>
-        <td class="num"><strong>{{ g.green_h2_bought_mwh|floatformat:"0g" }}</strong></td>
-        <td class="num"><strong>{% widthratio g.green_share 1 100 %}%</strong></td>
-        <td class="num"><strong>{{ g.go_bought_mwh|floatformat:"0g" }}</strong></td>
-        <td class="num"><strong>{{ g.go_sold_mwh|floatformat:"0g" }}</strong></td>
-      </tr>
-      {% endfor %}
-      {% for g in summary.green_h2 %}
-      <tr>
-        <td>{% firstof g.site g.country %}</td><td>{{ g.country }}</td><td>{{ run.params.scenario_labels|lookup:g.scenario|default:g.scenario }}</td><td class="num">{% widthratio g.probability 1 100 %}%</td>
+        <td>{{ g.site }} → {{ g.country }}</td>
         <td class="num">{{ g.h2_demand_mwh|floatformat:"0g" }}</td>
         <td class="num">{{ g.green_h2_produced_mwh|floatformat:"0g" }}</td>
         <td class="num">{{ g.green_h2_bought_mwh|floatformat:"0g" }}</td>
         <td class="num">{% widthratio g.green_share 1 100 %}%</td>
-        <td class="num">{{ g.go_bought_mwh|floatformat:"0g" }}</td>
-        <td class="num">{{ g.go_sold_mwh|floatformat:"0g" }}</td>
+        {% if green_go.bought %}<td class="num">{{ g.go_bought_mwh|floatformat:"0g" }}</td>{% endif %}
+        {% if green_go.sold %}<td class="num">{{ g.go_sold_mwh|floatformat:"0g" }}</td>{% endif %}
       </tr>
       {% endfor %}
     </tbody>
   </table>
   </div>
+  {% if green_go.sold or green_go.bought %}<p class="lede" style="margin-top:12px">Renewable electricity certificates (Guarantees of Origin) are sold for the site's own wind and solar electricity exported to the grid, and bought to count grid electricity used by an electrolyser as renewable.</p>{% endif %}
 </div>
 {% endif %}
 
-{% if summary.unmet_demand %}
+{% if dispatch %}
 <div class="card">
-  <h2>Unmet heat and cooling demand</h2>
-  <p class="lede" style="margin-bottom:12px">The site has no existing boiler or chiller, so any heat or cooling the new assets can't supply is left unmet and charged the penalty shown on the Catalog page. Expected MWh per year; 0 means every hour was covered.</p>
-  <div style="overflow-x:auto">
-  <table>
-    <thead><tr><th>Site</th><th>Country</th>{% for label in summary.unmet_labels %}<th class="num">{{ label }}</th>{% endfor %}<th class="num">Total</th></tr></thead>
-    <tbody>
-      {% for r in summary.unmet_demand %}
-      <tr>
-        <td><strong>{{ r.site }}</strong></td><td>{{ r.country }}</td>
-        {% for v in r.values %}<td class="num">{{ v|floatformat:"0g" }}</td>{% endfor %}
-        <td class="num"><strong>{{ r.total|floatformat:"0g" }}</strong></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <h2>Hourly operation</h2>
+  <p class="lede" style="margin-bottom:12px">Pick a range of days to see, for each site, its electricity and hydrogen prices and how each of its demands is met hour by hour. Only the representative days the model solves are shown, back to back. Bars above zero supply the demand; bars below zero use it up (storage charging, exports, the electricity heat and cooling assets draw, the heat the absorption chiller uses). The line is the demand after flexibility.</p>
+  <div class="dispatch-controls">
+    {% if dispatch.scenarios|length > 1 %}
+    <label>Scenario <select id="disp-scenario">{% for s in dispatch.scenarios %}<option value="{{ s.key }}">{{ s.label }}</option>{% endfor %}</select></label>
+    {% else %}<input type="hidden" id="disp-scenario" value="{{ dispatch.scenarios.0.key }}">{% endif %}
+    <label>From <select id="disp-start">{% for d in dispatch.days %}<option value="{{ d.day }}"{% if forloop.first %} selected{% endif %}>{{ d.label }}</option>{% endfor %}</select></label>
+    <label>To <select id="disp-end">{% for d in dispatch.days %}<option value="{{ d.day }}"{% if forloop.counter == 3 %} selected{% endif %}>{{ d.label }}</option>{% endfor %}</select></label>
+    <button type="button" class="btn" id="disp-show">Show</button>
   </div>
+  <div id="disp-charts"></div>
 </div>
 {% endif %}
 
-<div class="grid" style="grid-template-columns:minmax(0,1fr);gap:22px;align-items:start">
-  <div class="card">
-    <h2>Installed capacity by site (MW)</h2>
-    <p class="lede" style="margin-bottom:12px">MW built at each chosen site, per technology. Heat pumps, boilers and chillers are in MW of heat or cooling output.</p>
-    <div style="overflow-x:auto">
-    <table>
-      <thead><tr><th>Site</th><th>Country</th>{% for a in assets %}<th class="num">{{ asset_labels|lookup:a }}</th>{% endfor %}</tr></thead>
-      <tbody>
-        {% for row in summary.site_rows %}
-        <tr>
-          <td><strong>{{ row.site }}</strong></td>
-          <td>{{ row.country }}</td>
-          {% for a in assets %}<td class="num">{{ row|lookup:a|floatformat:1 }}</td>{% endfor %}
-        </tr>
-        {% endfor %}
-        <tr>
-          <td><strong>Total</strong></td><td></td>
-          {% for a in assets %}<td class="num"><strong>{{ summary.totals_mw|lookup:a|floatformat:1 }}</strong></td>{% endfor %}
-        </tr>
-      </tbody>
-    </table>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Product units built</h2>
-    <p class="lede" style="margin-bottom:12px">How many of each product size were selected.</p>
-    {% if summary.units %}
-    <table>
-      <thead><tr><th>Site</th><th>Technology</th><th class="num">Size (MW)</th><th class="num">Units</th></tr></thead>
-      <tbody>
-        {% for u in summary.units %}
-        <tr>
-          <td>{% if u.site %}{{ u.site }} ({{ u.country }}){% else %}{{ u.country }}{% endif %}</td>
-          <td>{{ asset_labels|lookup:u.asset }}</td>
-          <td class="num">{{ u.candidate_mw|floatformat:1 }}</td>
-          <td class="num">{{ u.units }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p class="lede">No units were built.</p>
-    {% endif %}
-  </div>
-</div>
-
-<div class="card" style="margin-top:18px">
+<div class="card">
   <h2>Site locations</h2>
   <p class="lede" style="margin-bottom:12px">Marker size tracks total installed MW at a site; the colors show which demand that capacity serves. Hover a site for the technology breakdown. A hollow marker is a candidate country the optimizer didn't pick.</p>
   {% if map_markers %}
@@ -349,6 +330,81 @@
                            y: { ticks: { callback: v => '€' + Number(v).toLocaleString() } } } }
     });
     window.addEventListener('sip-theme', () => location.reload());
+  })();
+</script>
+<script>
+  (function () {
+    const show = document.getElementById('disp-show');
+    if (!show || typeof Chart === 'undefined') return;
+    const COLORS = {
+      'Wind': '#2a78d6', 'Solar PV': '#eda100', 'Biogas CHP': '#8c564b', 'Battery': '#7c4dbd', 'Grid': '#7f8c8d',
+      'Electrolyser': '#008300', 'Heat and cooling assets': '#e87ba4', 'Hydrogen storage': '#1baf7a',
+      'Hydrogen market': '#7f8c8d', 'Heat pump': '#eb6834', 'Solar thermal': '#e6c229',
+      'Heat-recovery chiller': '#4a3aa7', 'Hot-water storage': '#c2185b', 'AC chiller': '#17a2b8',
+      'Absorption chiller': '#0f766e', 'Cold storage': '#7fb8e6', 'Industrial heat pump': '#d95926',
+      'Electric boiler': '#9e9d24', 'Thermal battery': '#a16207', 'Process chiller': '#1f5fa8', 'Unmet': '#d62728',
+    };
+    const box = document.getElementById('disp-charts');
+    const start = document.getElementById('disp-start'), end = document.getElementById('disp-end');
+    let charts = [];
+    window.sipChartDefaults();
+    const c = window.sipChart();
+
+    function chartBlock(parent, title) {
+      const div = document.createElement('div');
+      div.className = 'dispatch-chart';
+      div.innerHTML = '<h4></h4><canvas></canvas>';
+      div.querySelector('h4').textContent = title;
+      parent.appendChild(div);
+      return div.querySelector('canvas');
+    }
+    const axis = unit => ({ x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 12, autoSkip: true, maxRotation: 0 } },
+                            y: { stacked: true, title: { display: true, text: unit } } });
+    function draw(data) {
+      charts.forEach(ch => ch.destroy());
+      charts = [];
+      box.innerHTML = '';
+      if (!data.sites || !data.sites.length) { box.innerHTML = '<p class="lede">No hours in this range.</p>'; return; }
+      data.sites.forEach(site => {
+        const sec = document.createElement('div');
+        sec.className = 'dispatch-site';
+        sec.innerHTML = '<h3></h3>';
+        sec.querySelector('h3').textContent = site.site + ' \u2192 ' + site.country;
+        box.appendChild(sec);
+        charts.push(new Chart(chartBlock(sec, 'Electricity and hydrogen prices in ' + site.country), {
+          type: 'line',
+          data: { labels: site.labels, datasets: [
+            { label: 'Electricity', data: site.prices.Electricity, borderColor: c.series[0], backgroundColor: c.series[0], borderWidth: 2, pointRadius: 0 },
+            { label: 'Hydrogen', data: site.prices.Hydrogen, borderColor: '#008300', backgroundColor: '#008300', borderWidth: 2, pointRadius: 0 }] },
+          options: { maintainAspectRatio: false, animation: false, interaction: { mode: 'index', intersect: false },
+                     plugins: { legend: { position: 'bottom' } },
+                     scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 12, maxRotation: 0 } }, y: { title: { display: true, text: '€/MWh' } } } }
+        }));
+        site.balances.forEach(b => {
+          const sets = b.components.map(comp => ({ type: 'bar', label: comp.label, data: comp.values, stack: 'supply',
+            backgroundColor: COLORS[comp.label] || c.muted, borderWidth: 0, barPercentage: 1, categoryPercentage: 1 }));
+          sets.push({ type: 'line', label: 'Demand', data: b.demand, stack: 'demand', borderColor: c.ink,
+                      backgroundColor: c.ink, borderWidth: 2, pointRadius: 0, order: -1 });
+          charts.push(new Chart(chartBlock(sec, b.label + ' (MW)'), {
+            type: 'bar', data: { labels: site.labels, datasets: sets },
+            options: { maintainAspectRatio: false, animation: false, interaction: { mode: 'index', intersect: false },
+                       plugins: { legend: { position: 'bottom' },
+                                  tooltip: { filter: i => Math.abs(i.raw) > 1e-6, callbacks: { label: i => i.dataset.label + ': ' + Number(i.raw).toFixed(2) + ' MW' } } },
+                       scales: axis('MW') }
+          }));
+        });
+      });
+    }
+    function load() {
+      let a = parseInt(start.value, 10), z = parseInt(end.value, 10);
+      if (z < a) { [a, z] = [z, a]; start.value = a; end.value = z; }
+      const q = new URLSearchParams({ scenario: document.getElementById('disp-scenario').value, start: a, end: z });
+      box.innerHTML = '<p class="lede">Loading\u2026</p>';
+      fetch('{% url "run_dispatch" run.pk %}?' + q).then(r => r.json()).then(draw)
+        .catch(() => { box.innerHTML = '<p class="lede">Could not load the hourly operation.</p>'; });
+    }
+    show.addEventListener('click', load);
+    load();
   })();
 </script>
 {% endif %}

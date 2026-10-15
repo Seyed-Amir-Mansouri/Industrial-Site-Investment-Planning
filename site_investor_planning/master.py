@@ -6,7 +6,9 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from .config import ASSETS, CAPACITY_ASSET, CAPACITY_KEYS
+from .config import ASSETS, CAPACITY_ASSET, CAPACITY_KEYS, SITE_TECH, THERMAL_ASSET_SERVICES
+
+MASTER_EUR = 1e6
 
 
 def build_master(units: list[str], cand_mw: dict[str, dict[str, np.ndarray]],
@@ -26,7 +28,9 @@ def build_master(units: list[str], cand_mw: dict[str, dict[str, np.ndarray]],
     bounded below by ``theta_lower`` and by that unit's own cuts. Each group in ``symmetric_sites``
     lists sites with identical settings, which are interchangeable; each must be placed in the same
     or a later country (in ``site_units`` order) than the one before it, so the master doesn't search
-    mirror-image plans."""
+    mirror-image plans. Costs in the master are in units of ``MASTER_EUR`` (million EUR): the cuts
+    of a large unmet-demand penalty have slopes up to about 1e11 EUR per MW, and in EUR the
+    master is too badly scaled for HiGHS to solve reliably."""
     if site_units is None:
         site_units = {"site": list(units)}
     m = linopy.Model()
@@ -50,11 +54,11 @@ def build_master(units: list[str], cand_mw: dict[str, dict[str, np.ndarray]],
     if scenario_probs is not None and len(scenario_probs) > 1 and cvar_alpha is None:
         raise ValueError("more than one scenario needs a CVaR confidence level (cvar_alpha)")
     if scenario_probs is None:
-        theta = m.add_variables(lower=theta_lower, coords=[unit_idx], name="theta")
+        theta = m.add_variables(lower=theta_lower / MASTER_EUR, coords=[unit_idx], name="theta")
         theta_term = theta.sum()
     else:
         scenario_idx = pd.Index(list(scenario_probs), name="scenario")
-        theta = m.add_variables(lower=theta_lower, coords=[scenario_idx, unit_idx], name="theta")
+        theta = m.add_variables(lower=theta_lower / MASTER_EUR, coords=[scenario_idx, unit_idx], name="theta")
         theta_s = theta.sum("unit")
         prob_da = xr.DataArray(list(scenario_probs.values()), coords=[scenario_idx])
         if cvar_alpha is None or len(scenario_probs) == 1:
@@ -76,8 +80,8 @@ def build_master(units: list[str], cand_mw: dict[str, dict[str, np.ndarray]],
 
     annualized_capex_expr = (annualized_value_cost * y).sum()
     if budget is not None:
-        capex_expr = (value_cost * y).sum()
-        m.add_constraints(capex_expr <= budget, name="budget")
+        capex_expr = (value_cost / MASTER_EUR * y).sum()
+        m.add_constraints(capex_expr <= budget / MASTER_EUR, name="budget")
 
     if site_max_mw is not None:
         cand_mw_da = xr.DataArray(
@@ -88,7 +92,7 @@ def build_master(units: list[str], cand_mw: dict[str, dict[str, np.ndarray]],
                               coords=[unit_idx, asset_idx])
         m.add_constraints((cand_mw_da * y).sum("k") - cap_da * site <= 0, name="site_max_mw")
 
-    m.add_objective(annualized_capex_expr + theta_term)
+    m.add_objective(annualized_capex_expr / MASTER_EUR + theta_term)
     return m
 
 
@@ -111,14 +115,76 @@ def add_optimality_cut(m: linopy.Model, units: list[str], iteration: int,
     k_idx = y.coords["k"]
     base = f"cut_{tag}_{scenario}_{iteration}" if scenario is not None else f"cut_{tag}_{iteration}"
     for c in units:
-        cap_expr = sum(mu[c][a] * (xr.DataArray(cand_mw[c][a], coords=[k_idx])
+        cap_expr = sum(mu[c][a] / MASTER_EUR * (xr.DataArray(cand_mw[c][a], coords=[k_idx])
                                    * y.sel(unit=c, asset=CAPACITY_ASSET[a])).sum("k")
                        for a in CAPACITY_KEYS)
         rhs = Q[c] - sum(mu[c][a] * cap_star[c][a] for a in CAPACITY_KEYS)
         if lam is not None:
-            cap_expr = cap_expr + lam[c] * site.sel(unit=c)
+            cap_expr = cap_expr + lam[c] / MASTER_EUR * site.sel(unit=c)
             rhs -= lam[c] * site_star[c]
-        m.add_constraints(theta_var.sel(unit=c) - cap_expr >= rhs, name=f"{base}_{c}")
+        m.add_constraints(theta_var.sel(unit=c) - cap_expr >= rhs / MASTER_EUR, name=f"{base}_{c}")
+
+
+def add_coverage_rows(m: linopy.Model, unit: str, tag: str, need: dict[str, np.ndarray],
+                      cand_mw: dict[str, dict[str, np.ndarray]]) -> None:
+    """Require ``unit``'s built heat and cooling assets to meet ``need[svc]`` (MW per hour, each
+    service's demand less its flexibility band) in each of a set of hours whenever the site is
+    placed there. Each hour gets its own continuous dispatch of the thermal assets, the CHP's and
+    heat-recovery chiller's heat, the absorption chiller (which draws process heat) and storage
+    discharge, bounded by the MW built, with solar thermal at its full MW and storage limited only
+    by its MW. Every dispatch that leaves nothing unmet in those hours satisfies these rows, so
+    they never cut off such a plan, and they keep the master from proposing plans that would."""
+    y = m.variables["y"]
+    site = m.variables["site"].sel(unit=unit)
+    k_idx = y.coords["k"]
+    n = len(next(iter(need.values())))
+    t_idx = pd.Index([f"{tag}_{i}" for i in range(n)], name=f"cov_{unit}_{tag}")
+    tech = SITE_TECH
+
+    def built(a):
+        """MW of ``a`` the master builds at this unit."""
+        return (xr.DataArray(cand_mw[unit][a], coords=[k_idx]) * y.sel(unit=unit, asset=a)).sum("k")
+
+    def var(name):
+        """One non-negative dispatch variable per hour."""
+        return m.add_variables(lower=0.0, coords=[t_idx], name=f"cov_{name}_{unit}_{tag}")
+
+    supply = {svc: 0 for svc in need}
+    for a, svcs in THERMAL_ASSET_SERVICES.items():
+        qs = {svc: var(f"{a}_{svc}") for svc in svcs}
+        m.add_constraints(sum(qs.values()) - built(a) <= 0, name=f"cov_cap_{a}_{unit}_{tag}")
+        for svc, q in qs.items():
+            supply[svc] = supply[svc] + q
+    heat, cool = ["space_heat", "process_heat"], ["space_cool", "process_cool"]
+    chp_el = var("chp_el")
+    m.add_constraints(chp_el - built("chp_mw") <= 0, name=f"cov_chp_el_cap_{unit}_{tag}")
+    hrc = var("hrc_cool")
+    m.add_constraints(hrc - built("heat_recovery_chiller_mw") <= 0, name=f"cov_hrc_cap_{unit}_{tag}")
+    supply["process_cool"] = supply["process_cool"] + hrc
+    for name, svcs, limit in (
+            ("chp", heat, (tech.chp_heat_efficiency / tech.chp_electric_efficiency) * chp_el),
+            ("sth", heat, built("solar_thermal_mw")),
+            ("hrc_heat", heat, (1.0 + 1.0 / tech.heat_recovery_chiller_cop) * hrc),
+            ("abs", cool, built("absorption_chiller_mw"))):
+        qs = {svc: var(f"{name}_{svc}") for svc in svcs}
+        m.add_constraints(sum(qs.values()) - limit <= 0, name=f"cov_out_{name}_cap_{unit}_{tag}")
+        for svc, q in qs.items():
+            supply[svc] = supply[svc] + q
+        if name == "abs":
+            supply["process_heat"] = supply["process_heat"] - (1.0 / tech.absorption_chiller_cop) * sum(qs.values())
+    for svc, a in (("space_heat", "hot_water_storage_mw"), ("space_cool", "cold_storage_mw"),
+                   ("steam", "thermal_battery_mw")):
+        dis = var(f"{a}_dis")
+        m.add_constraints(dis - built(a) <= 0, name=f"cov_dis_{a}_{unit}_{tag}")
+        supply[svc] = supply[svc] + dis
+    for svc, v in need.items():
+        d = xr.DataArray(np.asarray(v, dtype=float), coords=[t_idx])
+        m.add_constraints(supply[svc] - d * site >= 0, name=f"cov_{svc}_{unit}_{tag}")
+
+
+def master_bound(m: linopy.Model) -> float:
+    """The solved master's lower bound on the total objective, in EUR."""
+    return float(m.solver_model.getInfo().mip_dual_bound) * MASTER_EUR
 
 
 def cvar_value(values: dict[str, float], probs: dict[str, float], alpha: float) -> float:
