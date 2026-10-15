@@ -148,8 +148,9 @@ renewable electricity):
 - **GOs used** are GOs bought (8 EUR/MWh by default) plus GOs the site keeps from its own wind/PV
   output. One GO counts for the hydrogen the electrolyser makes from 1 MWh of electricity
   (its 68% efficiency), so 1 MWh of green hydrogen takes 1.47 GOs.
-- **GOs sold** (6 EUR/MWh by default) come only from own wind/PV output exported to the grid, and
-  a GO the site keeps can't also be sold.
+- **GOs sold** (6 EUR/MWh by default): every MWh of own wind/PV output earns a GO, whether the
+  site uses that electricity or exports it, and the site sells the GOs it doesn't keep. A GO the
+  site keeps can't also be sold, so keeping one costs the 6 EUR it would have earned.
 - **Hydrogen sold** is subtracted, so buying and reselling hydrogen, or making and selling it,
   doesn't raise the requirement; a site that sells more hydrogen than it buys and makes needs no
   GOs.

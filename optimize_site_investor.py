@@ -451,8 +451,9 @@ class SiteLP:
     its ``green_share`` with Guarantees of Origin (GOs, one per MWh of renewable electricity), either
     bought or kept from its own wind/PV output. Over the year, the GOs it uses times the
     electrolyser efficiency (the hydrogen that electricity would make) must reach ``green_share`` of
-    the hydrogen it keeps: bought plus made by the electrolyser minus sold. The site sells GOs only
-    for own wind/PV output exported to the grid, and a GO it keeps can't also be sold.
+    the hydrogen it keeps: bought plus made by the electrolyser minus sold. Every MWh of own wind/PV
+    output earns a GO, used on site or exported; the site sells the GOs it doesn't keep, and a GO
+    it keeps can't also be sold.
 
     Each asset's MW, each storage asset's MWh and each unit's on/off placement are columns fixed at
     the values being solved,
@@ -618,7 +619,6 @@ class SiteLP:
 
         green = GREEN_H2
         go_sell = m.add_variables(lower=0.0, coords=coords, name="go_sell")
-        m.add_constraints(go_sell - grid_sell <= 0, name="go_sell_export")
         green_cost = -green.go_sell_price_eur_per_mwh * (w * go_sell).sum()
         if any_green:
             go_buy = m.add_variables(lower=0.0, coords=coords, name="go_buy")

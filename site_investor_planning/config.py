@@ -227,8 +227,9 @@ class GreenH2Params:
     bought plus made by its electrolyser minus sold, over the year. Market hydrogen is not green;
     the share is met with Guarantees of Origin (GOs, one per MWh of renewable electricity), bought
     or kept from the site's own wind/PV output, each counting for the hydrogen the electrolyser
-    would make from 1 MWh of electricity (its efficiency, 0.68 MWh). The site sells GOs only for
-    own wind/PV output exported to the grid, and a GO it keeps can't also be sold.
+    would make from 1 MWh of electricity (its efficiency, 0.68 MWh). Every MWh of own wind/PV
+    output earns a GO, used on site or exported; the site sells the GOs it doesn't keep, and a GO
+    it keeps can't also be sold.
 
     Defaults: GOs bought at 8 and sold at 6 EUR/MWh.
     """
