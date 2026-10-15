@@ -103,29 +103,31 @@
 {% if costs %}
 <div class="card" style="margin-bottom:18px">
   <h2>Yearly cost by site</h2>
-  <p class="lede" style="margin-bottom:12px">For each site: the capital cost of what it built, spread over each technology's lifetime, then what it buys and sells on each market in a year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}. Income is shown as a negative cost. Heat and cooling the site can't supply is charged the unmet-demand penalty. The total is the objective.</p>
+  <p class="lede" style="margin-bottom:12px">For each site: the capital cost of what it built, spread over each technology's lifetime, with the number of units of each product size and their total capital cost, then what it buys and sells on each market in a year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}. Income is shown as a negative cost. Heat and cooling the site can't supply is charged the unmet-demand penalty. The total is the objective.</p>
   <div style="overflow-x:auto">
   <table>
-    <thead><tr><th>Cost type</th><th>Item</th><th class="num">Amount per year</th><th class="num">Cost (€ per year)</th></tr></thead>
+    <thead><tr><th>Cost type</th><th>Item</th><th class="num">Amount</th><th class="num">Units built</th><th class="num">Capital cost (€)</th><th class="num">Cost (€ per year)</th></tr></thead>
     <tbody>
       {% for s in costs.sites %}
-      <tr><td colspan="4"><strong>{{ s.site }} → {{ s.country }}</strong></td></tr>
+      <tr><td colspan="6"><strong>{{ s.site }} → {{ s.country }}</strong></td></tr>
       {% for r in s.rows %}
       <tr>
         <td>{{ r.group }}</td><td>{{ r.label }}</td>
-        <td class="num">{% if r.unit == "MW" %}{{ r.amount|floatformat:"-1" }} MW built{% else %}{{ r.amount|floatformat:"0g" }} MWh{% endif %}</td>
+        <td class="num">{% if r.unit == "MW" %}{{ r.amount|floatformat:"-1" }} MW{% else %}{{ r.amount|floatformat:"0g" }} MWh per year{% endif %}</td>
+        <td class="num">{% for p in r.products %}{{ p.units }} × {{ p.mw }} MW{% if not forloop.last %}<br>{% endif %}{% endfor %}</td>
+        <td class="num">{% if r.unit == "MW" %}{{ r.capex|floatformat:"0g" }}{% endif %}</td>
         <td class="num">{{ r.eur|floatformat:"0g" }}</td>
       </tr>
       {% endfor %}
-      <tr><td></td><td>Investment</td><td></td><td class="num">{{ s.investment|floatformat:"0g" }}</td></tr>
-      <tr><td></td><td>Operation</td><td></td><td class="num">{{ s.operation|floatformat:"0g" }}</td></tr>
-      <tr><td></td><td><strong>{{ s.site }} total</strong></td><td></td><td class="num"><strong>{{ s.total|floatformat:"0g" }}</strong></td></tr>
+      <tr><td></td><td>Investment</td><td></td><td></td><td class="num">{{ s.capex|floatformat:"0g" }}</td><td class="num">{{ s.investment|floatformat:"0g" }}</td></tr>
+      <tr><td></td><td>Operation</td><td></td><td></td><td></td><td class="num">{{ s.operation|floatformat:"0g" }}</td></tr>
+      <tr><td></td><td><strong>{{ s.site }} total</strong></td><td></td><td></td><td class="num"><strong>{{ s.capex|floatformat:"0g" }}</strong></td><td class="num"><strong>{{ s.total|floatformat:"0g" }}</strong></td></tr>
       {% endfor %}
       {% if costs.risk_adjustment %}
-      <tr><td colspan="2">All sites</td><td></td><td class="num">{{ costs.total|floatformat:"0g" }}</td></tr>
-      <tr><td colspan="2">Risk adjustment: the worst scenarios weigh more than their probability</td><td></td><td class="num">{{ costs.risk_adjustment|floatformat:"0g" }}</td></tr>
+      <tr><td colspan="2">All sites</td><td></td><td></td><td class="num">{{ costs.capex|floatformat:"0g" }}</td><td class="num">{{ costs.total|floatformat:"0g" }}</td></tr>
+      <tr><td colspan="2">Risk adjustment: the worst scenarios weigh more than their probability</td><td></td><td></td><td></td><td class="num">{{ costs.risk_adjustment|floatformat:"0g" }}</td></tr>
       {% endif %}
-      <tr><td colspan="2"><strong>Total yearly cost (the objective)</strong></td><td></td><td class="num"><strong>{{ costs.grand_total|floatformat:"0g" }}</strong></td></tr>
+      <tr><td colspan="2"><strong>Total: capital cost and yearly cost (the objective)</strong></td><td></td><td></td><td class="num"><strong>{{ costs.capex|floatformat:"0g" }}</strong></td><td class="num"><strong>{{ costs.grand_total|floatformat:"0g" }}</strong></td></tr>
     </tbody>
   </table>
   </div>
@@ -158,54 +160,7 @@
 </div>
 {% endif %}
 
-<div class="grid" style="grid-template-columns:minmax(0,1fr);gap:22px;align-items:start">
-  <div class="card">
-    <h2>Installed capacity by site (MW)</h2>
-    <p class="lede" style="margin-bottom:12px">MW built at each chosen site, per technology; technologies no site built are left out. Heat pumps, boilers and chillers are in MW of heat or cooling output.</p>
-    <div style="overflow-x:auto">
-    <table>
-      <thead><tr><th>Site</th><th>Country</th>{% for a in assets %}<th class="num">{{ asset_labels|lookup:a }}</th>{% endfor %}</tr></thead>
-      <tbody>
-        {% for row in summary.site_rows %}
-        <tr>
-          <td><strong>{{ row.site }}</strong></td>
-          <td>{{ row.country }}</td>
-          {% for a in assets %}<td class="num">{{ row|lookup:a|floatformat:1 }}</td>{% endfor %}
-        </tr>
-        {% endfor %}
-        <tr>
-          <td><strong>Total</strong></td><td></td>
-          {% for a in assets %}<td class="num"><strong>{{ summary.totals_mw|lookup:a|floatformat:1 }}</strong></td>{% endfor %}
-        </tr>
-      </tbody>
-    </table>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Product units built</h2>
-    <p class="lede" style="margin-bottom:12px">How many of each product size were selected.</p>
-    {% if summary.units %}
-    <table>
-      <thead><tr><th>Site</th><th>Technology</th><th class="num">Size (MW)</th><th class="num">Units</th></tr></thead>
-      <tbody>
-        {% for u in summary.units %}
-        <tr>
-          <td>{% if u.site %}{{ u.site }} ({{ u.country }}){% else %}{{ u.country }}{% endif %}</td>
-          <td>{{ asset_labels|lookup:u.asset }}</td>
-          <td class="num">{{ u.candidate_mw|floatformat:1 }}</td>
-          <td class="num">{{ u.units }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p class="lede">No units were built.</p>
-    {% endif %}
-  </div>
-</div>
-
-<div class="card" style="margin-top:18px">
+<div class="card">
   <h2>Site locations</h2>
   <p class="lede" style="margin-bottom:12px">Marker size tracks total installed MW at a site; the colors show which demand that capacity serves. Hover a site for the technology breakdown. A hollow marker is a candidate country the optimizer didn't pick.</p>
   {% if map_markers %}

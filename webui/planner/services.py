@@ -246,8 +246,9 @@ def economics(params: dict, summary: dict) -> dict:
         capex = candidate.capex_eur * float(row["units"])
         capex_by_asset[asset] += capex
         site = by_site.setdefault(row.get("site") or row["country"], {}).setdefault(
-            asset, {"mw": 0.0, "capex_eur": 0.0, "annualized_eur": 0.0})
+            asset, {"mw": 0.0, "capex_eur": 0.0, "annualized_eur": 0.0, "products": []})
         site["mw"] += candidate.mw * float(row["units"])
+        site["products"].append({"units": int(float(row["units"])), "mw": f"{candidate.mw:g}"})
         site["capex_eur"] += capex
         site["annualized_eur"] += capex * crfs[asset]
 
@@ -474,19 +475,20 @@ def cost_table(summary: dict, economics: dict, labels: dict[str, str], risk_meas
     out = []
     for s in sites:
         invest = [{"group": "Investment", "label": labels.get(a, a), "amount": v["mw"], "unit": "MW",
-                   "eur": v["annualized_eur"]}
+                   "products": v["products"], "capex": v["capex_eur"], "eur": v["annualized_eur"]}
                   for a, v in by_site.get(s["site"], {}).items() if v["mw"] > 0]
         operate = [{"group": i["market"], "label": i["label"], "amount": i["mwh"], "unit": "MWh", "eur": i["eur"]}
                    for i in s["items"]]
         rows = invest + operate
         out.append({"site": s["site"], "country": s["country"], "rows": rows,
                     "investment": sum(r["eur"] for r in invest), "operation": sum(r["eur"] for r in operate),
+                    "capex": sum(r["capex"] for r in invest),
                     "total": sum(r["eur"] for r in rows)})
     total = sum(s["total"] for s in out)
     adjustment = 0.0
     if risk_measure == "cvar" and economics.get("operating_cost_eur") is not None:
         adjustment = economics["operating_cost_eur"] - sum(s["operation"] for s in out)
-    return {"sites": out, "total": total, "risk_adjustment": adjustment if abs(adjustment) >= 1.0 else 0.0,
+    return {"sites": out, "total": total, "capex": sum(s["capex"] for s in out), "risk_adjustment": adjustment if abs(adjustment) >= 1.0 else 0.0,
             "grand_total": total + adjustment}
 
 

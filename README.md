@@ -435,12 +435,12 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   to its defaults. **Run plan** starts the run, and the page opens the run's details.
 - **Run detail** shows one finished run. It has each site with its chosen country, the headline numbers
   (objective, capital cost, risk measure), the economics of each built technology, a yearly cost
-  table per site (the annualized capital cost of each technology it built, then what it buys
-  and sells on each market, including unmet heat and cooling charged at the penalty, adding up
-  to the objective), the green hydrogen results (one row per site: hydrogen used, green hydrogen
-  made and bought, green share and any renewable electricity certificates traded), installed
-  capacity at each site in MW (technologies no site built are left out), the product units
-  built, a map of the candidate countries (colored by which demand the capacity serves), the
+  table per site (each technology it built with its MW, the units of each product size, its
+  capital cost and annualized capital cost, then what it buys and sells on each market,
+  including unmet heat and cooling charged at the penalty; the totals give the total capital
+  cost and add up to the objective), the green hydrogen results (one row per site: hydrogen
+  used, green hydrogen made and bought, green share and any renewable electricity certificates
+  traded), a map of the candidate countries (colored by which demand the capacity serves), the
   convergence chart of the Benders iterations, the inputs the run used and the solver log. Runs
   made before the cost table was added don't show it.
 - **Compare** puts two completed runs side by side. Pick them from the lists at the top.
