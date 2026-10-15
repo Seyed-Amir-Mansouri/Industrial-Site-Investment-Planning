@@ -237,12 +237,19 @@ def economics(params: dict, summary: dict) -> dict:
     crfs = cfg.capital_recovery_factors()
 
     capex_by_asset = {a: 0.0 for a in hp.ASSETS}
+    by_site: dict[str, dict[str, dict[str, float]]] = {}
     for row in summary.get("units", []):
         asset = row.get("asset")
         if asset not in capex_by_asset:
             continue
         candidate = cfg.catalog[asset][int(row["candidate"])]
-        capex_by_asset[asset] += candidate.capex_eur * float(row["units"])
+        capex = candidate.capex_eur * float(row["units"])
+        capex_by_asset[asset] += capex
+        site = by_site.setdefault(row.get("site") or row["country"], {}).setdefault(
+            asset, {"mw": 0.0, "capex_eur": 0.0, "annualized_eur": 0.0})
+        site["mw"] += candidate.mw * float(row["units"])
+        site["capex_eur"] += capex
+        site["annualized_eur"] += capex * crfs[asset]
 
     annualized_by_asset = {a: capex_by_asset[a] * crfs[a] for a in hp.ASSETS}
     annualized_total = sum(annualized_by_asset.values())
@@ -257,6 +264,7 @@ def economics(params: dict, summary: dict) -> dict:
         "annualized_capex_eur": annualized_total,
         "operating_cost_eur": (objective - annualized_total) if objective is not None else None,
         "capex_per_mw_eur": (raw_capex / total_mw) if total_mw else None,
+        "by_site": by_site,
         "by_asset": {
             a: {"capex_eur": capex_by_asset[a], "annualized_eur": annualized_by_asset[a], "crf": crfs[a]}
             for a in hp.ASSETS
@@ -355,6 +363,7 @@ def parse_summary(output_prefix: Path, log: str) -> dict:
     unmet = [{k: _maybe_float(v) for k, v in row.items()}
              for row in _read_csv(Path(f"{output_prefix}_unmet_demand.csv"))]
     convergence = _read_csv(Path(f"{output_prefix}_convergence.csv"))
+    market = _read_csv(Path(f"{output_prefix}_market_costs.csv"))
 
     assets = list(capex_assumptions_defaults()["assets"])
     totals = {a: 0.0 for a in assets}
@@ -384,6 +393,7 @@ def parse_summary(output_prefix: Path, log: str) -> dict:
                          if k.startswith("unmet_") and k != "unmet_total_mwh"],
         "convergence": [{k: _maybe_float(v) for k, v in row.items()} for row in convergence],
         "totals_mw": totals,
+        "market": _expected_market(market),
     }
 
 
@@ -414,6 +424,70 @@ def _expected_green(rows: list[dict]) -> list[dict]:
         for k in keys:
             acc[k] += float(row[k]) * float(row["probability"])
     return list(out.values())
+
+
+MARKET_ITEMS = {
+    "electricity_bought": ("Electricity market", "Electricity bought"),
+    "grid_fee": ("Electricity market", "Grid import fee"),
+    "electricity_sold": ("Electricity market", "Electricity sold"),
+    "hydrogen_bought": ("Hydrogen market", "Hydrogen bought"),
+    "hydrogen_sold": ("Hydrogen market", "Hydrogen sold"),
+    "green_h2_premium": ("Green hydrogen market", "Premium paid for green hydrogen"),
+    "certificates_bought": ("Renewable electricity certificates", "Certificates bought"),
+    "certificates_sold": ("Renewable electricity certificates", "Certificates sold"),
+    "biogas": ("Biogas", "Biogas burned in combined heat and power"),
+    "storage_wear": ("Storage", "Storage operating cost"),
+    "unmet_penalty": ("Unmet demand", "Heat and cooling not supplied (penalty)"),
+}
+
+
+def _expected_market(rows: list[dict]) -> list[dict]:
+    """Probability-weighted yearly volume and cost of each market item per chosen site, leaving out
+    items a site doesn't use; unmet heat and cooling is always listed."""
+    out = {}
+    for row in rows:
+        acc = out.setdefault(row["site"], {"site": row["site"], "country": row["country"],
+                                           "items": {k: [0.0, 0.0] for k in MARKET_ITEMS}})
+        if row["item"] in acc["items"]:
+            prob = float(row["probability"])
+            acc["items"][row["item"]][0] += float(row["mwh"]) * prob
+            acc["items"][row["item"]][1] += float(row["eur"]) * prob
+    sites = []
+    for acc in out.values():
+        items = [{"market": MARKET_ITEMS[k][0], "label": MARKET_ITEMS[k][1], "mwh": mwh, "eur": eur}
+                 for k, (mwh, eur) in acc["items"].items() if abs(eur) >= 0.5 or mwh >= 0.5 or k == "unmet_penalty"]
+        sites.append({"site": acc["site"], "country": acc["country"], "items": items,
+                      "total": sum(i["eur"] for i in items)})
+    return sites
+
+
+def cost_table(summary: dict, economics: dict, labels: dict[str, str], risk_measure: str | None) -> dict:
+    """Each chosen site's yearly cost: the annualized capital cost of each technology it built, then
+    what it buys and sells on each market, unmet heat and cooling included. The sites' totals add
+    up to the run's objective. Under CVaR the operating part of the objective is the average of
+    the worst scenarios rather than the probability-weighted sum of the sites, and the difference
+    is shown as a risk adjustment."""
+    sites = summary.get("market") or []
+    if not sites:
+        return {}
+    by_site = economics.get("by_site", {})
+    out = []
+    for s in sites:
+        invest = [{"group": "Investment", "label": labels.get(a, a), "amount": v["mw"], "unit": "MW",
+                   "eur": v["annualized_eur"]}
+                  for a, v in by_site.get(s["site"], {}).items() if v["mw"] > 0]
+        operate = [{"group": i["market"], "label": i["label"], "amount": i["mwh"], "unit": "MWh", "eur": i["eur"]}
+                   for i in s["items"]]
+        rows = invest + operate
+        out.append({"site": s["site"], "country": s["country"], "rows": rows,
+                    "investment": sum(r["eur"] for r in invest), "operation": sum(r["eur"] for r in operate),
+                    "total": sum(r["eur"] for r in rows)})
+    total = sum(s["total"] for s in out)
+    adjustment = 0.0
+    if risk_measure == "cvar" and economics.get("operating_cost_eur") is not None:
+        adjustment = economics["operating_cost_eur"] - sum(s["operation"] for s in out)
+    return {"sites": out, "total": total, "risk_adjustment": adjustment if abs(adjustment) >= 1.0 else 0.0,
+            "grand_total": total + adjustment}
 
 
 def _expected_unmet(rows: list[dict]) -> list[dict]:

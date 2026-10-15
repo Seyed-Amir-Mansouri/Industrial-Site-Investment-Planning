@@ -100,6 +100,38 @@
   </table>
 </div>
 
+{% if costs %}
+<div class="card" style="margin-bottom:18px">
+  <h2>Yearly cost by site</h2>
+  <p class="lede" style="margin-bottom:12px">For each site: the capital cost of what it built, spread over each technology's lifetime, then what it buys and sells on each market in a year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}. Income is shown as a negative cost. Heat and cooling the site can't supply is charged the unmet-demand penalty. The total is the objective.</p>
+  <div style="overflow-x:auto">
+  <table>
+    <thead><tr><th>Cost type</th><th>Item</th><th class="num">Amount per year</th><th class="num">Cost (€ per year)</th></tr></thead>
+    <tbody>
+      {% for s in costs.sites %}
+      <tr><td colspan="4"><strong>{{ s.site }} → {{ s.country }}</strong></td></tr>
+      {% for r in s.rows %}
+      <tr>
+        <td>{{ r.group }}</td><td>{{ r.label }}</td>
+        <td class="num">{% if r.unit == "MW" %}{{ r.amount|floatformat:"-1" }} MW built{% else %}{{ r.amount|floatformat:"0g" }} MWh{% endif %}</td>
+        <td class="num">{{ r.eur|floatformat:"0g" }}</td>
+      </tr>
+      {% endfor %}
+      <tr><td></td><td>Investment</td><td></td><td class="num">{{ s.investment|floatformat:"0g" }}</td></tr>
+      <tr><td></td><td>Operation</td><td></td><td class="num">{{ s.operation|floatformat:"0g" }}</td></tr>
+      <tr><td></td><td><strong>{{ s.site }} total</strong></td><td></td><td class="num"><strong>{{ s.total|floatformat:"0g" }}</strong></td></tr>
+      {% endfor %}
+      {% if costs.risk_adjustment %}
+      <tr><td colspan="2">All sites</td><td></td><td class="num">{{ costs.total|floatformat:"0g" }}</td></tr>
+      <tr><td colspan="2">Risk adjustment: the worst scenarios weigh more than their probability</td><td></td><td class="num">{{ costs.risk_adjustment|floatformat:"0g" }}</td></tr>
+      {% endif %}
+      <tr><td colspan="2"><strong>Total yearly cost (the objective)</strong></td><td></td><td class="num"><strong>{{ costs.grand_total|floatformat:"0g" }}</strong></td></tr>
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+
 {% if summary.green_h2_expected %}
 <div class="card">
   <h2>Green hydrogen</h2>
@@ -123,27 +155,6 @@
   </table>
   </div>
   {% if green_go.sold or green_go.bought %}<p class="lede" style="margin-top:12px">Renewable electricity certificates (Guarantees of Origin) are sold for the site's own wind and solar electricity exported to the grid, and bought to count grid electricity used by an electrolyser as renewable.</p>{% endif %}
-</div>
-{% endif %}
-
-{% if summary.unmet_demand %}
-<div class="card">
-  <h2>Unmet heat and cooling demand</h2>
-  <p class="lede" style="margin-bottom:12px">The site has no existing boiler or chiller, so any heat or cooling the new assets can't supply is left unmet and charged the penalty shown on the Catalog page. Expected MWh per year; 0 means every hour was covered.</p>
-  <div style="overflow-x:auto">
-  <table>
-    <thead><tr><th>Site</th><th>Country</th>{% for label in summary.unmet_labels %}<th class="num">{{ label }}</th>{% endfor %}<th class="num">Total</th></tr></thead>
-    <tbody>
-      {% for r in summary.unmet_demand %}
-      <tr>
-        <td><strong>{{ r.site }}</strong></td><td>{{ r.country }}</td>
-        {% for v in r.values %}<td class="num">{{ v|floatformat:"0g" }}</td>{% endfor %}
-        <td class="num"><strong>{{ r.total|floatformat:"0g" }}</strong></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  </div>
 </div>
 {% endif %}
 

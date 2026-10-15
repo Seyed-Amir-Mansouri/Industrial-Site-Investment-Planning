@@ -44,6 +44,7 @@ def new_run(request):
 def run_detail(request, pk: int):
     run = get_object_or_404(PlanRun, pk=pk)
     summary = run.summary or {}
+    economics = services.economics(run.params, summary) if summary else {}
     return render(request, "planner/detail.html", {
         "run": run,
         "summary": summary,
@@ -55,7 +56,8 @@ def run_detail(request, pk: int):
                    for g in services.ASSET_GROUPS],
         "map_center": geo.DEFAULT_CENTER,
         "map_zoom": geo.DEFAULT_ZOOM,
-        "economics": services.economics(run.params, summary) if summary else {},
+        "economics": economics,
+        "costs": services.cost_table(summary, economics, FULL_ASSET_LABELS, run.params.get("risk_measure")),
         "green_go": {k: any(float(g.get(f"go_{k}_mwh") or 0) > 0.5 for g in summary.get("green_h2_expected", []))
                      for k in ("bought", "sold")},
         "log_tail": "\n".join(run.log.strip().splitlines()[-60:]) if run.log else "",

@@ -280,7 +280,7 @@ shows that range under every box; it is read from the training samples (`elec_sa
 | `--gap-tol G` | 0.01 (1%) | Relative Benders convergence gap |
 | `--master-time-limit S` | 180 | Wall-time cap (seconds) per master MILP solve. The master gets genuinely hard to solve to proven optimality as cuts accumulate at large scale, so this bounds it instead; the Benders lower bound is still read from HiGHS's own proven dual bound, so the result stays mathematically rigorous even when the search is cut off early. |
 | `--core-cuts` / `--no-core-cuts` | on | Also dispatch each placed site at a moving Pareto core point every iteration and add that cut too (two cuts per scenario and site instead of one). `--no-core-cuts` keeps only the trial-point cut. |
-| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (one row per site: its chosen country, MW per asset and MWh per storage asset)/`_sites.csv` (each site's settings and annual demand)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each site's green hydrogen and GO totals per scenario)/`_unmet_demand.csv` (each site's unmet heat and cooling demand per scenario)/(with `--export-schedules`) `_schedule_<site>_<country>_<scenario>.csv` |
+| `--output PREFIX` | `outputs/plan` | Output file prefix for `_capacities.csv` (one row per site: its chosen country, MW per asset and MWh per storage asset)/`_sites.csv` (each site's settings and annual demand)/`_units.csv`/`_convergence.csv`/`_green_h2.csv` (each site's green hydrogen and GO totals per scenario)/`_unmet_demand.csv` (each site's unmet heat and cooling demand per scenario)/`_market_costs.csv` (what each site buys and sells on each market per scenario, MWh/yr and EUR/yr, adding up to its operating cost)/(with `--export-schedules`) `_schedule_<site>_<country>_<scenario>.csv` |
 | `--export-schedules` | off | Also re-solve at the final chosen capacities and dump each chosen site's representative-day schedule: every demand, asset output, grid and H2 import/export, and any unmet demand |
 
 Each iteration adds one optimality cut per scenario and site, for the country the site is
@@ -434,11 +434,15 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   **Reset scenario** button. **Reset all settings** at the bottom returns the whole form
   to its defaults. **Run plan** starts the run, and the page opens the run's details.
 - **Run detail** shows one finished run. It has each site with its chosen country, the headline numbers
-  (objective, raw CAPEX, risk measure), installed capacity at each site in MW, the product
-  units built, the green hydrogen results (green share reached, green hydrogen produced and
-  bought, GOs bought and sold, per scenario and probability-weighted), a map of the candidate
-  countries (colored by which demand the capacity serves), the convergence chart of the Benders iterations, the inputs the run used and the
-  solver log.
+  (objective, capital cost, risk measure), the economics of each built technology, a yearly cost
+  table per site (the annualized capital cost of each technology it built, then what it buys
+  and sells on each market, including unmet heat and cooling charged at the penalty, adding up
+  to the objective), the green hydrogen results (one row per site: hydrogen used, green hydrogen
+  made and bought, green share and any renewable electricity certificates traded), installed
+  capacity at each site in MW (technologies no site built are left out), the product units
+  built, a map of the candidate countries (colored by which demand the capacity serves), the
+  convergence chart of the Benders iterations, the inputs the run used and the solver log. Runs
+  made before the cost table was added don't show it.
 - **Compare** puts two completed runs side by side. Pick them from the lists at the top.
   It shows the installed MW by country for each run and the difference between them.
 - **Catalog** shows the example site's demand (the command-line default), how each asset's
