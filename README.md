@@ -443,6 +443,9 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   traded), a map of the candidate countries (colored by which demand the capacity serves), the
   convergence chart of the Benders iterations, the inputs the run used and the solver log. Runs
   made before the cost table was added don't show it.
+  **Duplicate setup** opens the New run page filled with that run's settings (sites, peaks,
+  flexibility, green share, active assets and maximum MW, catalog products, countries, budget,
+  scenarios, economics and solver settings), named "<run> (copy)", to change and run again.
 - **Compare** puts two completed runs side by side. Pick them from the lists at the top.
   It shows the installed MW by country for each run and the difference between them.
 - **Catalog** shows the example site's demand (the command-line default), how each asset's

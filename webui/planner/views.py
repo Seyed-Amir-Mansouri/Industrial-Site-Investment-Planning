@@ -37,7 +37,13 @@ def new_run(request):
                 runner.start(run)
                 return redirect(reverse("run_detail", args=[run.pk]))
     else:
-        form = PlanRunForm()
+        source = PlanRun.objects.filter(pk=request.GET.get("from")).first() if request.GET.get("from", "").isdigit() else None
+        if source is not None and source.params:
+            initial, custom = PlanRunForm.initial_from_run(source.display_name, source.params)
+            form = PlanRunForm(initial=initial, custom_indices=custom)
+            messages.info(request, f"Settings copied from {source.display_name}. Change what you need and click Run plan.")
+        else:
+            form = PlanRunForm()
     return render(request, "planner/new.html", {"form": form, "running_now": _running_count() > 0})
 
 
