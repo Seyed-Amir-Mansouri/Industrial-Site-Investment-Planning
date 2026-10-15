@@ -87,7 +87,7 @@ def capex_assumptions_defaults():
         "catalog": {a: [c._asdict() for c in cfg.catalog[a]] for a in hp.ASSETS},
         "discount_rate": cfg.discount_rate,
         "budget": cfg.default_budget_eur,
-        "cap_rules": {a: [factor, list(svcs)] for a, (factor, svcs) in cfg.cap_rules.items()},
+        "cap_rules": {a: [factor, [dict(g) for g in groups]] for a, (factor, groups) in cfg.cap_rules.items()},
         "default_max_mw": hp.default_max_mw(site_defaults()["peaks_mw"], cfg),
         "lifetime_years": dict(cfg.lifetime_years),
     }
@@ -127,9 +127,16 @@ def cap_rule_rows() -> list[dict]:
     cfg = hp.CapexAssumptions()
     example = hp.default_max_mw(hp.SiteSpec(name="Site 1").peaks_mw, cfg)
     rows = []
-    for a, (factor, svcs) in cfg.cap_rules.items():
-        basis = " + ".join(SERVICE_LABELS[s][0].lower() + SERVICE_LABELS[s][1:] if i else SERVICE_LABELS[s]
-                           for i, s in enumerate(svcs))
+    for a, (factor, groups) in cfg.cap_rules.items():
+        sums = []
+        for g in groups:
+            terms = [(SERVICE_LABELS[svc] if i == 0 else SERVICE_LABELS[svc][0].lower() + SERVICE_LABELS[svc][1:],
+                      w) for i, (svc, w) in enumerate(g.items())]
+            sums.append(" + ".join(label if abs(w - 1.0) < 1e-9 else f"{w:.2f} × {label[0].lower() + label[1:]}"
+                                   for label, w in terms))
+        parts = [t[0].lower() + t[1:] for t in sums]
+        basis = sums[0] if len(sums) == 1 else "The larger of " + " and ".join(
+            f"({t})" if len(g) > 1 else t for t, g in zip(parts, groups))
         rule = (f"1.25 × peak ÷ 68% efficiency (= {factor:.2f} × peak)" if a == "electrolyser_mw"
                 else f"{factor:g} × peak")
         rows.append({"asset": a, "rule": rule, "basis": basis, "example": example[a]})
@@ -230,12 +237,20 @@ def economics(params: dict, summary: dict) -> dict:
     crfs = cfg.capital_recovery_factors()
 
     capex_by_asset = {a: 0.0 for a in hp.ASSETS}
+    by_site: dict[str, dict[str, dict[str, float]]] = {}
     for row in summary.get("units", []):
         asset = row.get("asset")
         if asset not in capex_by_asset:
             continue
         candidate = cfg.catalog[asset][int(row["candidate"])]
-        capex_by_asset[asset] += candidate.capex_eur * float(row["units"])
+        capex = candidate.capex_eur * float(row["units"])
+        capex_by_asset[asset] += capex
+        site = by_site.setdefault(row.get("site") or row["country"], {}).setdefault(
+            asset, {"mw": 0.0, "capex_eur": 0.0, "annualized_eur": 0.0, "products": []})
+        site["mw"] += candidate.mw * float(row["units"])
+        site["products"].append({"units": int(float(row["units"])), "mw": f"{candidate.mw:g}"})
+        site["capex_eur"] += capex
+        site["annualized_eur"] += capex * crfs[asset]
 
     annualized_by_asset = {a: capex_by_asset[a] * crfs[a] for a in hp.ASSETS}
     annualized_total = sum(annualized_by_asset.values())
@@ -250,6 +265,7 @@ def economics(params: dict, summary: dict) -> dict:
         "annualized_capex_eur": annualized_total,
         "operating_cost_eur": (objective - annualized_total) if objective is not None else None,
         "capex_per_mw_eur": (raw_capex / total_mw) if total_mw else None,
+        "by_site": by_site,
         "by_asset": {
             a: {"capex_eur": capex_by_asset[a], "annualized_eur": annualized_by_asset[a], "crf": crfs[a]}
             for a in hp.ASSETS
@@ -348,6 +364,7 @@ def parse_summary(output_prefix: Path, log: str) -> dict:
     unmet = [{k: _maybe_float(v) for k, v in row.items()}
              for row in _read_csv(Path(f"{output_prefix}_unmet_demand.csv"))]
     convergence = _read_csv(Path(f"{output_prefix}_convergence.csv"))
+    market = _read_csv(Path(f"{output_prefix}_market_costs.csv"))
 
     assets = list(capex_assumptions_defaults()["assets"])
     totals = {a: 0.0 for a in assets}
@@ -377,6 +394,7 @@ def parse_summary(output_prefix: Path, log: str) -> dict:
                          if k.startswith("unmet_") and k != "unmet_total_mwh"],
         "convergence": [{k: _maybe_float(v) for k, v in row.items()} for row in convergence],
         "totals_mw": totals,
+        "market": _expected_market(market),
     }
 
 
@@ -407,6 +425,134 @@ def _expected_green(rows: list[dict]) -> list[dict]:
         for k in keys:
             acc[k] += float(row[k]) * float(row["probability"])
     return list(out.values())
+
+
+MARKET_ITEMS = {
+    "electricity_bought": ("Electricity market", "Electricity bought"),
+    "grid_fee": ("Electricity market", "Grid import fee"),
+    "electricity_sold": ("Electricity market", "Electricity sold"),
+    "hydrogen_bought": ("Hydrogen market", "Hydrogen bought"),
+    "hydrogen_sold": ("Hydrogen market", "Hydrogen sold"),
+    "green_h2_premium": ("Green hydrogen market", "Premium paid for green hydrogen"),
+    "certificates_bought": ("Renewable electricity certificates", "Certificates bought"),
+    "certificates_sold": ("Renewable electricity certificates", "Certificates sold"),
+    "biogas": ("Biogas", "Biogas burned in combined heat and power"),
+    "storage_wear": ("Storage", "Storage operating cost"),
+    "unmet_penalty": ("Unmet demand", "Heat and cooling not supplied (penalty)"),
+}
+
+
+def _expected_market(rows: list[dict]) -> list[dict]:
+    """Probability-weighted yearly volume and cost of each market item per chosen site, leaving out
+    items a site doesn't use; unmet heat and cooling is always listed."""
+    out = {}
+    for row in rows:
+        acc = out.setdefault(row["site"], {"site": row["site"], "country": row["country"],
+                                           "items": {k: [0.0, 0.0] for k in MARKET_ITEMS}})
+        if row["item"] in acc["items"]:
+            prob = float(row["probability"])
+            acc["items"][row["item"]][0] += float(row["mwh"]) * prob
+            acc["items"][row["item"]][1] += float(row["eur"]) * prob
+    sites = []
+    for acc in out.values():
+        items = [{"market": MARKET_ITEMS[k][0], "label": MARKET_ITEMS[k][1], "mwh": mwh, "eur": eur}
+                 for k, (mwh, eur) in acc["items"].items() if abs(eur) >= 0.5 or mwh >= 0.5 or k == "unmet_penalty"]
+        sites.append({"site": acc["site"], "country": acc["country"], "items": items,
+                      "total": sum(i["eur"] for i in items)})
+    return sites
+
+
+def cost_table(summary: dict, economics: dict, labels: dict[str, str], risk_measure: str | None) -> dict:
+    """Each chosen site's yearly cost: the annualized capital cost of each technology it built, then
+    what it buys and sells on each market, unmet heat and cooling included. The sites' totals add
+    up to the run's objective. Under CVaR the operating part of the objective is the average of
+    the worst scenarios rather than the probability-weighted sum of the sites, and the difference
+    is shown as a risk adjustment."""
+    sites = summary.get("market") or []
+    if not sites:
+        return {}
+    by_site = economics.get("by_site", {})
+    out = []
+    for s in sites:
+        invest = [{"group": "Investment", "label": labels.get(a, a), "amount": v["mw"], "unit": "MW",
+                   "products": v["products"], "capex": v["capex_eur"], "eur": v["annualized_eur"]}
+                  for a, v in by_site.get(s["site"], {}).items() if v["mw"] > 0]
+        operate = [{"group": i["market"], "label": i["label"], "amount": i["mwh"], "unit": "MWh", "eur": i["eur"]}
+                   for i in s["items"]]
+        rows = invest + operate
+        out.append({"site": s["site"], "country": s["country"], "rows": rows,
+                    "investment": sum(r["eur"] for r in invest), "operation": sum(r["eur"] for r in operate),
+                    "capex": sum(r["capex"] for r in invest),
+                    "total": sum(r["eur"] for r in rows)})
+    total = sum(s["total"] for s in out)
+    adjustment = 0.0
+    if risk_measure == "cvar" and economics.get("operating_cost_eur") is not None:
+        adjustment = economics["operating_cost_eur"] - sum(s["operation"] for s in out)
+    investment = sum(s["investment"] for s in out)
+    return {"sites": out, "total": total, "capex": sum(s["capex"] for s in out), "investment": investment,
+            "operation": sum(s["operation"] for s in out) + adjustment, "risk_adjustment": adjustment if abs(adjustment) >= 1.0 else 0.0,
+            "grand_total": total + adjustment}
+
+
+BALANCE_ORDER = ["electricity", "hydrogen", "space_heat", "space_cool", "process_heat", "steam", "process_cool"]
+
+
+@lru_cache(maxsize=4)
+def _dispatch_table(path: str, mtime: float):
+    """A run's ``_dispatch.csv``, cached until the file changes."""
+    import pandas as pd
+    return pd.read_csv(path)
+
+
+def _dispatch(output_prefix: str):
+    """The run's hourly operation table, or None for a run made before it was written."""
+    path = Path(f"{output_prefix}_dispatch.csv")
+    return _dispatch_table(str(path), path.stat().st_mtime) if path.exists() else None
+
+
+def _day_label(day: int) -> str:
+    """Day of the model year as a date, e.g. 15 Jan."""
+    import datetime
+    return (datetime.date(2023, 1, 1) + datetime.timedelta(days=int(day) - 1)).strftime("%d %b").lstrip("0")
+
+
+def dispatch_options(output_prefix: str, scenario_labels: dict) -> dict:
+    """The scenarios and representative days a run's hourly operation can be shown for."""
+    df = _dispatch(output_prefix)
+    if df is None:
+        return {}
+    days = sorted(df["day_of_year"].unique())
+    return {"scenarios": [{"key": s, "label": scenario_labels.get(s, s)} for s in df["scenario"].unique()],
+            "days": [{"day": int(d), "label": _day_label(d)} for d in days]}
+
+
+def dispatch_data(output_prefix: str, scenario: str, start_day: int, end_day: int) -> dict:
+    """Hourly prices and balances of every site from ``start_day`` to ``end_day`` (representative days
+    only) in one scenario. A balance with no demand and no supply all year is left out, and so is
+    any component that is zero all year at that site."""
+    df = _dispatch(output_prefix)
+    if df is None:
+        return {}
+    df = df[df["scenario"] == scenario]
+    sites = []
+    for (site, country), year in df.groupby(["site", "country"], sort=False):
+        window = year[(year["day_of_year"] >= start_day) & (year["day_of_year"] <= end_day)]
+        labels = [f"{_day_label(d)} {h:02d}:00" for d, h in zip(window["day_of_year"], window["hour"])]
+        balances = []
+        for b in BALANCE_ORDER:
+            cols = [c for c in year.columns if c.startswith(b + "|") and c != f"{b}|Demand"]
+            used = [c for c in cols if year[c].abs().max() > 1e-6]
+            if not used and year[f"{b}|Demand"].abs().max() <= 1e-6:
+                continue
+            balances.append({"key": b, "label": GROUP_LABELS[b],
+                             "demand": window[f"{b}|Demand"].round(3).tolist(),
+                             "components": [{"label": c.split("|", 1)[1], "values": window[c].round(3).tolist()}
+                                            for c in used]})
+        sites.append({"site": site, "country": country, "labels": labels,
+                      "prices": {"Electricity": window["price|Electricity"].round(2).tolist(),
+                                 "Hydrogen": window["price|Hydrogen"].round(2).tolist()},
+                      "balances": balances})
+    return {"sites": sites}
 
 
 def _expected_unmet(rows: list[dict]) -> list[dict]:

@@ -22,7 +22,15 @@ UNCERTAINTY_JSON = ROOT / "inputs" / "uncertainty_scenarios.json"
 _OFAT_PCTS = (110, 120, 130)
 _SINGLE_ASSET_TAGS = {"wind": "wind", "solar": "pv", "battery": "batt",
                      "electrolyser": "ely", "tank": "tank"}
-_TRAIN_PCTS = (105, 110, 115, 120, 125, 130)
+_TRAIN_PCTS = (50, 60, 70, 80, 90, 105, 110, 115, 120, 125, 130)
+_SHORTFALL_PCTS = (80, 90)
+_OPPOSITE = {"w80s120": (0.8, 1.2), "w120s80": (1.2, 0.8)}
+_REGIONS = {
+    "nw": ("DE", "NL", "BE", "LU", "FR"),
+    "east": ("PL", "CZ", "SK", "HU", "RO"),
+    "south": ("AT", "SI", "HR"),
+}
+_REGION_PCTS = (70, 130)
 _MIX_PCTS = (110, 120, 130)
 _MIX_GROUPS = {
     "storage": ("battery", "tank"),
@@ -51,6 +59,15 @@ def build_scenarios() -> dict[str, dict]:
             s[f"{tag}{pct}"] = {"capacity_scale": {group: pct / 100}}
     for pct in _TRAIN_PCTS:
         s[f"train{pct}"] = {"capacity_scale": {"wind": pct / 100, "solar": pct / 100}}
+    for pct in _SHORTFALL_PCTS:
+        s[f"wind{pct}"] = {"capacity_scale": {"wind": pct / 100}}
+        s[f"pv{pct}"] = {"capacity_scale": {"solar": pct / 100}}
+    for name, (wind, solar) in _OPPOSITE.items():
+        s[name] = {"capacity_scale": {"wind": wind, "solar": solar}}
+    for region, countries in _REGIONS.items():
+        for pct in _REGION_PCTS:
+            factors = {c: pct / 100 for c in countries}
+            s[f"{region}{pct}"] = {"capacity_scale": {"wind": factors, "solar": dict(factors)}}
     for tag, groups in _MIX_GROUPS.items():
         for pct in _MIX_PCTS:
             s[f"{tag}{pct}"] = {"capacity_scale": {g: pct / 100 for g in groups}}

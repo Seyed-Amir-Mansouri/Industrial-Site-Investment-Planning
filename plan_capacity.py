@@ -10,6 +10,7 @@ from pathlib import Path
 
 import json
 
+import numpy as np
 import pandas as pd
 
 import optimize_site_investor as ohp
@@ -93,6 +94,101 @@ def unmet_demand_summary(schedule: pd.DataFrame) -> dict[str, float]:
     return out
 
 
+def market_summary(schedule: pd.DataFrame) -> list[dict]:
+    """What one site's representative-day schedule trades on each market in a year: one row per item
+    with its volume (MWh/yr) and cost (EUR/yr, negative for income). Buying and selling in the same
+    hour at the same price is netted, so an hour shows either a purchase or a sale; import fees
+    stay on the full amount imported. The items add up to the
+    site's operating cost, the recourse its cuts are built on; storage wear is what is left of
+    that cost after the other items."""
+    tech, green = hp.SITE_TECH, hp.GREEN_H2
+    w = schedule["day_weight"].to_numpy()
+    p_elec, p_h2 = schedule.attrs["p_elec"], schedule.attrs["p_h2"]
+
+    def col(name):
+        """One schedule column as an array."""
+        return schedule[name].to_numpy()
+
+    grid_in, grid_out = col("Site grid import (MW)"), -col("Site grid export (-) (MW)")
+    h2_in, h2_out = col("Site H2 import (MW)"), -col("Site H2 export (-) (MW)")
+    biogas = col("Site CHP biogas (MW)")
+    green_in, go_in, go_out = col("Site green H2 bought (MW)"), col("Site GOs bought (MWh/h)"), col("Site GOs sold (MWh/h)")
+    unmet = sum(col(f"Site unmet {svc} demand (MW)") for svc in hp.THERMAL_SERVICES)
+    storage = sum(abs(col(c)) for c in schedule.columns if c.endswith(" discharge (MW)") or c.endswith(" charge (-) (MW)"))
+    grid_net_in, grid_net_out = (grid_in - grid_out).clip(min=0), (grid_out - grid_in).clip(min=0)
+    h2_net_in, h2_net_out = (h2_in - h2_out).clip(min=0), (h2_out - h2_in).clip(min=0)
+    items = [("electricity_bought", grid_net_in, p_elec * grid_net_in),
+             ("grid_fee", grid_in, tech.grid_import_fee_eur_per_mwh * grid_in),
+             ("electricity_sold", grid_net_out, -p_elec * grid_net_out),
+             ("hydrogen_bought", h2_net_in, p_h2 * h2_net_in + tech.h2_import_fee_eur_per_mwh * h2_in),
+             ("hydrogen_sold", h2_net_out, -p_h2 * h2_net_out),
+             ("biogas", biogas, tech.biogas_price_eur_per_mwh * biogas),
+             ("green_h2_premium", green_in, green.green_h2_premium_eur_per_mwh * green_in),
+             ("certificates_bought", go_in, green.go_buy_price_eur_per_mwh * go_in),
+             ("certificates_sold", go_out, -green.go_sell_price_eur_per_mwh * go_out),
+             ("unmet_penalty", unmet, tech.unmet_demand_penalty_eur_per_mwh * unmet)]
+    rows = [{"item": k, "mwh": float((w * v).sum()), "eur": float((w * c).sum())} for k, v, c in items]
+    rows.append({"item": "storage_wear", "mwh": float((w * storage).sum()),
+                 "eur": float(schedule.attrs["objective"]) - sum(r["eur"] for r in rows)})
+    return rows
+
+
+_HEAT_COOL_ELECTRICITY = ["heat pump", "AC chiller", "industrial heat pump", "electric boiler", "process chiller",
+                          "heat-recovery chiller"]
+BALANCE_COMPONENTS = {
+    "electricity": [("Wind", ["Site wind (MW)"]), ("Solar PV", ["Site pv (MW)"]),
+                    ("Biogas CHP", ["Site CHP electricity (MW)"]),
+                    ("Battery", ["Site battery discharge (MW)", "Site battery charge (-) (MW)"]),
+                    ("Grid", ["Site grid import (MW)", "Site grid export (-) (MW)"]),
+                    ("Electrolyser", ["Site electrolyser load (-) (MW)"]),
+                    ("Heat and cooling assets", [f"Site {a} electricity (-) (MW)" for a in _HEAT_COOL_ELECTRICITY]
+                     + ["Site thermal battery charge (-) (MW)"])],
+    "hydrogen": [("Electrolyser", ["Site electrolyser production (MW)"]),
+                 ("Hydrogen storage", ["Site tank discharge (MW)", "Site tank charge (-) (MW)"]),
+                 ("Hydrogen market", ["Site H2 import (MW)", "Site H2 export (-) (MW)"])],
+    "space_heat": [("Heat pump", ["Site heat pump -> space_heat (MW)"]),
+                   ("Biogas CHP", ["Site CHP heat -> space_heat (MW)"]),
+                   ("Solar thermal", ["Site solar thermal -> space_heat (MW)"]),
+                   ("Heat-recovery chiller", ["Site heat-recovery chiller heat -> space_heat (MW)"]),
+                   ("Hot-water storage", ["Site hot-water storage discharge (MW)", "Site hot-water storage charge (-) (MW)"]),
+                   ("Unmet", ["Site unmet space_heat demand (MW)"])],
+    "space_cool": [("AC chiller", ["Site AC chiller -> space_cool (MW)"]),
+                   ("Absorption chiller", ["Site absorption chiller -> space_cool (MW)"]),
+                   ("Cold storage", ["Site cold storage discharge (MW)", "Site cold storage charge (-) (MW)"]),
+                   ("Unmet", ["Site unmet space_cool demand (MW)"])],
+    "process_heat": [("Industrial heat pump", ["Site industrial heat pump -> process_heat (MW)"]),
+                     ("Biogas CHP", ["Site CHP heat -> process_heat (MW)"]),
+                     ("Solar thermal", ["Site solar thermal -> process_heat (MW)"]),
+                     ("Heat-recovery chiller", ["Site heat-recovery chiller heat -> process_heat (MW)"]),
+                     ("Absorption chiller", ["Site absorption chiller heat (-) (MW)"]),
+                     ("Unmet", ["Site unmet process_heat demand (MW)"])],
+    "steam": [("Electric boiler", ["Site electric boiler -> steam (MW)"]),
+              ("Thermal battery", ["Site thermal battery discharge (MW)"]),
+              ("Unmet", ["Site unmet steam demand (MW)"])],
+    "process_cool": [("Process chiller", ["Site process chiller -> process_cool (MW)"]),
+                     ("Absorption chiller", ["Site absorption chiller -> process_cool (MW)"]),
+                     ("Heat-recovery chiller", ["Site heat-recovery chiller -> process_cool (MW)"]),
+                     ("Unmet", ["Site unmet process_cool demand (MW)"])],
+}
+
+
+def dispatch_frame(schedule: pd.DataFrame) -> pd.DataFrame:
+    """One site's hourly operation on its representative days, by balance: the electricity and
+    hydrogen prices, then for each balance its demand after flexibility (``<balance>|Demand``) and
+    each component's net supply in MW (``<balance>|<component>``; negative for consumption, such as
+    charging storage, exports or a chiller's drive heat). Each balance's components add up to its
+    demand in every hour."""
+    out = {"day_of_year": schedule["day_of_year"].to_numpy(), "hour": np.tile(np.arange(24), len(schedule) // 24),
+           "price|Electricity": schedule.attrs["p_elec"], "price|Hydrogen": schedule.attrs["p_h2"]}
+    zero = np.zeros(len(schedule))
+    for balance, components in BALANCE_COMPONENTS.items():
+        out[f"{balance}|Demand"] = (schedule[f"Site {balance} demand (MW)"].to_numpy()
+                                    + schedule[f"Site {balance} demand shift (MW)"].to_numpy())
+        for label, cols in components:
+            out[f"{balance}|{label}"] = sum((schedule[c].to_numpy() if c in schedule else zero for c in cols), zero)
+    return pd.DataFrame(out)
+
+
 def _unit_id(site: str, country: str) -> str:
     """Label of one site placed in one candidate country."""
     return f"{site}@{country}"
@@ -123,9 +219,14 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     placed cost nothing and keep the cuts from earlier visits. With ``core_cuts`` (the default) each
     placed unit also gets a cut at a Pareto core point that starts inside the feasible region (a fractional
     placement, every asset a mid-grid size within its site cap) and moves halfway toward each trial
-    point. Each unit and scenario always runs in the same worker, which keeps its LP and only
+    point. The master also holds hourly heat and cooling balance rows for each unit, first at
+    its site's peak hours and then at every hour a trial plan left demand unmet, but only hours
+    the unit's maximum capacities cover in every scenario, so the master proposes plans that leave
+    nothing unmet where the site caps allow it; if they make the master infeasible (a budget too
+    small to cover demand) they are dropped. Each unit and scenario always runs in the same worker, which keeps its LP and only
     updates the capacities, on/off placement and prices before re-solving from the last basis. If
-    HiGHS presolve fails on the master, it is re-solved once with presolve off."""
+    HiGHS fails on the master, it is re-solved with presolve off and then with a looser integer
+    feasibility tolerance (1e-4), which the steep cuts of a large unmet penalty can need."""
     scenario_probs = scenario_probs if scenario_probs is not None else {s: 1.0 / len(DEFAULT_SCENARIOS)
                                                                           for s in DEFAULT_SCENARIOS}
     if len(scenario_probs) > 1 and cvar_alpha is None:
@@ -184,7 +285,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     core_site = {u: 1.0 / len(countries) for u in unit_ids}
 
     best_ub, best_capacities, best_capex, best_capex_by_asset = float("inf"), None, None, None
-    best_units, best_sites, best_green, best_unmet = None, None, None, None
+    best_units, best_sites, best_green, best_unmet, best_market = None, None, None, None, None
+    best_dispatch = None
     log = []
     per_unit_log = {u: [] for u in unit_ids}
     gap = float("inf")
@@ -242,22 +344,64 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                                       {u: seeds[tag, s, u]["cut_coeffs"][u] for u in unit_ids}, caps, cand_mw,
                                       scenario=s, lam={u: seeds[tag, s, u]["site_coeffs"][u] for u in unit_ids},
                                       site_star=placed, tag=tag)
+        cov_need, cov_ok, cov_hours = {}, {}, {u: set() for u in unit_ids}
+        for u in unit_ids:
+            scheds = [seeds["max", s, u]["schedules"][u] for s in scenario_probs]
+            flex = units[u][1].flex_fraction
+            demand = {svc: scheds[0][f"Site {svc} demand (MW)"].to_numpy() for svc in hp.THERMAL_SERVICES}
+            cov_need[u] = {svc: demand[svc] * (1.0 - flex[svc]) for svc in hp.THERMAL_SERVICES}
+            cov_ok[u] = np.all([sum(sc[f"Site unmet {svc} demand (MW)"].to_numpy() for svc in hp.THERMAL_SERVICES)
+                                <= 1e-6 for sc in scheds], axis=0)
         del seeds
+
+        def add_coverage(u, hours, tag):
+            """Add balance rows to the master for unit ``u`` at each of ``hours`` its maximum
+            capacities cover and that it has no rows for yet."""
+            new = sorted({int(h) for h in hours if cov_ok[u][h]} - cov_hours[u])
+            if new:
+                hp.add_coverage_rows(m, u, tag, {svc: v[new] for svc, v in cov_need[u].items()}, cand_mw)
+                cov_hours[u].update(new)
+
+        def drop_coverage():
+            """Remove every coverage row and its dispatch variables from the master."""
+            for name in [c for c in m.constraints if c.startswith("cov_")]:
+                m.remove_constraints(name)
+            for name in [v for v in m.variables if v.startswith("cov_")]:
+                m.remove_variables(name)
+            for u in unit_ids:
+                cov_hours[u].clear()
+
+        cov_active = True
+        for u in unit_ids:
+            d = {svc: v / max(1.0 - units[u][1].flex_fraction[svc], 1e-9) for svc, v in cov_need[u].items()}
+            combos = [d[svc] for svc in hp.THERMAL_SERVICES if d[svc].max() > 0]
+            combos += [d["space_heat"] + d["process_heat"], d["space_cool"] + d["process_cool"],
+                       d["space_heat"] + d["process_heat"] + (d["space_cool"] + d["process_cool"])
+                       / hp.SITE_TECH.absorption_chiller_cop, sum(d.values())]
+            add_coverage(u, [np.argmax(c) for c in combos], "peak")
+        print(f"Coverage rows: {sum(len(h) for h in cov_hours.values())} unit-hours at each site's peak hours")
         print(f"Seed cuts: {len(seed_jobs)} (every site in every country, per scenario, once with the site off "
              f"and nothing built and once at its maximum capacities) in {time.time() - t_seed:.1f}s")
         for it in range(1, max_iters + 1):
             t_master = time.time()
-            status, cond = m.solve(solver_name="highs", output_flag=False, time_limit=master_time_limit,
-                                   presolve="on", parallel="on")
+            solve_opts = dict(solver_name="highs", output_flag=False, time_limit=master_time_limit, parallel="on")
+            status, cond = m.solve(presolve="on", **solve_opts)
+            if status != "ok" and "infeasible" in str(cond) and any(cov_hours.values()):
+                drop_coverage()
+                cov_active = False
+                print("NOTE: the coverage rows made the master infeasible (the budget can't pay for "
+                     "enough capacity to meet demand); they are dropped and the run goes on with cuts only.")
+                status, cond = m.solve(presolve="on", **solve_opts)
             if status != "ok":
-                status, cond = m.solve(solver_name="highs", output_flag=False, time_limit=master_time_limit,
-                                       presolve="off", parallel="on")
+                status, cond = m.solve(presolve="off", **solve_opts)
+            if status != "ok":
+                status, cond = m.solve(presolve="on", mip_feasibility_tolerance=1e-4, **solve_opts)
             master_s = time.time() - t_master
             if status != "ok":
                 raise RuntimeError(f"master solve failed at iteration {it}: {status}/{cond}")
             cap_star = hp.extract_capacities(m, unit_ids, cand_mw)
             site_star = hp.extract_sites(m, unit_ids)
-            lb = float(m.solver_model.getInfo().mip_dual_bound)
+            lb = hp.master_bound(m)
             master_mip_gap = float(m.solver_model.getInfo().mip_gap)
             master_cut_off = (cond == "time_limit")
 
@@ -302,6 +446,11 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                 for u in unit_ids:
                     Q_by_unit[u] += prob * Q_s[u]
             sub_s = time.time() - t_sub
+            if cov_active:
+                for (s, u), r in results.items():
+                    sched = r["schedules"][u]
+                    unmet_cols = [sched[f"Site unmet {svc} demand (MW)"].to_numpy() for svc in hp.THERMAL_SERVICES]
+                    add_coverage(u, [np.argmax(c) for c in unmet_cols if c.max() > 1e-6], f"it{it}_{s}")
 
             for u in unit_ids:
                 for a in hp.CAPACITY_KEYS:
@@ -333,6 +482,13 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                                "probability": scenario_probs[s],
                                **unmet_demand_summary(results[s, u]["schedules"][u])}
                               for u in unit_ids if site_star[u] > 0.5 for s in scenario_probs]
+                best_market = [{"site": units[u][1].name, "country": unit_country[u], "scenario": s,
+                                "probability": scenario_probs[s], **row}
+                               for u in unit_ids if site_star[u] > 0.5 for s in scenario_probs
+                               for row in market_summary(results[s, u]["schedules"][u])]
+                best_dispatch = [dispatch_frame(results[s, u]["schedules"][u]).assign(
+                                     site=units[u][1].name, country=unit_country[u], scenario=s)
+                                 for u in unit_ids if site_star[u] > 0.5 for s in scenario_probs]
             gap = (best_ub - lb) / max(abs(best_ub), 1e-6)
             log.append({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
                         "master_seconds": round(master_s, 2),
@@ -364,7 +520,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     return {"capacities": best_capacities, "capex": best_capex, "objective": best_ub, "log": pd.DataFrame(log),
             "units": units, "unit_country": unit_country, "host_zone": host_zone, "price_frames": price_frames,
             "per_unit_log": per_unit_log, "capex_by_asset": best_capex_by_asset, "unit_counts": best_units,
-            "placed": best_sites, "green": best_green, "unmet": best_unmet}
+            "placed": best_sites, "green": best_green, "unmet": best_unmet,
+            "market": best_market, "dispatch": best_dispatch}
 
 
 def main() -> None:
@@ -583,8 +740,14 @@ def main() -> None:
     for name, g in unmet_df.groupby("site", sort=False):
         total = float((g["unmet_total_mwh"] * g["probability"]).sum())
         print(f"Unmet heat/cooling demand at {name} ({g['country'].iloc[0]}): expected {total:,.0f} MWh/yr")
+    pd.DataFrame(res["market"]).to_csv(f"{out_prefix}_market_costs.csv", index=False)
+    dispatch = pd.concat(res["dispatch"], ignore_index=True)
+    lead = ["site", "country", "scenario", "day_of_year", "hour"]
+    dispatch[lead + [c for c in dispatch.columns if c not in lead]].to_csv(
+        f"{out_prefix}_dispatch.csv", index=False, float_format="%.4g")
     print(f"\nwrote {out_prefix}_capacities.csv, {out_prefix}_sites.csv, {out_prefix}_convergence.csv, "
-          f"{out_prefix}_units.csv, {out_prefix}_green_h2.csv, {out_prefix}_unmet_demand.csv")
+          f"{out_prefix}_units.csv, {out_prefix}_green_h2.csv, {out_prefix}_unmet_demand.csv, "
+          f"{out_prefix}_market_costs.csv, {out_prefix}_dispatch.csv")
 
     if args.export_schedules:
         chosen_units = {u: units[u] for u in chosen.values()}
