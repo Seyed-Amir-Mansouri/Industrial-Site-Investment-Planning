@@ -144,11 +144,10 @@
 {% if green %}
 <div class="card">
   <h2>Green hydrogen</h2>
-  <p class="lede" style="margin-bottom:12px">Hydrogen bought on the market is not green. Each site covers its minimum green share of the hydrogen it keeps (made plus bought minus sold) with renewable electricity certificates (Guarantees of Origin). One certificate is 1 MWh of renewable electricity and covers the hydrogen an electrolyser makes from it, {{ electrolyser_efficiency }} MWh. Every MWh of the site's own wind and solar output earns a certificate. Yearly totals{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}. <strong>Market exchange is net: a positive number is what the site bought from the market beyond what it sold, a negative number is what it sold beyond what it bought.</strong></p>
-  <h3 style="margin:8px 0 6px">Certificates (MWh of electricity per year)</h3>
+  <p class="lede" style="margin-bottom:12px">Hydrogen bought on the market is not green. Each site covers its minimum green share of the hydrogen it keeps (made plus bought minus sold) with renewable electricity certificates (Guarantees of Origin). One certificate is 1 MWh of renewable electricity and covers the hydrogen an electrolyser makes from it, {{ electrolyser_efficiency }} MWh. Every MWh of the site's own wind and solar output earns a certificate. All values are certificates, in MWh of electricity per year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}.</p>
   <div style="overflow-x:auto">
   <table>
-    <thead><tr><th>Site</th><th class="num">Minimum green share (%)</th><th class="num">Certificates needed</th><th class="num">From own wind and solar</th><th class="num">Market exchange (+ bought, − sold)</th><th class="num">Certificates used (own + market)</th></tr></thead>
+    <thead><tr><th>Site</th><th class="num">Minimum green share (%)</th><th class="num">Certificates needed</th><th class="num">From own wind and solar</th><th class="num">Market exchange (+ bought, − sold)</th></tr></thead>
     <tbody>
       {% for g in green %}
       <tr>
@@ -157,32 +156,12 @@
         <td class="num">{{ g.go_needed|floatformat:"0g" }}</td>
         <td class="num">{{ g.go_own|floatformat:"0g" }}</td>
         <td class="num">{% if g.go_market > 0.5 %}+{% endif %}{{ g.go_market|floatformat:"0g" }}</td>
-        <td class="num">{{ g.go_used|floatformat:"0g" }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   </div>
-  <h3 style="margin:18px 0 6px">Hydrogen (MWh of hydrogen per year)</h3>
-  <div style="overflow-x:auto">
-  <table>
-    <thead><tr><th>Site</th><th class="num">Hydrogen needed (demand)</th><th class="num">Made on site</th><th class="num">Market exchange (+ bought, − sold)</th><th class="num">Hydrogen kept (made + market)</th><th class="num">Green hydrogen covered by certificates</th><th class="num">Green share reached (%)</th></tr></thead>
-    <tbody>
-      {% for g in green %}
-      <tr>
-        <td>{{ g.site }} → {{ g.country }}</td>
-        <td class="num">{{ g.h2_needed|floatformat:"0g" }}</td>
-        <td class="num">{{ g.h2_made|floatformat:"0g" }}</td>
-        <td class="num">{% if g.h2_market > 0.5 %}+{% endif %}{{ g.h2_market|floatformat:"0g" }}</td>
-        <td class="num">{{ g.h2_supplied|floatformat:"0g" }}</td>
-        <td class="num">{{ g.h2_green|floatformat:"0g" }}</td>
-        <td class="num">{{ g.share_reached_pct|floatformat:"1" }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  <p class="lede" style="margin-top:12px">Certificates needed = minimum green share × hydrogen kept ÷ {{ electrolyser_efficiency }}. Certificates the site's own wind and solar earn beyond what it needs are sold, so a site with more own output than it needs shows a negative market exchange. Hydrogen kept can be a little above the demand because hydrogen storage loses some of what it stores.</p>
+  <p class="lede" style="margin-top:12px">Certificates needed = minimum green share × hydrogen kept ÷ {{ electrolyser_efficiency }}. Market exchange is net: a positive number is what the site bought from the market beyond what it sold, a negative number is what it sold beyond what it bought. A site whose own wind and solar earn more certificates than it needs sells the rest, so its market exchange is negative; own certificates plus market exchange equal the certificates needed.</p>
 </div>
 {% endif %}
 

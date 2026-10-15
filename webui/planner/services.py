@@ -554,9 +554,9 @@ def dispatch_data(output_prefix: str, scenario: str, start_day: int, end_day: in
 
 
 def green_tables(summary: dict, params: dict, efficiency: float) -> list[dict]:
-    """Per site, the certificates its green share needs and where they came from, and the hydrogen
-    it needs and where it came from. Market exchanges are net: positive when the site bought more
-    than it sold, negative when it sold more than it bought."""
+    """Per site, the certificates its green share needs, those its own wind and solar earn and its
+    net certificate market exchange: positive when it bought more than it sold, negative when it
+    sold more than it bought."""
     rows = summary.get("green_h2_expected") or []
     if not rows or "go_earned_mwh" not in rows[0]:
         return []
@@ -565,14 +565,9 @@ def green_tables(summary: dict, params: dict, efficiency: float) -> list[dict]:
     for g in rows:
         share = shares.get(g["site"], 0.0)
         kept = g["h2_kept_mwh"]
-        go_market = g["go_bought_mwh"] - g["go_sold_mwh"]
-        h2_market = g["h2_bought_mwh"] - g["h2_sold_mwh"]
         out.append({"site": g["site"], "country": g["country"], "share_pct": share * 100,
-                    "share_reached_pct": g["green_share"] * 100,
                     "go_needed": share * max(kept, 0.0) / efficiency, "go_own": g["go_earned_mwh"],
-                    "go_market": go_market, "go_used": g["go_earned_mwh"] + go_market,
-                    "h2_needed": g["h2_demand_mwh"], "h2_made": g["h2_made_mwh"], "h2_market": h2_market,
-                    "h2_supplied": g["h2_made_mwh"] + h2_market, "h2_green": g["green_h2_mwh"]})
+                    "go_market": g["go_bought_mwh"] - g["go_sold_mwh"]})
     return out
 
 

@@ -444,11 +444,10 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   cost paid once and its annualized capital cost per year, then what it buys and sells on each
   market per year,
   including unmet heat and cooling charged at the penalty; the totals give the total capital
-  cost and add up to the objective), the green hydrogen results in two tables, one row per site: the certificates
-  (MWh of electricity per year) the green share needs, those from the site's own wind and solar,
-  the net market exchange (positive when it bought more than it sold, negative when it sold more)
-  and the certificates used; and the hydrogen (MWh per year) it needs, makes on site, exchanges
-  with the market (same sign), keeps, and the green hydrogen and green share reached), an hourly operation section (pick a scenario and a range of representative days to
+  cost and add up to the objective), the green hydrogen certificates, one row per site (MWh of electricity per
+  year): the minimum green share, the certificates it needs, those its own wind and solar earn,
+  and the net market exchange (positive when it bought more than it sold, negative when it sold
+  more)), an hourly operation section (pick a scenario and a range of representative days to
   see, for each site, its electricity and hydrogen prices and a stacked bar chart per demand
   balance with every asset that supplies or draws on it and the demand line; balances and assets
   a site doesn't have are left out), a map of the candidate countries (colored by which demand the capacity serves), the
