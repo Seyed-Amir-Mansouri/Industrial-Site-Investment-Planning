@@ -215,7 +215,7 @@ Full, current list also always available via `python plan_capacity.py --help`.
 **Budget / CAPEX**
 | Flag | Default | What it does |
 |---|---|---|
-| `--budget EUR` | 20,000,000 | Raw/unannualized CAPEX budget, shared across every site. |
+| `--budget EUR` | 500,000,000 | Raw/unannualized CAPEX budget, shared across every site. |
 | `--no-budget` | off | Plan without any CAPEX budget limit (can't be combined with `--budget`). |
 | `--discount-rate R` | 0.05 | Discount rate for the capital recovery factor |
 | `--lifetime-years N` | catalog's own (30/40/20yr wind/PV/battery, 20/20/25/25/20yr heat pump/AC chiller/industrial heat pump/electric boiler/process chiller, 20/30/25/25/25/20/25yr CHP/hot-water storage/chilled-water storage/solar thermal/thermal battery/heat-recovery chiller/absorption chiller, 25/30yr electrolyser/tank) | Overrides every asset's lifetime uniformly (edit `CapexAssumptions.lifetime_years` directly for a per-asset override instead) |
