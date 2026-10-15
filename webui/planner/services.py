@@ -72,7 +72,6 @@ def site_assumptions():
         "green_share": site_defaults()["green_share"],
         "go_buy_price": hp.GREEN_H2.go_buy_price_eur_per_mwh,
         "go_sell_price": hp.GREEN_H2.go_sell_price_eur_per_mwh,
-        "green_h2_premium": hp.GREEN_H2.green_h2_premium_eur_per_mwh,
         "flex_pct": spec.flex_fraction["electricity"] * 100,
     }
 
@@ -416,8 +415,8 @@ def _site_rows(capacities: list[dict]) -> list[dict]:
 
 def _expected_green(rows: list[dict]) -> list[dict]:
     """Probability-weighted green hydrogen totals per chosen site."""
-    keys = ["h2_demand_mwh", "green_h2_produced_mwh", "green_h2_bought_mwh", "green_share",
-            "go_bought_mwh", "go_sold_mwh"]
+    keys = ["h2_kept_mwh", "h2_bought_mwh", "h2_made_mwh", "h2_sold_mwh", "green_h2_mwh", "green_share",
+            "go_bought_mwh", "go_kept_mwh", "go_sold_mwh"]
     out = {}
     for row in rows:
         site = row.get("site") or row["country"]
@@ -433,8 +432,7 @@ MARKET_ITEMS = {
     "electricity_sold": ("Electricity market", "Electricity sold"),
     "hydrogen_bought": ("Hydrogen market", "Hydrogen bought"),
     "hydrogen_sold": ("Hydrogen market", "Hydrogen sold"),
-    "green_h2_premium": ("Green hydrogen market", "Premium paid for green hydrogen"),
-    "certificates_bought": ("Renewable electricity certificates", "Certificates bought"),
+    "certificates_bought": ("Renewable electricity certificates", "Certificates bought for green hydrogen"),
     "certificates_sold": ("Renewable electricity certificates", "Certificates sold"),
     "biogas": ("Biogas", "Biogas burned in combined heat and power"),
     "storage_wear": ("Storage", "Storage operating cost"),

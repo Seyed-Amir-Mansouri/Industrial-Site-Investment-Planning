@@ -138,22 +138,26 @@ include each demand's hourly shift.
 
 ### Green hydrogen and the certificate market
 
-At least the site's own share of its annual hydrogen demand must be green (RFNBO), by default
-42% (the RED III 2030 target for hydrogen used in industry). Green hydrogen comes from two sources:
+Hydrogen bought on the market is not green. Each site must cover its own share, by default 42%
+(the RED III 2030 target for hydrogen used in industry), of the hydrogen it keeps over the year
+(bought plus made by its electrolyser minus sold) with Guarantees of Origin (GOs, one per MWh of
+renewable electricity):
 
-- **The site's electrolyser, under the EU RFNBO rules.** Its green electricity must be
-  *additional* and *matched every hour* (the temporal-correlation rule that applies from 2030).
-  Additional electricity is the site's own new wind/PV, or Guarantees of Origin (GOs) bought from
-  additional plants (8 EUR/MWh by default).
-- **Certified green hydrogen bought on the market**, at a premium over the hydrogen price
-  (120 EUR/MWh, about EUR 4/kg, by default). This keeps the requirement reachable whatever the
-  master proposes.
+    GOs used x 0.68 >= share x (H2 bought + H2 made - H2 sold)
 
-The site also sells GOs (6 EUR/MWh by default) for the wind/PV it exports, except for output it
-has already claimed for green hydrogen. The prices live in `GreenH2Params` in
-`site_investor_planning/config.py`; each site sets its own share (`0` removes the requirement for
-that site; GO sales stay on). The exported schedules include the electrolyser's
-green load, the wind/PV claimed for it, GOs bought and sold, and green hydrogen bought.
+- **GOs used** are GOs bought (8 EUR/MWh by default) plus GOs the site keeps from its own wind/PV
+  output. One GO counts for the hydrogen the electrolyser makes from 1 MWh of electricity
+  (its 68% efficiency), so 1 MWh of green hydrogen takes 1.47 GOs.
+- **GOs sold** (6 EUR/MWh by default) come only from own wind/PV output exported to the grid, and
+  a GO the site keeps can't also be sold.
+- **Hydrogen sold** is subtracted, so buying and reselling hydrogen, or making and selling it,
+  doesn't raise the requirement; a site that sells more hydrogen than it buys and makes needs no
+  GOs.
+
+GOs can always be bought, so the requirement is always reachable. The prices live in
+`GreenH2Params` in `site_investor_planning/config.py`; each site sets its own share (`0` removes
+the requirement for that site; GO sales stay on). The exported schedules include the GOs bought,
+kept and sold and the green hydrogen they cover.
 
 ### Technology and cost assumptions
 
@@ -326,7 +330,7 @@ the country the master placed it in), iterating between them:
    SiteLP`)** take the master's capacities for each site in its chosen country and solve the
    representative-day site operation (`--rep-days-per-month`), once per capacity-uncertainty
    scenario. Each returns the site's operating cost (electricity and hydrogen purchases
-   minus sales, unmet-demand penalty, GOs bought minus sold, green hydrogen premium) and the
+   minus sales, unmet-demand penalty, GOs bought minus sold) and the
    sensitivities of that cost to each asset's MW and to switching the site on. Each LP is built
    once, with every asset's MW and the site's on/off as columns fixed at the values being solved;
    a new plan only changes those bounds and the electricity and hydrogen prices (the price proxy
@@ -439,8 +443,8 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   capital cost and annualized capital cost, then what it buys and sells on each market,
   including unmet heat and cooling charged at the penalty; the totals give the total capital
   cost and add up to the objective), the green hydrogen results (one row per site: hydrogen
-  used, green hydrogen made and bought, green share and any renewable electricity certificates
-  traded), an hourly operation section (pick a scenario and a range of representative days to
+  kept (bought plus made minus sold), the green hydrogen covered by certificates, the green
+  share and the certificates bought, kept and sold), an hourly operation section (pick a scenario and a range of representative days to
   see, for each site, its electricity and hydrogen prices and a stacked bar chart per demand
   balance with every asset that supplies or draws on it and the demand line; balances and assets
   a site doesn't have are left out), a map of the candidate countries (colored by which demand the capacity serves), the

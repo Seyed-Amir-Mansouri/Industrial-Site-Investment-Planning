@@ -66,12 +66,11 @@
 
 <div class="card">
   <h2>Green hydrogen and certificates</h2>
-  <p class="lede" style="margin-bottom:12px">Rules for green (RFNBO) hydrogen. The electrolyser's green electricity must be additional (the site's own new wind/PV, or Guarantees of Origin bought from additional plants) and matched every hour. Each site sets its own minimum green share.</p>
+  <p class="lede" style="margin-bottom:12px">Hydrogen bought on the market is not green. Each site sets its own minimum green share of the hydrogen it keeps over the year (bought plus made by its electrolyser minus sold) and covers it with Guarantees of Origin: bought, or kept from its own wind and solar output. One Guarantee of Origin covers the hydrogen an electrolyser makes from 1 MWh of electricity ({{ site.electrolyser_efficiency }} MWh). Guarantees of Origin are sold only for the site's own wind and solar electricity exported to the grid and not kept.</p>
   <table>
     <tbody>
       <tr><th style="width:320px">Guarantee of Origin buy price</th><td class="num">€{{ site.go_buy_price|floatformat:"-1" }} / MWh</td></tr>
       <tr><th>Guarantee of Origin sell price</th><td class="num">€{{ site.go_sell_price|floatformat:"-1" }} / MWh</td></tr>
-      <tr><th>Certified green hydrogen premium</th><td class="num">€{{ site.green_h2_premium|floatformat:"-1" }} / MWh above the hydrogen price</td></tr>
     </tbody>
   </table>
 </div>

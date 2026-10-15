@@ -141,29 +141,29 @@
 </div>
 {% endif %}
 
-{% if summary.green_h2_expected %}
+{% if summary.green_h2_expected and "h2_kept_mwh" in summary.green_h2_expected.0 %}
 <div class="card">
   <h2>Green hydrogen</h2>
-  <p class="lede" style="margin-bottom:12px">Each site must get a minimum share of its hydrogen as green (renewable) hydrogen, either made on site or bought. MWh per year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}.</p>
+  <p class="lede" style="margin-bottom:12px">Hydrogen bought on the market is not green. Each site covers its minimum green share of the hydrogen it keeps (bought plus made minus sold) with renewable electricity certificates (Guarantees of Origin), bought or kept from its own wind and solar output. One certificate covers the hydrogen an electrolyser makes from 1 MWh of electricity, {{ electrolyser_efficiency }} MWh. MWh per year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}.</p>
   <div style="overflow-x:auto">
   <table>
-    <thead><tr><th>Site</th><th class="num">Hydrogen used</th><th class="num">Green hydrogen made on site</th><th class="num">Green hydrogen bought</th><th class="num">Green share</th>{% if green_go.bought %}<th class="num">Renewable electricity certificates bought</th>{% endif %}{% if green_go.sold %}<th class="num">Renewable electricity certificates sold</th>{% endif %}</tr></thead>
+    <thead><tr><th>Site</th><th class="num">Hydrogen kept</th><th class="num">Green hydrogen covered by certificates</th><th class="num">Green share</th>{% if green_go.bought %}<th class="num">Certificates bought</th>{% endif %}{% if green_go.kept %}<th class="num">Certificates kept from own wind and solar</th>{% endif %}{% if green_go.sold %}<th class="num">Certificates sold</th>{% endif %}</tr></thead>
     <tbody>
       {% for g in summary.green_h2_expected %}
       <tr>
         <td>{{ g.site }} → {{ g.country }}</td>
-        <td class="num">{{ g.h2_demand_mwh|floatformat:"0g" }}</td>
-        <td class="num">{{ g.green_h2_produced_mwh|floatformat:"0g" }}</td>
-        <td class="num">{{ g.green_h2_bought_mwh|floatformat:"0g" }}</td>
+        <td class="num">{{ g.h2_kept_mwh|floatformat:"0g" }}</td>
+        <td class="num">{{ g.green_h2_mwh|floatformat:"0g" }}</td>
         <td class="num">{% widthratio g.green_share 1 100 %}%</td>
         {% if green_go.bought %}<td class="num">{{ g.go_bought_mwh|floatformat:"0g" }}</td>{% endif %}
+        {% if green_go.kept %}<td class="num">{{ g.go_kept_mwh|floatformat:"0g" }}</td>{% endif %}
         {% if green_go.sold %}<td class="num">{{ g.go_sold_mwh|floatformat:"0g" }}</td>{% endif %}
       </tr>
       {% endfor %}
     </tbody>
   </table>
   </div>
-  {% if green_go.sold or green_go.bought %}<p class="lede" style="margin-top:12px">Renewable electricity certificates (Guarantees of Origin) are sold for the site's own wind and solar electricity exported to the grid, and bought to count grid electricity used by an electrolyser as renewable.</p>{% endif %}
+  {% if green_go.sold %}<p class="lede" style="margin-top:12px">Certificates are sold only for the site's own wind and solar electricity exported to the grid that it doesn't keep for green hydrogen.</p>{% endif %}
 </div>
 {% endif %}
 
