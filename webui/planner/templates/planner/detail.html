@@ -67,7 +67,7 @@
 
 {% if run.status == "done" %}
 <div class="grid kpis" style="margin-bottom:18px">
-  <div class="kpi"><div class="label">Chosen site{{ summary.sites|length|pluralize }}</div><div class="value">{% if summary.sites %}{{ summary.sites|join:", " }}{% else %}—{% endif %}</div><div class="sub">{{ summary.sites|length }} site{{ summary.sites|length|pluralize }} across {% if run.params.all_countries %}all eligible{% else %}{{ run.params.countries|length }}{% endif %} candidate countries</div></div>
+  <div class="kpi"><div class="label">Chosen site{{ summary.sites|length|pluralize }}</div><div class="value">{% for s in summary.sites %}{{ s }}{% if not forloop.last %}<br>{% endif %}{% empty %}—{% endfor %}</div><div class="sub">{{ summary.sites|length }} site{{ summary.sites|length|pluralize }} across {% if run.params.all_countries %}all eligible{% else %}{{ run.params.countries|length }}{% endif %} candidate countries</div></div>
   <div class="kpi"><div class="label">Objective</div><div class="value">€{{ summary.objective_eur|floatformat:"0g" }}</div><div class="sub">annualized CAPEX + risk-adjusted energy cost</div></div>
   <div class="kpi"><div class="label">Raw CAPEX</div><div class="value">€{{ summary.raw_capex_eur|floatformat:"0g" }}</div><div class="sub">{% if run.params.budget %}{% widthratio summary.raw_capex_eur run.params.budget 100 %}% of budget{% endif %}</div></div>
   <div class="kpi"><div class="label">Iterations</div><div class="value">{{ summary.iterations }}</div><div class="sub">{% if summary.converged %}converged{% else %}stopped at limit{% endif %}</div></div>
@@ -100,39 +100,29 @@
   </table>
 </div>
 
-{% if summary.green_h2 %}
+{% if summary.green_h2_expected %}
 <div class="card">
   <h2>Green hydrogen</h2>
-  <p class="lede" style="margin-bottom:12px">How each site meets its own minimum green (RFNBO) share of annual hydrogen demand, and what it trades on the Guarantee of Origin market. All values in MWh per year.</p>
+  <p class="lede" style="margin-bottom:12px">Each site must get a minimum share of its hydrogen as green (renewable) hydrogen, either made on site or bought. MWh per year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}.</p>
   <div style="overflow-x:auto">
   <table>
-    <thead><tr><th>Site</th><th>Country</th><th>Scenario</th><th class="num">Probability</th><th class="num">Hydrogen demand</th><th class="num">Green hydrogen produced</th><th class="num">Green hydrogen bought</th><th class="num">Green share</th><th class="num">Guarantees of Origin bought</th><th class="num">Guarantees of Origin sold</th></tr></thead>
+    <thead><tr><th>Site</th><th class="num">Hydrogen used</th><th class="num">Green hydrogen made on site</th><th class="num">Green hydrogen bought</th><th class="num">Green share</th>{% if green_go.bought %}<th class="num">Renewable electricity certificates bought</th>{% endif %}{% if green_go.sold %}<th class="num">Renewable electricity certificates sold</th>{% endif %}</tr></thead>
     <tbody>
       {% for g in summary.green_h2_expected %}
       <tr>
-        <td><strong>{{ g.site }}</strong></td><td><strong>{{ g.country }}</strong></td><td><strong>Weighted</strong></td><td class="num">100%</td>
-        <td class="num"><strong>{{ g.h2_demand_mwh|floatformat:"0g" }}</strong></td>
-        <td class="num"><strong>{{ g.green_h2_produced_mwh|floatformat:"0g" }}</strong></td>
-        <td class="num"><strong>{{ g.green_h2_bought_mwh|floatformat:"0g" }}</strong></td>
-        <td class="num"><strong>{% widthratio g.green_share 1 100 %}%</strong></td>
-        <td class="num"><strong>{{ g.go_bought_mwh|floatformat:"0g" }}</strong></td>
-        <td class="num"><strong>{{ g.go_sold_mwh|floatformat:"0g" }}</strong></td>
-      </tr>
-      {% endfor %}
-      {% for g in summary.green_h2 %}
-      <tr>
-        <td>{% firstof g.site g.country %}</td><td>{{ g.country }}</td><td>{{ run.params.scenario_labels|lookup:g.scenario|default:g.scenario }}</td><td class="num">{% widthratio g.probability 1 100 %}%</td>
+        <td>{{ g.site }} → {{ g.country }}</td>
         <td class="num">{{ g.h2_demand_mwh|floatformat:"0g" }}</td>
         <td class="num">{{ g.green_h2_produced_mwh|floatformat:"0g" }}</td>
         <td class="num">{{ g.green_h2_bought_mwh|floatformat:"0g" }}</td>
         <td class="num">{% widthratio g.green_share 1 100 %}%</td>
-        <td class="num">{{ g.go_bought_mwh|floatformat:"0g" }}</td>
-        <td class="num">{{ g.go_sold_mwh|floatformat:"0g" }}</td>
+        {% if green_go.bought %}<td class="num">{{ g.go_bought_mwh|floatformat:"0g" }}</td>{% endif %}
+        {% if green_go.sold %}<td class="num">{{ g.go_sold_mwh|floatformat:"0g" }}</td>{% endif %}
       </tr>
       {% endfor %}
     </tbody>
   </table>
   </div>
+  {% if green_go.sold or green_go.bought %}<p class="lede" style="margin-top:12px">Renewable electricity certificates (Guarantees of Origin) are sold for the site's own wind and solar electricity exported to the grid, and bought to count grid electricity used by an electrolyser as renewable.</p>{% endif %}
 </div>
 {% endif %}
 
