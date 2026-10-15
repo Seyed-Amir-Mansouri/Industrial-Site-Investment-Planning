@@ -39,6 +39,14 @@
   .map-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 14px; }
   .map-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
   .map-legend .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .dispatch-controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; margin-bottom: 8px; }
+  .dispatch-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  .dispatch-controls select { padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); font: inherit; min-width: 120px; }
+  .dispatch-site { margin-top: 22px; }
+  .dispatch-site h3 { font: 600 17px var(--serif); margin: 0 0 6px; }
+  .dispatch-chart { position: relative; height: 260px; margin-top: 14px; }
+  .dispatch-chart h4 { font-size: 13px; font-weight: 600; margin: 0 0 4px; color: var(--ink); }
+  .dispatch-chart canvas { max-height: 236px; }
 </style>
 {% endblock %}
 {% block content %}
@@ -156,6 +164,22 @@
   </table>
   </div>
   {% if green_go.sold or green_go.bought %}<p class="lede" style="margin-top:12px">Renewable electricity certificates (Guarantees of Origin) are sold for the site's own wind and solar electricity exported to the grid, and bought to count grid electricity used by an electrolyser as renewable.</p>{% endif %}
+</div>
+{% endif %}
+
+{% if dispatch %}
+<div class="card">
+  <h2>Hourly operation</h2>
+  <p class="lede" style="margin-bottom:12px">Pick a range of days to see, for each site, its electricity and hydrogen prices and how each of its demands is met hour by hour. Only the representative days the model solves are shown, back to back. Bars above zero supply the demand; bars below zero use it up (storage charging, exports, the electricity heat and cooling assets draw, the heat the absorption chiller uses). The line is the demand after flexibility.</p>
+  <div class="dispatch-controls">
+    {% if dispatch.scenarios|length > 1 %}
+    <label>Scenario <select id="disp-scenario">{% for s in dispatch.scenarios %}<option value="{{ s.key }}">{{ s.label }}</option>{% endfor %}</select></label>
+    {% else %}<input type="hidden" id="disp-scenario" value="{{ dispatch.scenarios.0.key }}">{% endif %}
+    <label>From <select id="disp-start">{% for d in dispatch.days %}<option value="{{ d.day }}"{% if forloop.first %} selected{% endif %}>{{ d.label }}</option>{% endfor %}</select></label>
+    <label>To <select id="disp-end">{% for d in dispatch.days %}<option value="{{ d.day }}"{% if forloop.counter == 3 %} selected{% endif %}>{{ d.label }}</option>{% endfor %}</select></label>
+    <button type="button" class="btn" id="disp-show">Show</button>
+  </div>
+  <div id="disp-charts"></div>
 </div>
 {% endif %}
 
@@ -306,6 +330,81 @@
                            y: { ticks: { callback: v => '€' + Number(v).toLocaleString() } } } }
     });
     window.addEventListener('sip-theme', () => location.reload());
+  })();
+</script>
+<script>
+  (function () {
+    const show = document.getElementById('disp-show');
+    if (!show || typeof Chart === 'undefined') return;
+    const COLORS = {
+      'Wind': '#2a78d6', 'Solar PV': '#eda100', 'Biogas CHP': '#8c564b', 'Battery': '#7c4dbd', 'Grid': '#7f8c8d',
+      'Electrolyser': '#008300', 'Heat and cooling assets': '#e87ba4', 'Hydrogen storage': '#1baf7a',
+      'Hydrogen market': '#7f8c8d', 'Heat pump': '#eb6834', 'Solar thermal': '#e6c229',
+      'Heat-recovery chiller': '#4a3aa7', 'Hot-water storage': '#c2185b', 'AC chiller': '#17a2b8',
+      'Absorption chiller': '#0f766e', 'Cold storage': '#7fb8e6', 'Industrial heat pump': '#d95926',
+      'Electric boiler': '#9e9d24', 'Thermal battery': '#a16207', 'Process chiller': '#1f5fa8', 'Unmet': '#d62728',
+    };
+    const box = document.getElementById('disp-charts');
+    const start = document.getElementById('disp-start'), end = document.getElementById('disp-end');
+    let charts = [];
+    window.sipChartDefaults();
+    const c = window.sipChart();
+
+    function chartBlock(parent, title) {
+      const div = document.createElement('div');
+      div.className = 'dispatch-chart';
+      div.innerHTML = '<h4></h4><canvas></canvas>';
+      div.querySelector('h4').textContent = title;
+      parent.appendChild(div);
+      return div.querySelector('canvas');
+    }
+    const axis = unit => ({ x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 12, autoSkip: true, maxRotation: 0 } },
+                            y: { stacked: true, title: { display: true, text: unit } } });
+    function draw(data) {
+      charts.forEach(ch => ch.destroy());
+      charts = [];
+      box.innerHTML = '';
+      if (!data.sites || !data.sites.length) { box.innerHTML = '<p class="lede">No hours in this range.</p>'; return; }
+      data.sites.forEach(site => {
+        const sec = document.createElement('div');
+        sec.className = 'dispatch-site';
+        sec.innerHTML = '<h3></h3>';
+        sec.querySelector('h3').textContent = site.site + ' \u2192 ' + site.country;
+        box.appendChild(sec);
+        charts.push(new Chart(chartBlock(sec, 'Electricity and hydrogen prices in ' + site.country), {
+          type: 'line',
+          data: { labels: site.labels, datasets: [
+            { label: 'Electricity', data: site.prices.Electricity, borderColor: c.series[0], backgroundColor: c.series[0], borderWidth: 2, pointRadius: 0 },
+            { label: 'Hydrogen', data: site.prices.Hydrogen, borderColor: '#008300', backgroundColor: '#008300', borderWidth: 2, pointRadius: 0 }] },
+          options: { maintainAspectRatio: false, animation: false, interaction: { mode: 'index', intersect: false },
+                     plugins: { legend: { position: 'bottom' } },
+                     scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 12, maxRotation: 0 } }, y: { title: { display: true, text: '€/MWh' } } } }
+        }));
+        site.balances.forEach(b => {
+          const sets = b.components.map(comp => ({ type: 'bar', label: comp.label, data: comp.values, stack: 'supply',
+            backgroundColor: COLORS[comp.label] || c.muted, borderWidth: 0, barPercentage: 1, categoryPercentage: 1 }));
+          sets.push({ type: 'line', label: 'Demand', data: b.demand, stack: 'demand', borderColor: c.ink,
+                      backgroundColor: c.ink, borderWidth: 2, pointRadius: 0, order: -1 });
+          charts.push(new Chart(chartBlock(sec, b.label + ' (MW)'), {
+            type: 'bar', data: { labels: site.labels, datasets: sets },
+            options: { maintainAspectRatio: false, animation: false, interaction: { mode: 'index', intersect: false },
+                       plugins: { legend: { position: 'bottom' },
+                                  tooltip: { filter: i => Math.abs(i.raw) > 1e-6, callbacks: { label: i => i.dataset.label + ': ' + Number(i.raw).toFixed(2) + ' MW' } } },
+                       scales: axis('MW') }
+          }));
+        });
+      });
+    }
+    function load() {
+      let a = parseInt(start.value, 10), z = parseInt(end.value, 10);
+      if (z < a) { [a, z] = [z, a]; start.value = a; end.value = z; }
+      const q = new URLSearchParams({ scenario: document.getElementById('disp-scenario').value, start: a, end: z });
+      box.innerHTML = '<p class="lede">Loading\u2026</p>';
+      fetch('{% url "run_dispatch" run.pk %}?' + q).then(r => r.json()).then(draw)
+        .catch(() => { box.innerHTML = '<p class="lede">Could not load the hourly operation.</p>'; });
+    }
+    show.addEventListener('click', load);
+    load();
   })();
 </script>
 {% endif %}

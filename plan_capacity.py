@@ -133,6 +133,62 @@ def market_summary(schedule: pd.DataFrame) -> list[dict]:
     return rows
 
 
+_HEAT_COOL_ELECTRICITY = ["heat pump", "AC chiller", "industrial heat pump", "electric boiler", "process chiller",
+                          "heat-recovery chiller"]
+BALANCE_COMPONENTS = {
+    "electricity": [("Wind", ["Site wind (MW)"]), ("Solar PV", ["Site pv (MW)"]),
+                    ("Biogas CHP", ["Site CHP electricity (MW)"]),
+                    ("Battery", ["Site battery discharge (MW)", "Site battery charge (-) (MW)"]),
+                    ("Grid", ["Site grid import (MW)", "Site grid export (-) (MW)"]),
+                    ("Electrolyser", ["Site electrolyser load (-) (MW)"]),
+                    ("Heat and cooling assets", [f"Site {a} electricity (-) (MW)" for a in _HEAT_COOL_ELECTRICITY]
+                     + ["Site thermal battery charge (-) (MW)"])],
+    "hydrogen": [("Electrolyser", ["Site electrolyser production (MW)"]),
+                 ("Hydrogen storage", ["Site tank discharge (MW)", "Site tank charge (-) (MW)"]),
+                 ("Hydrogen market", ["Site H2 import (MW)", "Site H2 export (-) (MW)"])],
+    "space_heat": [("Heat pump", ["Site heat pump -> space_heat (MW)"]),
+                   ("Biogas CHP", ["Site CHP heat -> space_heat (MW)"]),
+                   ("Solar thermal", ["Site solar thermal -> space_heat (MW)"]),
+                   ("Heat-recovery chiller", ["Site heat-recovery chiller heat -> space_heat (MW)"]),
+                   ("Hot-water storage", ["Site hot-water storage discharge (MW)", "Site hot-water storage charge (-) (MW)"]),
+                   ("Unmet", ["Site unmet space_heat demand (MW)"])],
+    "space_cool": [("AC chiller", ["Site AC chiller -> space_cool (MW)"]),
+                   ("Absorption chiller", ["Site absorption chiller -> space_cool (MW)"]),
+                   ("Cold storage", ["Site cold storage discharge (MW)", "Site cold storage charge (-) (MW)"]),
+                   ("Unmet", ["Site unmet space_cool demand (MW)"])],
+    "process_heat": [("Industrial heat pump", ["Site industrial heat pump -> process_heat (MW)"]),
+                     ("Biogas CHP", ["Site CHP heat -> process_heat (MW)"]),
+                     ("Solar thermal", ["Site solar thermal -> process_heat (MW)"]),
+                     ("Heat-recovery chiller", ["Site heat-recovery chiller heat -> process_heat (MW)"]),
+                     ("Absorption chiller", ["Site absorption chiller heat (-) (MW)"]),
+                     ("Unmet", ["Site unmet process_heat demand (MW)"])],
+    "steam": [("Electric boiler", ["Site electric boiler -> steam (MW)"]),
+              ("Thermal battery", ["Site thermal battery discharge (MW)"]),
+              ("Unmet", ["Site unmet steam demand (MW)"])],
+    "process_cool": [("Process chiller", ["Site process chiller -> process_cool (MW)"]),
+                     ("Absorption chiller", ["Site absorption chiller -> process_cool (MW)"]),
+                     ("Heat-recovery chiller", ["Site heat-recovery chiller -> process_cool (MW)"]),
+                     ("Unmet", ["Site unmet process_cool demand (MW)"])],
+}
+
+
+def dispatch_frame(schedule: pd.DataFrame) -> pd.DataFrame:
+    """One site's hourly operation on its representative days, by balance: the electricity and
+    hydrogen prices, then for each balance its demand after flexibility (``<balance>|Demand``) and
+    each component's net supply in MW (``<balance>|<component>``; negative for consumption, such as
+    charging storage, exports or a chiller's drive heat). Each balance's components add up to its
+    demand in every hour."""
+    out = {"day_of_year": schedule["day_of_year"].to_numpy(), "hour": np.tile(np.arange(24), len(schedule) // 24),
+           "price|Electricity": schedule.attrs["p_elec"], "price|Hydrogen": schedule.attrs["p_h2"]}
+    zero = np.zeros(len(schedule))
+    for balance, components in BALANCE_COMPONENTS.items():
+        out[f"{balance}|Demand"] = (schedule[f"Site {balance} demand (MW)"].to_numpy()
+                                    + schedule[f"Site {balance} demand shift (MW)"].to_numpy())
+        for label, cols in components:
+            out[f"{balance}|{label}"] = sum((schedule[c].to_numpy() if c in schedule else zero for c in cols), zero)
+    return pd.DataFrame(out)
+
+
 def _unit_id(site: str, country: str) -> str:
     """Label of one site placed in one candidate country."""
     return f"{site}@{country}"
@@ -230,6 +286,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
 
     best_ub, best_capacities, best_capex, best_capex_by_asset = float("inf"), None, None, None
     best_units, best_sites, best_green, best_unmet, best_market = None, None, None, None, None
+    best_dispatch = None
     log = []
     per_unit_log = {u: [] for u in unit_ids}
     gap = float("inf")
@@ -429,6 +486,9 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                                 "probability": scenario_probs[s], **row}
                                for u in unit_ids if site_star[u] > 0.5 for s in scenario_probs
                                for row in market_summary(results[s, u]["schedules"][u])]
+                best_dispatch = [dispatch_frame(results[s, u]["schedules"][u]).assign(
+                                     site=units[u][1].name, country=unit_country[u], scenario=s)
+                                 for u in unit_ids if site_star[u] > 0.5 for s in scenario_probs]
             gap = (best_ub - lb) / max(abs(best_ub), 1e-6)
             log.append({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
                         "master_seconds": round(master_s, 2),
@@ -461,7 +521,7 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
             "units": units, "unit_country": unit_country, "host_zone": host_zone, "price_frames": price_frames,
             "per_unit_log": per_unit_log, "capex_by_asset": best_capex_by_asset, "unit_counts": best_units,
             "placed": best_sites, "green": best_green, "unmet": best_unmet,
-            "market": best_market}
+            "market": best_market, "dispatch": best_dispatch}
 
 
 def main() -> None:
@@ -681,9 +741,13 @@ def main() -> None:
         total = float((g["unmet_total_mwh"] * g["probability"]).sum())
         print(f"Unmet heat/cooling demand at {name} ({g['country'].iloc[0]}): expected {total:,.0f} MWh/yr")
     pd.DataFrame(res["market"]).to_csv(f"{out_prefix}_market_costs.csv", index=False)
+    dispatch = pd.concat(res["dispatch"], ignore_index=True)
+    lead = ["site", "country", "scenario", "day_of_year", "hour"]
+    dispatch[lead + [c for c in dispatch.columns if c not in lead]].to_csv(
+        f"{out_prefix}_dispatch.csv", index=False, float_format="%.4g")
     print(f"\nwrote {out_prefix}_capacities.csv, {out_prefix}_sites.csv, {out_prefix}_convergence.csv, "
           f"{out_prefix}_units.csv, {out_prefix}_green_h2.csv, {out_prefix}_unmet_demand.csv, "
-          f"{out_prefix}_market_costs.csv")
+          f"{out_prefix}_market_costs.csv, {out_prefix}_dispatch.csv")
 
     if args.export_schedules:
         chosen_units = {u: units[u] for u in chosen.values()}

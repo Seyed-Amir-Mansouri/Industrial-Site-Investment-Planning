@@ -494,6 +494,67 @@ def cost_table(summary: dict, economics: dict, labels: dict[str, str], risk_meas
             "grand_total": total + adjustment}
 
 
+BALANCE_ORDER = ["electricity", "hydrogen", "space_heat", "space_cool", "process_heat", "steam", "process_cool"]
+
+
+@lru_cache(maxsize=4)
+def _dispatch_table(path: str, mtime: float):
+    """A run's ``_dispatch.csv``, cached until the file changes."""
+    import pandas as pd
+    return pd.read_csv(path)
+
+
+def _dispatch(output_prefix: str):
+    """The run's hourly operation table, or None for a run made before it was written."""
+    path = Path(f"{output_prefix}_dispatch.csv")
+    return _dispatch_table(str(path), path.stat().st_mtime) if path.exists() else None
+
+
+def _day_label(day: int) -> str:
+    """Day of the model year as a date, e.g. 15 Jan."""
+    import datetime
+    return (datetime.date(2023, 1, 1) + datetime.timedelta(days=int(day) - 1)).strftime("%d %b").lstrip("0")
+
+
+def dispatch_options(output_prefix: str, scenario_labels: dict) -> dict:
+    """The scenarios and representative days a run's hourly operation can be shown for."""
+    df = _dispatch(output_prefix)
+    if df is None:
+        return {}
+    days = sorted(df["day_of_year"].unique())
+    return {"scenarios": [{"key": s, "label": scenario_labels.get(s, s)} for s in df["scenario"].unique()],
+            "days": [{"day": int(d), "label": _day_label(d)} for d in days]}
+
+
+def dispatch_data(output_prefix: str, scenario: str, start_day: int, end_day: int) -> dict:
+    """Hourly prices and balances of every site from ``start_day`` to ``end_day`` (representative days
+    only) in one scenario. A balance with no demand and no supply all year is left out, and so is
+    any component that is zero all year at that site."""
+    df = _dispatch(output_prefix)
+    if df is None:
+        return {}
+    df = df[df["scenario"] == scenario]
+    sites = []
+    for (site, country), year in df.groupby(["site", "country"], sort=False):
+        window = year[(year["day_of_year"] >= start_day) & (year["day_of_year"] <= end_day)]
+        labels = [f"{_day_label(d)} {h:02d}:00" for d, h in zip(window["day_of_year"], window["hour"])]
+        balances = []
+        for b in BALANCE_ORDER:
+            cols = [c for c in year.columns if c.startswith(b + "|") and c != f"{b}|Demand"]
+            used = [c for c in cols if year[c].abs().max() > 1e-6]
+            if not used and year[f"{b}|Demand"].abs().max() <= 1e-6:
+                continue
+            balances.append({"key": b, "label": GROUP_LABELS[b],
+                             "demand": window[f"{b}|Demand"].round(3).tolist(),
+                             "components": [{"label": c.split("|", 1)[1], "values": window[c].round(3).tolist()}
+                                            for c in used]})
+        sites.append({"site": site, "country": country, "labels": labels,
+                      "prices": {"Electricity": window["price|Electricity"].round(2).tolist(),
+                                 "Hydrogen": window["price|Hydrogen"].round(2).tolist()},
+                      "balances": balances})
+    return {"sites": sites}
+
+
 def _expected_unmet(rows: list[dict]) -> list[dict]:
     """Probability-weighted unmet heat and cooling demand (MWh/yr) per chosen site, one value per demand."""
     services = [s for s in GROUP_LABELS if f"unmet_{s}_mwh" in (rows[0] if rows else {})]

@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.contrib import messages
 from django.db import transaction
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
@@ -63,11 +64,23 @@ def run_detail(request, pk: int):
         "map_center": geo.DEFAULT_CENTER,
         "map_zoom": geo.DEFAULT_ZOOM,
         "economics": economics,
+        "dispatch": services.dispatch_options(run.output_prefix, run.params.get("scenario_labels") or {})
+                    if run.status == "done" and run.output_prefix else {},
         "costs": services.cost_table(summary, economics, FULL_ASSET_LABELS, run.params.get("risk_measure")),
         "green_go": {k: any(float(g.get(f"go_{k}_mwh") or 0) > 0.5 for g in summary.get("green_h2_expected", []))
                      for k in ("bought", "sold")},
         "log_tail": "\n".join(run.log.strip().splitlines()[-60:]) if run.log else "",
     })
+
+
+def run_dispatch(request, pk: int):
+    """Hourly prices and balances of a finished run for the scenario and day range in the query."""
+    run = get_object_or_404(PlanRun, pk=pk)
+    try:
+        start, end = int(request.GET.get("start", 0)), int(request.GET.get("end", 0))
+    except ValueError:
+        start, end = 0, 0
+    return JsonResponse(services.dispatch_data(run.output_prefix, request.GET.get("scenario", ""), start, end))
 
 
 def compare(request):
