@@ -223,21 +223,19 @@ CAP_RULES: dict[str, tuple[float, list[dict[str, float]]]] = {
 class GreenH2Params:
     """Green (RFNBO) hydrogen rules and the green certificate market.
 
-    Each site sets its own minimum green share of annual hydrogen demand (``SiteSpec.green_share``). Green hydrogen is
-    either made by the site's electrolyser from additional renewable electricity, matched hour by
-    hour (EU RFNBO temporal correlation from 2030), or bought as certified green hydrogen at
-    ``green_h2_premium`` above the hydrogen market price. Additional renewable electricity is the
-    site's own new wind/PV, or Guarantees of Origin (GOs) bought from additional plants. The site's
-    own wind/PV exported to the grid earns GOs it can sell, unless that output is claimed for green
-    hydrogen.
+    Each site sets its own minimum green share (``SiteSpec.green_share``) of the hydrogen it keeps:
+    bought plus made by its electrolyser minus sold, over the year. Market hydrogen is not green;
+    the share is met with Guarantees of Origin (GOs, one per MWh of renewable electricity), bought
+    or kept from the site's own wind/PV output, each counting for the hydrogen the electrolyser
+    would make from 1 MWh of electricity (its efficiency, 0.68 MWh). Every MWh of own wind/PV
+    output earns a GO, used on site or exported; the site sells the GOs it doesn't keep, and a GO
+    it keeps can't also be sold.
 
-    Defaults: GOs bought at 8 and sold at 6 EUR/MWh, and a certified green H2 premium of
-    120 EUR/MWh (~EUR 4/kg).
+    Defaults: GOs bought at 8 and sold at 6 EUR/MWh.
     """
 
     go_buy_price_eur_per_mwh: float = 8.0
     go_sell_price_eur_per_mwh: float = 6.0
-    green_h2_premium_eur_per_mwh: float = 120.0
 
 
 GREEN_H2 = GreenH2Params()
@@ -294,7 +292,9 @@ class CapexAssumptions:
 
     ``cap_rules`` set the default largest MW of each asset one site may host, large enough for the
     asset to cover on its own every peak it can serve: the factor times the largest of its weighted
-    peak sums, rounded up to a whole number of its smallest product and then to a whole MW. Heat and
+    peak sums, rounded up to a whole number of its smallest product and then to a whole MW. It is
+    never 0: when every demand an asset serves has a 0 MW peak, the factor applies to the site's
+    largest peak of any demand, and with every peak at 0 the cap is one smallest product. Heat and
     cooling assets and their stores get 1.25 times the peak they serve (25% headroom); the biogas
     CHP 1.25 times the larger of the electricity peak and the heat for space heating, process heat
     and the absorption chiller's drive (both cooling peaks divided by its COP) in MW of electricity;

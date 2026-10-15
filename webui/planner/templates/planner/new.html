@@ -550,8 +550,9 @@
     function ruleCap(asset, peaks) {
       const [factor, groups] = RULES.cap_rules[asset];
       let need = r6(factor * Math.max(...groups.map(g => Object.entries(g).reduce((sum, [svc, w]) => sum + w * (peaks[svc] || 0), 0))));
-      if (need <= 0) return 0;
       const sizes = productSizes(asset);
+      if (need <= 0) need = r6(factor * Math.max(0, ...Object.values(peaks).map(v => v || 0)));
+      if (need <= 0) need = sizes.length ? Math.min(...sizes) : 1;
       if (sizes.length) {
         const p = Math.min(...sizes);
         need = r6(Math.ceil(r6(need / p)) * p);

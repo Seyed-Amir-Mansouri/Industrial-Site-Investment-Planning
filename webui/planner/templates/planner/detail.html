@@ -110,18 +110,18 @@
 
 {% if costs %}
 <div class="card" style="margin-bottom:18px">
-  <h2>Yearly cost by site</h2>
-  <p class="lede" style="margin-bottom:12px">For each site: the capital cost of what it built, spread over each technology's lifetime, with the number of units of each product size and their total capital cost, then what it buys and sells on each market in a year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}. Income is shown as a negative cost. Heat and cooling the site can't supply is charged the unmet-demand penalty. The total is the objective.</p>
+  <h2>Cost by site</h2>
+  <p class="lede" style="margin-bottom:12px">For each site: each technology it built, with its size, the units of each product size and its capital cost, paid once; then what it buys and sells on each market in a year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}. The last column is the cost per year: the capital cost spread over each technology's lifetime, and the yearly market costs. Income is shown as a negative cost. Heat and cooling the site can't supply is charged the unmet-demand penalty. The objective is the total cost per year.</p>
   <div style="overflow-x:auto">
   <table>
-    <thead><tr><th>Cost type</th><th>Item</th><th class="num">Amount</th><th class="num">Units built</th><th class="num">Capital cost (€)</th><th class="num">Cost (€ per year)</th></tr></thead>
+    <thead><tr><th>Cost type</th><th>Item</th><th class="num">Size (MW) or amount (MWh per year)</th><th class="num">Units built</th><th class="num">Capital cost (€, paid once)</th><th class="num">Cost (€ per year)</th></tr></thead>
     <tbody>
       {% for s in costs.sites %}
       <tr><td colspan="6"><strong>{{ s.site }} → {{ s.country }}</strong></td></tr>
       {% for r in s.rows %}
       <tr>
         <td>{{ r.group }}</td><td>{{ r.label }}</td>
-        <td class="num">{% if r.unit == "MW" %}{{ r.amount|floatformat:"-1" }} MW{% else %}{{ r.amount|floatformat:"0g" }} MWh per year{% endif %}</td>
+        <td class="num">{% if r.unit == "MW" %}{{ r.amount|floatformat:"-1" }} MW{% else %}{{ r.amount|floatformat:"0g" }} MWh/yr{% endif %}</td>
         <td class="num">{% for p in r.products %}{{ p.units }} × {{ p.mw }} MW{% if not forloop.last %}<br>{% endif %}{% endfor %}</td>
         <td class="num">{% if r.unit == "MW" %}{{ r.capex|floatformat:"0g" }}{% endif %}</td>
         <td class="num">{{ r.eur|floatformat:"0g" }}</td>
@@ -134,36 +134,34 @@
       <tr><td colspan="6"><strong>All sites</strong></td></tr>
       <tr><td></td><td>Investment</td><td></td><td></td><td class="num">{{ costs.capex|floatformat:"0g" }}</td><td class="num">{{ costs.investment|floatformat:"0g" }}</td></tr>
       <tr><td></td><td>Operation{% if costs.risk_adjustment %} (with a risk adjustment of {{ costs.risk_adjustment|floatformat:"0g" }}: the worst scenarios weigh more than their probability){% endif %}</td><td></td><td></td><td></td><td class="num">{{ costs.operation|floatformat:"0g" }}</td></tr>
-      <tr><td></td><td><strong>Objective</strong></td><td></td><td></td><td></td><td class="num"><strong>{{ costs.grand_total|floatformat:"0g" }}</strong></td></tr>
+      <tr><td></td><td><strong>Objective (total cost per year)</strong></td><td></td><td></td><td></td><td class="num"><strong>{{ costs.grand_total|floatformat:"0g" }}</strong></td></tr>
     </tbody>
   </table>
   </div>
 </div>
 {% endif %}
 
-{% if summary.green_h2_expected %}
+{% if green %}
 <div class="card">
   <h2>Green hydrogen</h2>
-  <p class="lede" style="margin-bottom:12px">Each site must get a minimum share of its hydrogen as green (renewable) hydrogen, either made on site or bought. MWh per year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}.</p>
+  <p class="lede" style="margin-bottom:12px">Hydrogen bought on the market is not green. Each site covers its minimum green share of the hydrogen it keeps (made plus bought minus sold) with renewable electricity certificates (Guarantees of Origin). One certificate is 1 MWh of renewable electricity and covers the hydrogen an electrolyser makes from it, {{ electrolyser_efficiency }} MWh. Every MWh of the site's own wind and solar output earns a certificate. All values are certificates, in MWh of electricity per year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}.</p>
   <div style="overflow-x:auto">
   <table>
-    <thead><tr><th>Site</th><th class="num">Hydrogen used</th><th class="num">Green hydrogen made on site</th><th class="num">Green hydrogen bought</th><th class="num">Green share</th>{% if green_go.bought %}<th class="num">Renewable electricity certificates bought</th>{% endif %}{% if green_go.sold %}<th class="num">Renewable electricity certificates sold</th>{% endif %}</tr></thead>
+    <thead><tr><th>Site</th><th class="num">Minimum green share (%)</th><th class="num">Certificates needed</th><th class="num">From own wind and solar</th><th class="num">Market exchange (+ bought, − sold)</th></tr></thead>
     <tbody>
-      {% for g in summary.green_h2_expected %}
+      {% for g in green %}
       <tr>
         <td>{{ g.site }} → {{ g.country }}</td>
-        <td class="num">{{ g.h2_demand_mwh|floatformat:"0g" }}</td>
-        <td class="num">{{ g.green_h2_produced_mwh|floatformat:"0g" }}</td>
-        <td class="num">{{ g.green_h2_bought_mwh|floatformat:"0g" }}</td>
-        <td class="num">{% widthratio g.green_share 1 100 %}%</td>
-        {% if green_go.bought %}<td class="num">{{ g.go_bought_mwh|floatformat:"0g" }}</td>{% endif %}
-        {% if green_go.sold %}<td class="num">{{ g.go_sold_mwh|floatformat:"0g" }}</td>{% endif %}
+        <td class="num">{{ g.share_pct|floatformat:"-1" }}</td>
+        <td class="num">{{ g.go_needed|floatformat:"0g" }}</td>
+        <td class="num">{{ g.go_own|floatformat:"0g" }}</td>
+        <td class="num">{% if g.go_market > 0.5 %}+{% endif %}{{ g.go_market|floatformat:"0g" }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   </div>
-  {% if green_go.sold or green_go.bought %}<p class="lede" style="margin-top:12px">Renewable electricity certificates (Guarantees of Origin) are sold for the site's own wind and solar electricity exported to the grid, and bought to count grid electricity used by an electrolyser as renewable.</p>{% endif %}
+  <p class="lede" style="margin-top:12px">Certificates needed = minimum green share × hydrogen kept ÷ {{ electrolyser_efficiency }}. Market exchange is net: a positive number is what the site bought from the market beyond what it sold, a negative number is what it sold beyond what it bought. A site whose own wind and solar earn more certificates than it needs sells the rest, so its market exchange is negative; own certificates plus market exchange equal the certificates needed.</p>
 </div>
 {% endif %}
 

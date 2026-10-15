@@ -447,12 +447,13 @@ class SiteLP:
     process heat, the absorption chiller turns process heat into space or process cooling, and the
     thermal battery charges with electricity and discharges steam. Hot-water and chilled-water / ice
     storage shift space heating and space cooling within the day. Heat that CHP, solar thermal and
-    the heat-recovery chiller can't use is released. The site's
-    own wind/PV exported to the grid earns Guarantees of Origin it can sell, unless that output is
-    claimed for green hydrogen. The electrolyser's green load in each hour must be covered by that
-    hour's own (new, hence additional) wind/PV or GOs bought from additional plants, and green
-    production plus certified green H2 purchases must reach the site's ``green_share`` of its annual
-    hydrogen demand.
+    the heat-recovery chiller can't use is released. Market hydrogen is not green: the site meets
+    its ``green_share`` with Guarantees of Origin (GOs, one per MWh of renewable electricity), either
+    bought or kept from its own wind/PV output. Over the year, the GOs it uses times the
+    electrolyser efficiency (the hydrogen that electricity would make) must reach ``green_share`` of
+    the hydrogen it keeps: bought plus made by the electrolyser minus sold. Every MWh of own wind/PV
+    output earns a GO, used on site or exported; the site sells the GOs it doesn't keep, and a GO
+    it keeps can't also be sold.
 
     Each asset's MW, each storage asset's MWh and each unit's on/off placement are columns fixed at
     the values being solved,
@@ -618,22 +619,17 @@ class SiteLP:
 
         green = GREEN_H2
         go_sell = m.add_variables(lower=0.0, coords=coords, name="go_sell")
-        m.add_constraints(go_sell - grid_sell <= 0, name="go_sell_export")
         green_cost = -green.go_sell_price_eur_per_mwh * (w * go_sell).sum()
         if any_green:
-            ely_green = m.add_variables(lower=0.0, coords=coords, name="ely_green")
-            res_to_ely = m.add_variables(lower=0.0, coords=coords, name="res_to_ely")
             go_buy = m.add_variables(lower=0.0, coords=coords, name="go_buy")
-            h2_buy_green = m.add_variables(lower=0.0, coords=coords, name="h2_buy_green")
-            m.add_constraints(ely_green - ely_p <= 0, name="ely_green_cap")
-            m.add_constraints(ely_green - res_to_ely - go_buy == 0, name="ely_green_matching")
-            m.add_constraints(res_to_ely + go_sell - wind_p - pv_p <= 0, name="res_attribution")
-            m.add_constraints(h2_buy_green - h2_buy <= 0, name="h2_buy_green_cap")
-            annual_h2 = (w * da["demand_hydrogen"]).sum(["day", "hid"])
-            m.add_constraints((w * (ely_eff * ely_green + h2_buy_green)).sum(["day", "hid"])
-                              - green_da * annual_h2 * site_on >= 0, name="green_h2_share")
-            green_cost = (green_cost + green.go_buy_price_eur_per_mwh * (w * go_buy).sum()
-                          + green.green_h2_premium_eur_per_mwh * (w * h2_buy_green).sum())
+            go_keep = m.add_variables(lower=0.0, coords=coords, name="go_keep")
+            m.add_constraints(go_keep + go_sell - wind_p - pv_p <= 0, name="res_attribution")
+            h2_kept = (w * (h2_buy + ely_eff * ely_p - h2_sell)).sum(["day", "hid"])
+            m.add_constraints(ely_eff * (w * (go_buy + go_keep)).sum(["day", "hid"])
+                              - green_da * h2_kept >= 0, name="green_h2_share")
+            green_cost = green_cost + green.go_buy_price_eur_per_mwh * (w * go_buy).sum()
+        else:
+            m.add_constraints(go_sell - wind_p - pv_p <= 0, name="res_attribution")
 
         unmet_total = sum(unmet[svc] for svc in THERMAL_SERVICES)
         zero_price = xr.zeros_like(da["wind_cf"])
@@ -731,15 +727,13 @@ class SiteLP:
             fuel = chp / tech.chp_electric_efficiency
             zero = np.zeros(H)
             gos = v("go_sell")
-            gob, hbg, eg, re = ((v("go_buy"), v("h2_buy_green"), v("ely_green"), v("res_to_ely"))
-                                if self.any_green else (zero, zero, zero, zero))
+            gob, gok = (v("go_buy"), v("go_keep")) if self.any_green else (zero, zero)
             z_cost = float((weight_flat * ((p_elec_z + tech.grid_import_fee_eur_per_mwh) * gb - p_elec_z * gs
                                            + (p_h2_z + tech.h2_import_fee_eur_per_mwh) * hb - p_h2_z * hs
                                            + penalty * unmet_mw + sto_cost * sto_mwh
                                            + tech.biogas_price_eur_per_mwh * fuel
                                            + green.go_buy_price_eur_per_mwh * gob
-                                           - green.go_sell_price_eur_per_mwh * gos
-                                           + green.green_h2_premium_eur_per_mwh * hbg)).sum())
+                                           - green.go_sell_price_eur_per_mwh * gos)).sum())
             objective_by_zone[u] = z_cost
 
             site_z = site_vals[u]
@@ -759,12 +753,10 @@ class SiteLP:
             out["Site tank charge (-) (MW)"] = -tc
             out["Site H2 import (MW)"] = hb
             out["Site H2 export (-) (MW)"] = -hs
-            out["Site electrolyser green load (MW)"] = eg
-            out["Site green H2 produced (MW)"] = ely_eff * eg
-            out["Site own wind/PV claimed for green H2 (MW)"] = re
             out["Site GOs bought (MWh/h)"] = gob
+            out["Site own wind/PV GOs kept (MWh/h)"] = gok
             out["Site GOs sold (MWh/h)"] = gos
-            out["Site green H2 bought (MW)"] = hbg
+            out["Site green H2 covered by GOs (MW)"] = ely_eff * (gob + gok)
             for (a, svc) in self.thermal_keys:
                 q = v(f"{_THERMAL_VARS[a]}_{svc}")
                 out[f"Site {_THERMAL_LABELS[a]} -> {svc} (MW)"] = q
@@ -790,9 +782,10 @@ class SiteLP:
                               "host_zone": self.host_zones[u], "site_name": self.units[u][1].name,
                               "sizing": sizings[u], "capacities": {a: sizings[u][a] for a in CAPACITY_KEYS},
                               "site": site_z, "cut_coeffs": cut_coeffs[u] if cut_coeffs else None,
-                              "green_h2_share": (float((weight_flat * (ely_eff * eg + hbg)).sum()
-                                                       / (weight_flat * out["Site hydrogen demand (MW)"]).sum())
-                                                 if site_z > 0 else None),
+                              "green_h2_share": (float((weight_flat * ely_eff * (gob + gok)).sum()
+                                                       / (weight_flat * (hb + ely_eff * v("ely_p") - hs)).sum())
+                                                 if site_z > 0 and (weight_flat * (hb + ely_eff * v("ely_p") - hs)).sum() > 0
+                                                 else None),
                               "site_coeff": site_coeffs[u] if site_coeffs else None})
             schedules[u] = out
 

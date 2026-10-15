@@ -37,7 +37,7 @@
 
 <div class="card">
   <h2>Maximum capacity per site</h2>
-  <p class="lede" style="margin-bottom:12px">Each asset's default maximum size at a site follows that site's demand, so that the asset can cover on its own every peak it can serve: a factor times the site's annual peaks of the demands the asset serves, rounded up to a whole number of its smallest product and then to a whole MW. Heat and cooling assets and their stores get 25% headroom over the peak they serve, so they can cover it with some margin. The biogas CHP and the industrial heat pump also count the heat that drives the absorption chiller (both cooling peaks divided by its 0.7 COP), and the CHP's heat is converted to MW of electricity (0.40 / 0.45). With these defaults every demand an active asset firmly serves is covered and the plan leaves nothing unmet. Wind, PV and the battery are allowed several times the electricity peak because they also sell to the market. The electrolyser is sized in MW of electricity, so its hydrogen peak is divided by its 68% efficiency. A demand with a 0 MW peak gives its assets a 0 MW default. On the New run page each site's <em>Max MW</em> box starts from this rule and follows the peaks until you enter your own value, and an asset that isn't active at a site gets 0 MW there. The rule is <code>CAP_RULES</code> in <code>site_investor_planning/config.py</code>.</p>
+  <p class="lede" style="margin-bottom:12px">Each asset's default maximum size at a site follows that site's demand, so that the asset can cover on its own every peak it can serve: a factor times the site's annual peaks of the demands the asset serves, rounded up to a whole number of its smallest product and then to a whole MW. Heat and cooling assets and their stores get 25% headroom over the peak they serve, so they can cover it with some margin. The biogas CHP and the industrial heat pump also count the heat that drives the absorption chiller (both cooling peaks divided by its 0.7 COP), and the CHP's heat is converted to MW of electricity (0.40 / 0.45). With these defaults every demand an active asset firmly serves is covered and the plan leaves nothing unmet. Wind, PV and the battery are allowed several times the electricity peak because they also sell to the market. The electrolyser is sized in MW of electricity, so its hydrogen peak is divided by its 68% efficiency. The default is never 0: when every demand an asset serves has a 0 MW peak, its factor applies to the site's largest peak of any demand instead, and with every peak at 0 the default is one of its smallest products. On the New run page each site's <em>Max MW</em> box starts from this rule and follows the peaks until you enter your own value, and an asset that isn't active at a site gets 0 MW there. The rule is <code>CAP_RULES</code> in <code>site_investor_planning/config.py</code>.</p>
   <div style="overflow-x:auto">
   <table>
     <thead><tr><th>Asset</th><th>Default maximum</th><th>Peak it is based on</th><th class="num">Example site (MW)</th></tr></thead>
@@ -66,12 +66,11 @@
 
 <div class="card">
   <h2>Green hydrogen and certificates</h2>
-  <p class="lede" style="margin-bottom:12px">Rules for green (RFNBO) hydrogen. The electrolyser's green electricity must be additional (the site's own new wind/PV, or Guarantees of Origin bought from additional plants) and matched every hour. Each site sets its own minimum green share.</p>
+  <p class="lede" style="margin-bottom:12px">Hydrogen bought on the market is not green. Each site sets its own minimum green share of the hydrogen it keeps over the year (bought plus made by its electrolyser minus sold) and covers it with Guarantees of Origin: bought, or kept from its own wind and solar output. One Guarantee of Origin covers the hydrogen an electrolyser makes from 1 MWh of electricity ({{ site.electrolyser_efficiency }} MWh). Every MWh of the site's own wind and solar output earns a Guarantee of Origin, whether the site uses that electricity or exports it; the site sells the ones it doesn't keep.</p>
   <table>
     <tbody>
       <tr><th style="width:320px">Guarantee of Origin buy price</th><td class="num">€{{ site.go_buy_price|floatformat:"-1" }} / MWh</td></tr>
       <tr><th>Guarantee of Origin sell price</th><td class="num">€{{ site.go_sell_price|floatformat:"-1" }} / MWh</td></tr>
-      <tr><th>Certified green hydrogen premium</th><td class="num">€{{ site.green_h2_premium|floatformat:"-1" }} / MWh above the hydrogen price</td></tr>
     </tbody>
   </table>
 </div>
