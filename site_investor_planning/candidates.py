@@ -62,11 +62,15 @@ def build_candidates(countries: list[str], capex_cfg: CapexAssumptions | None = 
 
 def rule_mw(rule: tuple[float, list[dict[str, float]]], peaks_mw: dict[str, float], product_mw: float) -> float:
     """One cap rule at these annual peaks: its factor times the largest of its weighted peak sums,
-    rounded up to a whole number of ``product_mw`` products and then to a whole MW."""
+    rounded up to a whole number of ``product_mw`` products and then to a whole MW. It is never 0:
+    when every demand the asset serves has a 0 MW peak, the factor applies to the site's largest
+    peak of any demand instead, and with every peak at 0 the cap is one smallest product."""
     factor, groups = rule
     need = round(factor * max(sum(w * peaks_mw.get(s, 0.0) for s, w in g.items()) for g in groups), 6)
     if need <= 0:
-        return 0.0
+        need = round(factor * max(peaks_mw.values(), default=0.0), 6)
+    if need <= 0:
+        need = product_mw if product_mw > 0 else 1.0
     if product_mw > 0:
         need = round(math.ceil(round(need / product_mw, 6)) * product_mw, 6)
     return float(math.ceil(need))

@@ -72,7 +72,6 @@ def site_assumptions():
         "green_share": site_defaults()["green_share"],
         "go_buy_price": hp.GREEN_H2.go_buy_price_eur_per_mwh,
         "go_sell_price": hp.GREEN_H2.go_sell_price_eur_per_mwh,
-        "green_h2_premium": hp.GREEN_H2.green_h2_premium_eur_per_mwh,
         "flex_pct": spec.flex_fraction["electricity"] * 100,
     }
 
@@ -416,8 +415,8 @@ def _site_rows(capacities: list[dict]) -> list[dict]:
 
 def _expected_green(rows: list[dict]) -> list[dict]:
     """Probability-weighted green hydrogen totals per chosen site."""
-    keys = ["h2_demand_mwh", "green_h2_produced_mwh", "green_h2_bought_mwh", "green_share",
-            "go_bought_mwh", "go_sold_mwh"]
+    keys = ["h2_demand_mwh", "h2_kept_mwh", "h2_bought_mwh", "h2_made_mwh", "h2_sold_mwh", "green_h2_mwh", "green_share",
+            "go_earned_mwh", "go_bought_mwh", "go_kept_mwh", "go_sold_mwh"]
     out = {}
     for row in rows:
         site = row.get("site") or row["country"]
@@ -433,8 +432,7 @@ MARKET_ITEMS = {
     "electricity_sold": ("Electricity market", "Electricity sold"),
     "hydrogen_bought": ("Hydrogen market", "Hydrogen bought"),
     "hydrogen_sold": ("Hydrogen market", "Hydrogen sold"),
-    "green_h2_premium": ("Green hydrogen market", "Premium paid for green hydrogen"),
-    "certificates_bought": ("Renewable electricity certificates", "Certificates bought"),
+    "certificates_bought": ("Renewable electricity certificates", "Certificates bought for green hydrogen"),
     "certificates_sold": ("Renewable electricity certificates", "Certificates sold"),
     "biogas": ("Biogas", "Biogas burned in combined heat and power"),
     "storage_wear": ("Storage", "Storage operating cost"),
@@ -553,6 +551,24 @@ def dispatch_data(output_prefix: str, scenario: str, start_day: int, end_day: in
                                  "Hydrogen": window["price|Hydrogen"].round(2).tolist()},
                       "balances": balances})
     return {"sites": sites}
+
+
+def green_tables(summary: dict, params: dict, efficiency: float) -> list[dict]:
+    """Per site, the certificates its green share needs, those its own wind and solar earn and its
+    net certificate market exchange: positive when it bought more than it sold, negative when it
+    sold more than it bought."""
+    rows = summary.get("green_h2_expected") or []
+    if not rows or "go_earned_mwh" not in rows[0]:
+        return []
+    shares = {sp["name"]: float(sp.get("green_share", 0)) for sp in params.get("sites") or []}
+    out = []
+    for g in rows:
+        share = shares.get(g["site"], 0.0)
+        kept = g["h2_kept_mwh"]
+        out.append({"site": g["site"], "country": g["country"], "share_pct": share * 100,
+                    "go_needed": share * max(kept, 0.0) / efficiency, "go_own": g["go_earned_mwh"],
+                    "go_market": g["go_bought_mwh"] - g["go_sold_mwh"]})
+    return out
 
 
 def _expected_unmet(rows: list[dict]) -> list[dict]:

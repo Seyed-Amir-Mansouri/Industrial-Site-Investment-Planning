@@ -71,18 +71,25 @@ def _snap(value: float, tol: float = 1e-3) -> float:
 
 
 def green_h2_summary(schedule: pd.DataFrame) -> dict[str, float]:
-    """Annual green hydrogen and Guarantee of Origin totals (MWh/yr) of one site's representative-day schedule."""
+    """Annual hydrogen and Guarantee of Origin totals (MWh/yr) of one site's representative-day
+    schedule: the hydrogen it keeps (bought plus made minus sold), the GOs its own wind/PV output
+    earns, the GOs it buys, keeps and sells, the hydrogen those GOs make green and the green share
+    reached."""
     w = schedule["day_weight"]
 
     def annual(col: str) -> float:
         return float((schedule[col] * w).sum())
 
-    demand = annual("Site hydrogen demand (MW)")
-    produced = annual("Site green H2 produced (MW)")
-    bought = annual("Site green H2 bought (MW)")
-    return {"h2_demand_mwh": demand, "green_h2_produced_mwh": produced, "green_h2_bought_mwh": bought,
-            "green_share": (produced + bought) / demand if demand > 0 else 0.0,
-            "go_bought_mwh": annual("Site GOs bought (MWh/h)"), "go_sold_mwh": annual("Site GOs sold (MWh/h)")}
+    bought, sold = annual("Site H2 import (MW)"), -annual("Site H2 export (-) (MW)")
+    made = annual("Site electrolyser production (MW)")
+    kept = bought + made - sold
+    green = annual("Site green H2 covered by GOs (MW)")
+    return {"h2_demand_mwh": annual("Site hydrogen demand (MW)"), "h2_bought_mwh": bought, "h2_made_mwh": made,
+            "h2_sold_mwh": sold, "h2_kept_mwh": kept, "green_h2_mwh": green,
+            "green_share": green / kept if kept > 0 else 0.0,
+            "go_earned_mwh": annual("Site wind (MW)") + annual("Site pv (MW)"),
+            "go_bought_mwh": annual("Site GOs bought (MWh/h)"), "go_kept_mwh": annual("Site own wind/PV GOs kept (MWh/h)"),
+            "go_sold_mwh": annual("Site GOs sold (MWh/h)")}
 
 
 def unmet_demand_summary(schedule: pd.DataFrame) -> dict[str, float]:
@@ -112,7 +119,7 @@ def market_summary(schedule: pd.DataFrame) -> list[dict]:
     grid_in, grid_out = col("Site grid import (MW)"), -col("Site grid export (-) (MW)")
     h2_in, h2_out = col("Site H2 import (MW)"), -col("Site H2 export (-) (MW)")
     biogas = col("Site CHP biogas (MW)")
-    green_in, go_in, go_out = col("Site green H2 bought (MW)"), col("Site GOs bought (MWh/h)"), col("Site GOs sold (MWh/h)")
+    go_in, go_out = col("Site GOs bought (MWh/h)"), col("Site GOs sold (MWh/h)")
     unmet = sum(col(f"Site unmet {svc} demand (MW)") for svc in hp.THERMAL_SERVICES)
     storage = sum(abs(col(c)) for c in schedule.columns if c.endswith(" discharge (MW)") or c.endswith(" charge (-) (MW)"))
     grid_net_in, grid_net_out = (grid_in - grid_out).clip(min=0), (grid_out - grid_in).clip(min=0)
@@ -123,7 +130,6 @@ def market_summary(schedule: pd.DataFrame) -> list[dict]:
              ("hydrogen_bought", h2_net_in, p_h2 * h2_net_in + tech.h2_import_fee_eur_per_mwh * h2_in),
              ("hydrogen_sold", h2_net_out, -p_h2 * h2_net_out),
              ("biogas", biogas, tech.biogas_price_eur_per_mwh * biogas),
-             ("green_h2_premium", green_in, green.green_h2_premium_eur_per_mwh * green_in),
              ("certificates_bought", go_in, green.go_buy_price_eur_per_mwh * go_in),
              ("certificates_sold", go_out, -green.go_sell_price_eur_per_mwh * go_out),
              ("unmet_penalty", unmet, tech.unmet_demand_penalty_eur_per_mwh * unmet)]
@@ -650,9 +656,9 @@ def main() -> None:
          f"({args.rep_days_per_month * 12} days solved, weighted to approximate the full year)")
     tech = hp.SITE_TECH
     green = hp.GREEN_H2
-    print(f"Green H2: hourly-matched additional renewables | GOs buy {green.go_buy_price_eur_per_mwh:g} / sell "
-          f"{green.go_sell_price_eur_per_mwh:g} EUR/MWh | certified green H2 premium "
-          f"{green.green_h2_premium_eur_per_mwh:g} EUR/MWh")
+    print(f"Green H2: met with GOs (bought or kept from own wind/PV), each worth the H2 the electrolyser "
+          f"makes from 1 MWh | GOs buy {green.go_buy_price_eur_per_mwh:g} / sell "
+          f"{green.go_sell_price_eur_per_mwh:g} EUR/MWh")
     print(f"Sites (annual peaks MW x per-unit curves in {hp.demand.SITE_DEMAND_CSV.relative_to(ROOT)}):")
     for sp in sites:
         annual = hp.annual_demand_mwh(sp.peaks_mw)
