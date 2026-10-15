@@ -123,11 +123,10 @@
       <tr><td></td><td>Operation</td><td></td><td></td><td></td><td class="num">{{ s.operation|floatformat:"0g" }}</td></tr>
       <tr><td></td><td><strong>{{ s.site }} total</strong></td><td></td><td></td><td class="num"><strong>{{ s.capex|floatformat:"0g" }}</strong></td><td class="num"><strong>{{ s.total|floatformat:"0g" }}</strong></td></tr>
       {% endfor %}
-      {% if costs.risk_adjustment %}
-      <tr><td colspan="2">All sites</td><td></td><td></td><td class="num">{{ costs.capex|floatformat:"0g" }}</td><td class="num">{{ costs.total|floatformat:"0g" }}</td></tr>
-      <tr><td colspan="2">Risk adjustment: the worst scenarios weigh more than their probability</td><td></td><td></td><td></td><td class="num">{{ costs.risk_adjustment|floatformat:"0g" }}</td></tr>
-      {% endif %}
-      <tr><td colspan="2"><strong>Total: capital cost and yearly cost (the objective)</strong></td><td></td><td></td><td class="num"><strong>{{ costs.capex|floatformat:"0g" }}</strong></td><td class="num"><strong>{{ costs.grand_total|floatformat:"0g" }}</strong></td></tr>
+      <tr><td colspan="6"><strong>All sites</strong></td></tr>
+      <tr><td></td><td>Investment</td><td></td><td></td><td class="num">{{ costs.capex|floatformat:"0g" }}</td><td class="num">{{ costs.investment|floatformat:"0g" }}</td></tr>
+      <tr><td></td><td>Operation{% if costs.risk_adjustment %} (with a risk adjustment of {{ costs.risk_adjustment|floatformat:"0g" }}: the worst scenarios weigh more than their probability){% endif %}</td><td></td><td></td><td></td><td class="num">{{ costs.operation|floatformat:"0g" }}</td></tr>
+      <tr><td></td><td><strong>Objective</strong></td><td></td><td></td><td></td><td class="num"><strong>{{ costs.grand_total|floatformat:"0g" }}</strong></td></tr>
     </tbody>
   </table>
   </div>

@@ -488,7 +488,9 @@ def cost_table(summary: dict, economics: dict, labels: dict[str, str], risk_meas
     adjustment = 0.0
     if risk_measure == "cvar" and economics.get("operating_cost_eur") is not None:
         adjustment = economics["operating_cost_eur"] - sum(s["operation"] for s in out)
-    return {"sites": out, "total": total, "capex": sum(s["capex"] for s in out), "risk_adjustment": adjustment if abs(adjustment) >= 1.0 else 0.0,
+    investment = sum(s["investment"] for s in out)
+    return {"sites": out, "total": total, "capex": sum(s["capex"] for s in out), "investment": investment,
+            "operation": sum(s["operation"] for s in out) + adjustment, "risk_adjustment": adjustment if abs(adjustment) >= 1.0 else 0.0,
             "grand_total": total + adjustment}
 
 
