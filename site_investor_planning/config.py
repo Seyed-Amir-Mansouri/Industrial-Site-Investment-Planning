@@ -292,7 +292,9 @@ class CapexAssumptions:
 
     ``cap_rules`` set the default largest MW of each asset one site may host, large enough for the
     asset to cover on its own every peak it can serve: the factor times the largest of its weighted
-    peak sums, rounded up to a whole number of its smallest product and then to a whole MW. Heat and
+    peak sums, rounded up to a whole number of its smallest product and then to a whole MW. It is
+    never 0: when every demand an asset serves has a 0 MW peak, the factor applies to the site's
+    largest peak of any demand, and with every peak at 0 the cap is one smallest product. Heat and
     cooling assets and their stores get 1.25 times the peak they serve (25% headroom); the biogas
     CHP 1.25 times the larger of the electricity peak and the heat for space heating, process heat
     and the absorption chiller's drive (both cooling peaks divided by its COP) in MW of electricity;

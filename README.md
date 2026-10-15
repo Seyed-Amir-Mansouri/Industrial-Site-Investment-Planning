@@ -200,7 +200,9 @@ kept and sold and the green hydrogen they cover.
   H2 tank 1.25 times the hydrogen peak. At the default peaks that is 60 MW wind and PV, 40 MW
   battery, 21 MW CHP, 18 MW industrial heat pump, 3 MW electrolyser and 2 MW tank. With these
   defaults every demand an active asset firmly serves is covered and the plan leaves nothing
-  unmet. A demand with a 0 MW peak gives its assets a 0 MW default. A site's own `max_mw`
+  unmet. The default is never 0: when every demand an asset serves has a 0 MW peak, its
+  factor applies to the site's largest peak of any demand instead, and with every peak at 0 the
+  default is one of its smallest products. A site's own `max_mw`
   replaces the rule (`default_max_mw` and `site_max_mw` in `candidates.py`).
 
 ### `plan_capacity.py` flags
