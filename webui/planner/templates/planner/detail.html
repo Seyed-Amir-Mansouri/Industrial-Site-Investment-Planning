@@ -77,14 +77,14 @@
 
 <div class="card" style="margin-bottom:18px">
   <h2>Economics</h2>
-  <p class="lede" style="margin-bottom:12px">Capital cost annualized at {{ run.params.discount_rate_pct }}% over each technology's own lifetime, versus the risk-adjusted operating cost.</p>
+  <p class="lede" style="margin-bottom:12px">Capital cost annualized at {{ run.params.discount_rate_pct }}% over each technology's own lifetime, versus the risk-adjusted operating cost. The capital recovery factor is the share of a technology's capital cost paid each year, so that equal yearly payments repay it with interest over its lifetime: r(1+r)<sup>n</sup> / ((1+r)<sup>n</sup> − 1) at discount rate r and lifetime n years. The annualized capital cost is the capital cost times this factor.</p>
   <div class="grid kpis" style="margin-bottom:16px">
     <div class="kpi"><div class="label">Annualized CAPEX</div><div class="value">€{{ economics.annualized_capex_eur|floatformat:"0g" }}</div><div class="sub">per year, over asset lifetimes</div></div>
     <div class="kpi"><div class="label">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }} operating cost{% elif run.params.risk_measure == "deterministic" %}Operating cost{% else %}Expected operating cost{% endif %}</div><div class="value">€{{ economics.operating_cost_eur|floatformat:"0g" }}</div><div class="sub">objective − annualized CAPEX</div></div>
     <div class="kpi"><div class="label">CAPEX per MW</div><div class="value">€{{ economics.capex_per_mw_eur|floatformat:"0g" }}</div><div class="sub">raw CAPEX ÷ total MW built</div></div>
   </div>
   <table>
-    <thead><tr><th>Technology</th><th class="num">Raw CAPEX</th><th class="num">Annualized CAPEX</th><th class="num">CRF</th></tr></thead>
+    <thead><tr><th>Technology</th><th class="num">Capital cost</th><th class="num">Annualized capital cost</th><th class="num">Capital recovery factor</th></tr></thead>
     <tbody>
       {% for a in assets %}
       <tr>
@@ -93,6 +93,8 @@
         <td class="num">€{{ economics.by_asset|lookup:a|lookup:"annualized_eur"|floatformat:"0g" }}</td>
         <td class="num">{{ economics.by_asset|lookup:a|lookup:"crf"|floatformat:4 }}</td>
       </tr>
+      {% empty %}
+      <tr><td colspan="4">No technology was built.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -104,7 +106,7 @@
   <p class="lede" style="margin-bottom:12px">How each site meets its own minimum green (RFNBO) share of annual hydrogen demand, and what it trades on the Guarantee of Origin market. All values in MWh per year.</p>
   <div style="overflow-x:auto">
   <table>
-    <thead><tr><th>Site</th><th>Country</th><th>Scenario</th><th class="num">Probability</th><th class="num">H2 demand</th><th class="num">Green H2 produced</th><th class="num">Green H2 bought</th><th class="num">Green share</th><th class="num">GOs bought</th><th class="num">GOs sold</th></tr></thead>
+    <thead><tr><th>Site</th><th>Country</th><th>Scenario</th><th class="num">Probability</th><th class="num">Hydrogen demand</th><th class="num">Green hydrogen produced</th><th class="num">Green hydrogen bought</th><th class="num">Green share</th><th class="num">Guarantees of Origin bought</th><th class="num">Guarantees of Origin sold</th></tr></thead>
     <tbody>
       {% for g in summary.green_h2_expected %}
       <tr>
@@ -158,7 +160,7 @@
 <div class="grid" style="grid-template-columns:minmax(0,1fr);gap:22px;align-items:start">
   <div class="card">
     <h2>Installed capacity by site (MW)</h2>
-    <p class="lede" style="margin-bottom:12px">MW built at each chosen site, per technology. Heat pumps, boilers and chillers are in MW of heat or cooling output.</p>
+    <p class="lede" style="margin-bottom:12px">MW built at each chosen site, per technology; technologies no site built are left out. Heat pumps, boilers and chillers are in MW of heat or cooling output.</p>
     <div style="overflow-x:auto">
     <table>
       <thead><tr><th>Site</th><th>Country</th>{% for a in assets %}<th class="num">{{ asset_labels|lookup:a }}</th>{% endfor %}</tr></thead>

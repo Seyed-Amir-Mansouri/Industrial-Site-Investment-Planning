@@ -5,7 +5,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
 from . import geo, runner, services
-from .forms import ASSET_LABELS, MWH_ASSETS, PlanRunForm
+from .forms import ASSET_LABELS, FULL_ASSET_LABELS, MWH_ASSETS, PlanRunForm
 from .models import PlanRun
 
 
@@ -48,8 +48,8 @@ def run_detail(request, pk: int):
         "run": run,
         "summary": summary,
         "convergence": summary.get("convergence", []),
-        "asset_labels": ASSET_LABELS,
-        "assets": list(ASSET_LABELS),
+        "asset_labels": FULL_ASSET_LABELS,
+        "assets": [a for a in ASSET_LABELS if float(summary.get("totals_mw", {}).get(a) or 0) > 0],
         "map_markers": services.country_map_markers(run.params, summary) if summary else [],
         "groups": [{"key": g, "label": services.GROUP_LABELS[g], "token": services.GROUP_MAP_TOKENS[g]}
                    for g in services.ASSET_GROUPS],

@@ -24,6 +24,13 @@ ASSET_LABELS = {
     "electrolyser_mw": "Electrolyser",
     "tank_mw": "H2 storage",
 }
+FULL_ASSET_LABELS = {
+    **ASSET_LABELS,
+    "pv_mw": "Solar photovoltaic",
+    "chp_mw": "Biogas combined heat and power",
+    "ac_chiller_mw": "Air-conditioning chiller",
+    "tank_mw": "Hydrogen storage",
+}
 ASSET_SERVES = {
     "wind_mw": ["electricity"], "pv_mw": ["electricity"], "battery_mw": ["electricity"],
     "chp_mw": ["electricity", "space_heat", "process_heat"],
