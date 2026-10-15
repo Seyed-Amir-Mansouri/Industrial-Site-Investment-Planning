@@ -438,13 +438,15 @@ The web planner is a small Django app in `webui/`. You start it with `webui\app.
   **Reset scenario** button. **Reset all settings** at the bottom returns the whole form
   to its defaults. **Run plan** starts the run, and the page opens the run's details.
 - **Run detail** shows one finished run. It has each site with its chosen country, the headline numbers
-  (objective, capital cost, risk measure), the economics of each built technology, a yearly cost
-  table per site (each technology it built with its MW, the units of each product size, its
-  capital cost and annualized capital cost, then what it buys and sells on each market,
+  (objective, capital cost, risk measure), the economics of each built technology, a cost table
+  per site (each technology it built with its MW, the units of each product size, its capital
+  cost paid once and its annualized capital cost per year, then what it buys and sells on each
+  market per year,
   including unmet heat and cooling charged at the penalty; the totals give the total capital
-  cost and add up to the objective), the green hydrogen results (one row per site: hydrogen
-  kept (bought plus made minus sold), the green hydrogen covered by certificates, the green
-  share and the certificates bought, kept and sold), an hourly operation section (pick a scenario and a range of representative days to
+  cost and add up to the objective), the green hydrogen results (one row per site, with units: hydrogen
+  bought, made, sold and kept (bought plus made minus sold), the minimum green share, the green
+  hydrogen covered by certificates, the green share reached and the certificates bought, kept
+  and sold), an hourly operation section (pick a scenario and a range of representative days to
   see, for each site, its electricity and hydrogen prices and a stacked bar chart per demand
   balance with every asset that supplies or draws on it and the demand line; balances and assets
   a site doesn't have are left out), a map of the candidate countries (colored by which demand the capacity serves), the
