@@ -67,11 +67,7 @@ def run_detail(request, pk: int):
         "dispatch": services.dispatch_options(run.output_prefix, run.params.get("scenario_labels") or {})
                     if run.status == "done" and run.output_prefix else {},
         "costs": services.cost_table(summary, economics, FULL_ASSET_LABELS, run.params.get("risk_measure")),
-        "green_go": {k: any(float(g.get(f"go_{k}_mwh") or 0) > 0.5 for g in summary.get("green_h2_expected", []))
-                     for k in ("bought", "kept", "sold")},
-        "green_h2": {k: any(float(g.get(f"h2_{k}_mwh") or 0) > 0.5 for g in summary.get("green_h2_expected", []))
-                     for k in ("made", "sold")},
-        "green_required": {sp["name"]: sp.get("green_share", 0) * 100 for sp in run.params.get("sites") or []},
+        "green": services.green_tables(summary, run.params, services.site_assumptions()["electrolyser_efficiency"]),
         "electrolyser_efficiency": services.site_assumptions()["electrolyser_efficiency"],
         "log_tail": "\n".join(run.log.strip().splitlines()[-60:]) if run.log else "",
     })

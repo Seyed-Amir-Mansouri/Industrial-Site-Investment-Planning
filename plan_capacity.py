@@ -72,8 +72,9 @@ def _snap(value: float, tol: float = 1e-3) -> float:
 
 def green_h2_summary(schedule: pd.DataFrame) -> dict[str, float]:
     """Annual hydrogen and Guarantee of Origin totals (MWh/yr) of one site's representative-day
-    schedule: the hydrogen it keeps (bought plus made minus sold), the GOs it buys, keeps from its
-    own wind/PV and sells, the hydrogen those GOs make green and the green share reached."""
+    schedule: the hydrogen it keeps (bought plus made minus sold), the GOs its own wind/PV output
+    earns, the GOs it buys, keeps and sells, the hydrogen those GOs make green and the green share
+    reached."""
     w = schedule["day_weight"]
 
     def annual(col: str) -> float:
@@ -86,6 +87,7 @@ def green_h2_summary(schedule: pd.DataFrame) -> dict[str, float]:
     return {"h2_demand_mwh": annual("Site hydrogen demand (MW)"), "h2_bought_mwh": bought, "h2_made_mwh": made,
             "h2_sold_mwh": sold, "h2_kept_mwh": kept, "green_h2_mwh": green,
             "green_share": green / kept if kept > 0 else 0.0,
+            "go_earned_mwh": annual("Site wind (MW)") + annual("Site pv (MW)"),
             "go_bought_mwh": annual("Site GOs bought (MWh/h)"), "go_kept_mwh": annual("Site own wind/PV GOs kept (MWh/h)"),
             "go_sold_mwh": annual("Site GOs sold (MWh/h)")}
 

@@ -141,33 +141,48 @@
 </div>
 {% endif %}
 
-{% if summary.green_h2_expected and "h2_kept_mwh" in summary.green_h2_expected.0 %}
+{% if green %}
 <div class="card">
   <h2>Green hydrogen</h2>
-  <p class="lede" style="margin-bottom:12px">Hydrogen bought on the market is not green. Each site covers its minimum green share of the hydrogen it keeps (bought plus made minus sold) with renewable electricity certificates (Guarantees of Origin), bought or kept from its own wind and solar output. One certificate (1 MWh of renewable electricity) covers the hydrogen an electrolyser makes from it, {{ electrolyser_efficiency }} MWh. Yearly totals{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}.</p>
+  <p class="lede" style="margin-bottom:12px">Hydrogen bought on the market is not green. Each site covers its minimum green share of the hydrogen it keeps (made plus bought minus sold) with renewable electricity certificates (Guarantees of Origin). One certificate is 1 MWh of renewable electricity and covers the hydrogen an electrolyser makes from it, {{ electrolyser_efficiency }} MWh. Every MWh of the site's own wind and solar output earns a certificate. Yearly totals{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}. <strong>Market exchange is net: a positive number is what the site bought from the market beyond what it sold, a negative number is what it sold beyond what it bought.</strong></p>
+  <h3 style="margin:8px 0 6px">Certificates (MWh of electricity per year)</h3>
   <div style="overflow-x:auto">
   <table>
-    <thead><tr><th>Site</th><th class="num">Hydrogen bought (MWh/yr)</th>{% if green_h2.made %}<th class="num">Hydrogen made (MWh/yr)</th>{% endif %}{% if green_h2.sold %}<th class="num">Hydrogen sold (MWh/yr)</th>{% endif %}<th class="num">Hydrogen kept (MWh/yr)</th><th class="num">Minimum green share (%)</th><th class="num">Green hydrogen covered (MWh/yr)</th><th class="num">Green share reached (%)</th>{% if green_go.bought %}<th class="num">Certificates bought (MWh of electricity/yr)</th>{% endif %}{% if green_go.kept %}<th class="num">Certificates kept from own wind and solar (MWh of electricity/yr)</th>{% endif %}{% if green_go.sold %}<th class="num">Certificates sold (MWh of electricity/yr)</th>{% endif %}</tr></thead>
+    <thead><tr><th>Site</th><th class="num">Minimum green share (%)</th><th class="num">Certificates needed</th><th class="num">From own wind and solar</th><th class="num">Market exchange (+ bought, − sold)</th><th class="num">Certificates used (own + market)</th></tr></thead>
     <tbody>
-      {% for g in summary.green_h2_expected %}
+      {% for g in green %}
       <tr>
         <td>{{ g.site }} → {{ g.country }}</td>
-        <td class="num">{{ g.h2_bought_mwh|floatformat:"0g" }}</td>
-        {% if green_h2.made %}<td class="num">{{ g.h2_made_mwh|floatformat:"0g" }}</td>{% endif %}
-        {% if green_h2.sold %}<td class="num">{{ g.h2_sold_mwh|floatformat:"0g" }}</td>{% endif %}
-        <td class="num">{{ g.h2_kept_mwh|floatformat:"0g" }}</td>
-        <td class="num">{{ green_required|lookup:g.site|floatformat:"-1" }}</td>
-        <td class="num">{{ g.green_h2_mwh|floatformat:"0g" }}</td>
-        <td class="num">{% widthratio g.green_share 1 100 %}</td>
-        {% if green_go.bought %}<td class="num">{{ g.go_bought_mwh|floatformat:"0g" }}</td>{% endif %}
-        {% if green_go.kept %}<td class="num">{{ g.go_kept_mwh|floatformat:"0g" }}</td>{% endif %}
-        {% if green_go.sold %}<td class="num">{{ g.go_sold_mwh|floatformat:"0g" }}</td>{% endif %}
+        <td class="num">{{ g.share_pct|floatformat:"-1" }}</td>
+        <td class="num">{{ g.go_needed|floatformat:"0g" }}</td>
+        <td class="num">{{ g.go_own|floatformat:"0g" }}</td>
+        <td class="num">{% if g.go_market > 0.5 %}+{% endif %}{{ g.go_market|floatformat:"0g" }}</td>
+        <td class="num">{{ g.go_used|floatformat:"0g" }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   </div>
-  {% if green_go.sold %}<p class="lede" style="margin-top:12px">Every MWh of the site's own wind and solar output earns a certificate, whether the site uses that electricity or exports it; the site sells the ones it doesn't keep for green hydrogen.</p>{% endif %}
+  <h3 style="margin:18px 0 6px">Hydrogen (MWh of hydrogen per year)</h3>
+  <div style="overflow-x:auto">
+  <table>
+    <thead><tr><th>Site</th><th class="num">Hydrogen needed (demand)</th><th class="num">Made on site</th><th class="num">Market exchange (+ bought, − sold)</th><th class="num">Hydrogen kept (made + market)</th><th class="num">Green hydrogen covered by certificates</th><th class="num">Green share reached (%)</th></tr></thead>
+    <tbody>
+      {% for g in green %}
+      <tr>
+        <td>{{ g.site }} → {{ g.country }}</td>
+        <td class="num">{{ g.h2_needed|floatformat:"0g" }}</td>
+        <td class="num">{{ g.h2_made|floatformat:"0g" }}</td>
+        <td class="num">{% if g.h2_market > 0.5 %}+{% endif %}{{ g.h2_market|floatformat:"0g" }}</td>
+        <td class="num">{{ g.h2_supplied|floatformat:"0g" }}</td>
+        <td class="num">{{ g.h2_green|floatformat:"0g" }}</td>
+        <td class="num">{{ g.share_reached_pct|floatformat:"1" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="lede" style="margin-top:12px">Certificates needed = minimum green share × hydrogen kept ÷ {{ electrolyser_efficiency }}. Certificates the site's own wind and solar earn beyond what it needs are sold, so a site with more own output than it needs shows a negative market exchange. Hydrogen kept can be a little above the demand because hydrogen storage loses some of what it stores.</p>
 </div>
 {% endif %}
 
