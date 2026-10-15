@@ -82,9 +82,9 @@ def plain(value):
 
 class PlanRunForm(forms.Form):
     name = forms.CharField(max_length=120, required=False, label="Run name",
-                           widget=forms.TextInput(attrs={"placeholder": "e.g. Baseline 1.5B, PV only"}))
+                           widget=forms.TextInput(attrs={"placeholder": "e.g. Baseline 20M, PV only"}))
     budget_limited = forms.BooleanField(required=False, initial=True, label="Limited budget")
-    budget = forms.FloatField(required=False, min_value=1e6, initial=1_500_000_000, label="Total CAPEX budget (EUR)",
+    budget = forms.FloatField(required=False, min_value=1e6, initial=20_000_000, label="Total CAPEX budget (EUR)",
                               help_text="Raw, unannualized budget across all sites.")
     all_countries = forms.BooleanField(required=False, initial=True, label="All eligible countries")
     countries = forms.MultipleChoiceField(required=False, label="Candidate site countries",
