@@ -84,7 +84,9 @@ class PlanRunForm(forms.Form):
     name = forms.CharField(max_length=120, required=False, label="Run name",
                            widget=forms.TextInput(attrs={"placeholder": "e.g. Baseline 500M, PV only"}))
     budget_limited = forms.BooleanField(required=False, initial=True, label="Limited budget")
-    budget = forms.FloatField(required=False, min_value=1e6, initial=500_000_000, label="Total CAPEX budget (EUR)",
+    budget = forms.FloatField(required=False, min_value=10_000_000, initial=500_000_000,
+                              label="Total CAPEX budget (EUR)",
+                              widget=forms.NumberInput(attrs={"step": 10_000_000}),
                               help_text="Raw, unannualized budget across all sites.")
     all_countries = forms.BooleanField(required=False, initial=True, label="All eligible countries")
     countries = forms.MultipleChoiceField(required=False, label="Candidate site countries",
