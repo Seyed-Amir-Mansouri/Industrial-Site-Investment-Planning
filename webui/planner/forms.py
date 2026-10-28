@@ -62,6 +62,8 @@ MWH_ASSETS = {"battery_mw", "tank_mw", "hot_water_storage_mw", "cold_storage_mw"
 MAX_CANDIDATES_PER_ASSET = 8
 MAX_SITES = 6
 CUSTOM_FIELD_RE = re.compile(r"^custom_name__(\d+)$")
+FIXED_FIELD_RE = re.compile(r"^fixed_name__(\d+)__(\d+)$")
+FIXED_LIFETIME_DEFAULT = 30
 
 
 def range_text(bounds: list[int] | None) -> str:
@@ -81,13 +83,16 @@ def plain(value):
 
 
 class PlanRunForm(forms.Form):
+    fixed_lifetime_default = FIXED_LIFETIME_DEFAULT
+
     name = forms.CharField(max_length=120, required=False, label="Run name",
                            widget=forms.TextInput(attrs={"placeholder": "e.g. Baseline 500M, PV only"}))
     budget_limited = forms.BooleanField(required=False, initial=True, label="Limited budget")
     budget = forms.FloatField(required=False, min_value=10_000_000, initial=500_000_000,
-                              label="Total CAPEX budget (EUR)",
+                              label="Total budget (EUR)",
                               widget=forms.NumberInput(attrs={"step": 10_000_000}),
-                              help_text="Raw, unannualized budget across all sites.")
+                              help_text="Raw, unannualized budget across all sites: their fixed costs first, "
+                                        "and what is left for the devices the optimizer plans.")
     all_countries = forms.BooleanField(required=False, initial=True, label="All eligible countries")
     countries = forms.MultipleChoiceField(required=False, label="Candidate site countries",
                                           widget=forms.CheckboxSelectMultiple)
@@ -153,6 +158,14 @@ class PlanRunForm(forms.Form):
                     required=False, min_value=0, initial=plain(default_caps[asset]),
                     label=f"{ASSET_LABELS[asset]} maximum (MW)",
                     widget=forms.NumberInput(attrs={"step": "any", "data-maxmw": asset}))
+        self.fixed_rows = {i: [] for i in range(MAX_SITES)}
+        for k in {**self.initial, **(self.data or {})}:
+            if (m := FIXED_FIELD_RE.match(k)) and int(m.group(1)) < MAX_SITES:
+                self.fixed_rows[int(m.group(1))].append(int(m.group(2)))
+        for i, rows in self.fixed_rows.items():
+            rows.sort()
+            for j in rows:
+                self._add_fixed_fields(i, j)
 
         for asset in self.assets:
             rows = self.catalog_defaults["catalog"][asset]
@@ -188,6 +201,17 @@ class PlanRunForm(forms.Form):
                                         "max_value": f"Outside the accepted range ({lo} to {hi}%%)."},
                         widget=forms.NumberInput(attrs={"step": "any"}))
 
+    def _add_fixed_fields(self, i: int, j: int) -> None:
+        """Fields of fixed cost ``j`` at site ``i``: its name, CAPEX, lifetime and yearly operating cost."""
+        self.fields[f"fixed_name__{i}__{j}"] = forms.CharField(max_length=60, required=False, label="Name")
+        self.fields[f"fixed_capex__{i}__{j}"] = forms.FloatField(
+            required=False, min_value=0, label="CAPEX (EUR)", widget=forms.NumberInput(attrs={"step": 100_000}))
+        self.fields[f"fixed_life__{i}__{j}"] = forms.FloatField(
+            required=False, min_value=1, max_value=100, initial=FIXED_LIFETIME_DEFAULT, label="Lifetime (yr)")
+        self.fields[f"fixed_opex__{i}__{j}"] = forms.FloatField(
+            required=False, min_value=0, initial=0, label="Yearly OPEX (EUR/yr)",
+            widget=forms.NumberInput(attrs={"step": 10_000}))
+
     @staticmethod
     def initial_from_run(name: str, params: dict) -> tuple[dict, list[int]]:
         """Initial values that fill the form with an earlier run's settings, and the indices of its
@@ -215,6 +239,11 @@ class PlanRunForm(forms.Form):
                 init[f"site_asset__{i}__{a}"] = True
             for a, v in (site.get("max_mw") or {}).items():
                 init[f"site_maxmw__{i}__{a}"] = plain(v)
+            for j, c in enumerate(site.get("fixed_costs") or []):
+                init[f"fixed_name__{i}__{j}"] = c.get("name", "")
+                init[f"fixed_capex__{i}__{j}"] = plain(c.get("capex_eur", 0))
+                init[f"fixed_life__{i}__{j}"] = plain(c.get("lifetime_years", FIXED_LIFETIME_DEFAULT))
+                init[f"fixed_opex__{i}__{j}"] = plain(c.get("opex_eur_per_year", 0))
         for asset, candidates in (params.get("catalog_overrides") or {}).items():
             for i in range(MAX_CANDIDATES_PER_ASSET):
                 c = candidates[i] if i < len(candidates) else None
@@ -298,8 +327,24 @@ class PlanRunForm(forms.Form):
                              "maxmw": self[f"site_maxmw__{i}__{a}"],
                              "serves": ", ".join(services.SERVICE_LABELS[s] for s in ASSET_SERVES[a])}
                             for a in self.assets],
+                 "fixed": [{"index": j, "name": self[f"fixed_name__{i}__{j}"], "capex": self[f"fixed_capex__{i}__{j}"],
+                            "life": self[f"fixed_life__{i}__{j}"], "opex": self[f"fixed_opex__{i}__{j}"]}
+                           for j in self.fixed_rows[i]],
                  "services": self.demand_services}
                 for i in range(MAX_SITES)]
+
+    def _fixed_costs(self, data: dict, i: int) -> list[dict]:
+        """Fixed costs entered at site ``i``, leaving out rows left blank."""
+        out = []
+        for j in self.fixed_rows[i]:
+            name = (data.get(f"fixed_name__{i}__{j}") or "").strip()
+            capex, life, opex = (data.get(f"fixed_{k}__{i}__{j}") for k in ("capex", "life", "opex"))
+            if not name and not capex and not opex:
+                continue
+            out.append({"name": name, "capex_eur": capex or 0.0,
+                        "lifetime_years": life if life is not None else FIXED_LIFETIME_DEFAULT,
+                        "opex_eur_per_year": opex or 0.0})
+        return out
 
     def _site_assets(self, data: dict, i: int) -> list[str]:
         """Assets ticked as active at site ``i``."""
@@ -374,6 +419,14 @@ class PlanRunForm(forms.Form):
         for i, name in enumerate(names):
             if not self._site_assets(data, i):
                 self.add_error(None, f"{name}: activate at least one asset.")
+            for j in self.fixed_rows[i]:
+                row_name = (data.get(f"fixed_name__{i}__{j}") or "").strip()
+                if (data.get(f"fixed_capex__{i}__{j}") or data.get(f"fixed_opex__{i}__{j}")) and not row_name:
+                    self.add_error(f"fixed_name__{i}__{j}", "Name this fixed cost.")
+        fixed_capex = sum(c["capex_eur"] for i in range(n_sites) for c in self._fixed_costs(data, i))
+        if data.get("budget_limited") and data.get("budget") is not None and fixed_capex > data["budget"]:
+            self.add_error("budget", f"The sites' fixed costs (€{fixed_capex:,.0f}) are above the total budget; "
+                                     f"raise the budget or lower the fixed costs.")
         included = self._included_scenarios(data)
         if not included:
             self.add_error(None, "Select at least one uncertainty scenario.")
@@ -430,7 +483,8 @@ class PlanRunForm(forms.Form):
                   "flex_fraction": {svc: d[f"site_flex__{i}__{svc}"] / 100 for svc in self.demand_services},
                   "active_assets": self._site_assets(d, i),
                   "max_mw": {a: d[f"site_maxmw__{i}__{a}"] for a in self._site_assets(d, i)
-                             if d.get(f"site_maxmw__{i}__{a}") is not None}}
+                             if d.get(f"site_maxmw__{i}__{a}") is not None},
+                  "fixed_costs": self._fixed_costs(d, i)}
                  for i in range(d["n_sites"])]
 
         included = self._included_scenarios(d)

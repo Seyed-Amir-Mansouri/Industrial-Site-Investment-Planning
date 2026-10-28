@@ -11,7 +11,7 @@
 </div>
 
 <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-bottom:18px">
-  <div class="kpi"><div class="label">Default budget</div><div class="value">€{{ defaults.budget|floatformat:"0g" }}</div></div>
+  <div class="kpi"><div class="label">Default total budget</div><div class="value">€{{ defaults.budget|floatformat:"0g" }}</div></div>
   <div class="kpi"><div class="label">Discount rate</div><div class="value">{% widthratio defaults.discount_rate 1 100 %}%</div></div>
 </div>
 
