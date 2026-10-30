@@ -184,7 +184,7 @@ class PlanRunForm(forms.Form):
 
         self.fields["scenario_include__" + self.baseline] = forms.BooleanField(required=False, initial=True)
         self.fields["scenario_prob__" + self.baseline] = forms.FloatField(
-            min_value=0, max_value=100, initial=100, label="Probability (%)")
+            required=False, min_value=0, max_value=100, initial=100, label="Probability (%)")
         self.custom_indices = sorted({int(m.group(1)) for k in (self.data or {})
                                       if (m := CUSTOM_FIELD_RE.match(k))} | set(custom_indices or []))
         for i in self.custom_indices:
@@ -401,10 +401,40 @@ class PlanRunForm(forms.Form):
         base = [self.baseline] if data.get("scenario_include__" + self.baseline) else []
         return base + [f"custom{i + 1}" for i in self.custom_indices]
 
-    def _scenario_prob(self, data: dict, key: str) -> float | None:
+    @staticmethod
+    def _scenario_prob_field(key: str) -> str:
+        """Name of the probability field of scenario ``key``."""
         if key.startswith("custom") and key[6:].isdigit():
-            return data.get(f"custom_prob__{int(key[6:]) - 1}")
-        return data.get(f"scenario_prob__{key}")
+            return f"custom_prob__{int(key[6:]) - 1}"
+        return f"scenario_prob__{key}"
+
+    def _scenario_prob(self, data: dict, key: str) -> float | None:
+        return data.get(self._scenario_prob_field(key))
+
+    def _scenario_name(self, data: dict, key: str) -> str:
+        """Display name of scenario ``key`` as entered on the form."""
+        if key.startswith("custom") and key[6:].isdigit():
+            return (data.get(f"custom_name__{int(key[6:]) - 1}") or "").strip() or f"Scenario {key[6:]}"
+        return services.scenario_label(key)
+
+    def _check_scenario_probs(self, data: dict, included: list[str]) -> None:
+        """Every included scenario needs a probability above 0%, and together they must add up to 100%.
+        Each problem is reported at the top of the page and, for one scenario, on its card."""
+        probs = {s: self._scenario_prob(data, s) for s in included}
+        missing = [s for s, p in probs.items() if p is None]
+        zero = [s for s, p in probs.items() if p == 0]
+        if not missing and abs(sum(probs.values()) - 100) > 0.01:
+            self.add_error(None, f"Scenario probabilities add up to {sum(probs.values()):.2f}%. They must add up to 100%.")
+        if missing:
+            names = ", ".join(self._scenario_name(data, s) for s in missing)
+            self.add_error(None, f"Enter a valid probability for: {names}.")
+        if zero:
+            names = ", ".join(self._scenario_name(data, s) for s in zero)
+            self.add_error(None, f"Probability can't be 0%: {names}. Enter a value above 0, or remove the scenario.")
+        for s in missing + zero:
+            field = self._scenario_prob_field(s)
+            if field not in self.errors:
+                self.add_error(field, "Enter a probability above 0%.")
 
     def clean(self):
         data = super().clean()
@@ -430,11 +460,7 @@ class PlanRunForm(forms.Form):
         included = self._included_scenarios(data)
         if not included:
             self.add_error(None, "Select at least one uncertainty scenario.")
-        probs = [self._scenario_prob(data, s) for s in included]
-        if all(p is not None for p in probs):
-            total = sum(probs)
-            if abs(total - 100) > 0.01:
-                self.add_error(None, f"Scenario probabilities add up to {total:.2f}%. They must add up to 100%.")
+        self._check_scenario_probs(data, included)
         data["risk_measure"] = "deterministic" if len(included) <= 1 else "cvar"
         if data["risk_measure"] == "cvar" and data.get("cvar_alpha") is None:
             self.add_error("cvar_alpha", "Enter a confidence level for CVaR (two or more scenarios are included).")
