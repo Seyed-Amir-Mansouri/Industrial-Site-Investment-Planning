@@ -224,8 +224,25 @@ def country_map_markers(params: dict, summary: dict) -> list[dict]:
     return rows
 
 
+def fixed_costs(params: dict) -> dict[str, list[dict]]:
+    """Each site's fixed costs in a run, with their yearly cost (annualized CAPEX plus OPEX) at the
+    run's discount rate; empty for a run made before fixed costs existed."""
+    import site_investor_planning as hp
+
+    rate = params.get("discount_rate_pct", 5) / 100
+    out = {}
+    for sp in params.get("sites") or []:
+        costs = [hp.FixedCost(**c) for c in sp.get("fixed_costs") or []]
+        if costs:
+            out[sp["name"]] = [{"name": c.name, "capex_eur": c.capex_eur, "lifetime_years": c.lifetime_years,
+                                "opex_eur_per_year": c.opex_eur_per_year, "yearly_eur": c.yearly_eur(rate)}
+                               for c in costs]
+    return out
+
+
 def economics(params: dict, summary: dict) -> dict:
-    """CAPEX, annualized CAPEX and operating cost of a finished run, priced with that run's own catalog."""
+    """CAPEX, annualized CAPEX and operating cost of a finished run, priced with that run's own catalog,
+    plus its sites' fixed costs."""
     import site_investor_planning as hp
 
     catalog = dict(hp.CANDIDATE_CATALOG)
@@ -253,17 +270,25 @@ def economics(params: dict, summary: dict) -> dict:
 
     annualized_by_asset = {a: capex_by_asset[a] * crfs[a] for a in hp.ASSETS}
     annualized_total = sum(annualized_by_asset.values())
+    fixed = fixed_costs(params)
+    fixed_capex = sum(c["capex_eur"] for rows in fixed.values() for c in rows)
+    fixed_yearly = sum(c["yearly_eur"] for rows in fixed.values() for c in rows)
+    device_capex = sum(capex_by_asset.values())
     raw_capex = summary.get("raw_capex_eur")
     if raw_capex is None:
-        raw_capex = sum(capex_by_asset.values())
+        raw_capex = device_capex + fixed_capex
     objective = summary.get("objective_eur")
     total_mw = sum(summary.get("totals_mw", {}).values())
 
     return {
         "raw_capex_eur": raw_capex,
+        "device_capex_eur": device_capex,
+        "fixed_capex_eur": fixed_capex,
+        "fixed_yearly_eur": fixed_yearly,
+        "fixed_by_site": fixed,
         "annualized_capex_eur": annualized_total,
-        "operating_cost_eur": (objective - annualized_total) if objective is not None else None,
-        "capex_per_mw_eur": (raw_capex / total_mw) if total_mw else None,
+        "operating_cost_eur": (objective - annualized_total - fixed_yearly) if objective is not None else None,
+        "capex_per_mw_eur": (device_capex / total_mw) if total_mw else None,
         "by_site": by_site,
         "by_asset": {
             a: {"capex_eur": capex_by_asset[a], "annualized_eur": annualized_by_asset[a], "crf": crfs[a]}
@@ -461,8 +486,9 @@ def _expected_market(rows: list[dict]) -> list[dict]:
 
 
 def cost_table(summary: dict, economics: dict, labels: dict[str, str], risk_measure: str | None) -> dict:
-    """Each chosen site's yearly cost: the annualized capital cost of each technology it built, then
-    what it buys and sells on each market, unmet heat and cooling included. The sites' totals add
+    """Each chosen site's yearly cost: the annualized capital cost of each technology it built and
+    the yearly cost of each of its fixed costs, then what it buys and sells on each market, unmet
+    heat and cooling included. The sites' totals add
     up to the run's objective. Under CVaR the operating part of the objective is the average of
     the worst scenarios rather than the probability-weighted sum of the sites, and the difference
     is shown as a risk adjustment."""
@@ -475,6 +501,9 @@ def cost_table(summary: dict, economics: dict, labels: dict[str, str], risk_meas
         invest = [{"group": "Investment", "label": labels.get(a, a), "amount": v["mw"], "unit": "MW",
                    "products": v["products"], "capex": v["capex_eur"], "eur": v["annualized_eur"]}
                   for a, v in by_site.get(s["site"], {}).items() if v["mw"] > 0]
+        invest += [{"group": "Fixed costs", "label": c["name"], "amount": c["lifetime_years"], "unit": "yr",
+                    "opex": c["opex_eur_per_year"], "capex": c["capex_eur"], "eur": c["yearly_eur"]}
+                   for c in economics.get("fixed_by_site", {}).get(s["site"], [])]
         operate = [{"group": i["market"], "label": i["label"], "amount": i["mwh"], "unit": "MWh", "eur": i["eur"]}
                    for i in s["items"]]
         rows = invest + operate

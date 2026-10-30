@@ -11,8 +11,9 @@ summer maintenance stop, and weather-driven space heating and space cooling.
 Each site's annual peaks, green hydrogen share, flexibility, active assets and maximum MW come
 from its ``SiteSpec``. A run's sites can be read from a JSON file shaped ``{"sites": [{"name": ..,
 "peaks_mw": {service: MW}, "green_share": .., "flex_fraction": {service: share} or one share for all,
-"active_assets": [asset, ..], "max_mw": {asset: MW}}, ...]}``; missing values fall back to the
-defaults (every asset active, default caps).
+"active_assets": [asset, ..], "max_mw": {asset: MW}, "fixed_costs": [{"name": .., "capex_eur": ..,
+"lifetime_years": .., "opex_eur_per_year": ..}, ..]}, ...]}``; missing values fall back to the
+defaults (every asset active, default caps, no fixed costs).
 """
 from __future__ import annotations
 
@@ -92,7 +93,8 @@ def load_sites(path: Path) -> list[SiteSpec]:
         sites.append(SiteSpec(name=str(e.get("name") or f"Site {i}"), peaks_mw=peaks,
                               green_share=float(e.get("green_share", 0.42)),
                               flex_fraction=e.get("flex_fraction", DEFAULT_FLEX_FRACTION),
-                              active_assets=e.get("active_assets"), max_mw=e.get("max_mw", {})))
+                              active_assets=e.get("active_assets"), max_mw=e.get("max_mw", {}),
+                              fixed_costs=e.get("fixed_costs", [])))
     names = [s.name for s in sites]
     if len(set(names)) != len(names):
         raise ValueError(f"site names in {path} must be unique, got {names}")

@@ -241,6 +241,38 @@ class GreenH2Params:
 GREEN_H2 = GreenH2Params()
 
 
+def capital_recovery_factor(r: float, n: float) -> float:
+    """Share of a capital cost paid back each year over ``n`` years at discount rate ``r``."""
+    if r == 0:
+        return 1.0 / n
+    return r * (1 + r) ** n / ((1 + r) ** n - 1)
+
+
+@dataclass
+class FixedCost:
+    """A cost a site has whatever the planner builds there, such as land, buildings or a grid
+    connection: its CAPEX (EUR, counted in the total budget), the lifetime (years) that CAPEX is
+    annualized over, and an optional yearly operating cost (EUR/yr)."""
+
+    name: str
+    capex_eur: float = 0.0
+    lifetime_years: float = 30.0
+    opex_eur_per_year: float = 0.0
+
+    def __post_init__(self) -> None:
+        self.capex_eur = float(self.capex_eur)
+        self.lifetime_years = float(self.lifetime_years)
+        self.opex_eur_per_year = float(self.opex_eur_per_year)
+        if self.capex_eur < 0 or self.opex_eur_per_year < 0:
+            raise ValueError(f"fixed cost {self.name!r} can't be negative")
+        if self.lifetime_years <= 0:
+            raise ValueError(f"fixed cost {self.name!r} needs a lifetime above 0 years")
+
+    def yearly_eur(self, discount_rate: float) -> float:
+        """Annualized CAPEX plus yearly operating cost."""
+        return self.capex_eur * capital_recovery_factor(discount_rate, self.lifetime_years) + self.opex_eur_per_year
+
+
 @dataclass
 class SiteSpec:
     """One industrial site to build: its name, annual peak demand per service (MW), minimum green
@@ -248,8 +280,9 @@ class SiteSpec:
     hydrogen), demand flexibility per service (how far each hour's demand of that service may move
     up or down as a share of itself, the shifts netting to zero over each day; default 10% for
     every service, and a single number applies to all of them), the assets it may build
-    (``active_assets``, default all) and optional maximum MW per asset (``max_mw``) that replace
-    the default site caps."""
+    (``active_assets``, default all), optional maximum MW per asset (``max_mw``) that replace
+    the default site caps, and its ``fixed_costs`` (``FixedCost`` or dicts of its fields), paid
+    whichever country the site is built in."""
 
     name: str
     peaks_mw: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SITE_PEAKS_MW))
@@ -257,8 +290,10 @@ class SiteSpec:
     flex_fraction: dict[str, float] | float = DEFAULT_FLEX_FRACTION
     active_assets: list[str] | None = None
     max_mw: dict[str, float] = field(default_factory=dict)
+    fixed_costs: list[FixedCost] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        self.fixed_costs = [c if isinstance(c, FixedCost) else FixedCost(**c) for c in self.fixed_costs]
         missing = [svc for svc in SERVICES if svc not in self.peaks_mw]
         if missing:
             raise ValueError(f"site {self.name!r} is missing peak(s) for {missing}")
@@ -333,9 +368,7 @@ class CapexAssumptions:
 
     @staticmethod
     def _crf(r: float, n: float) -> float:
-        if r == 0:
-            return 1.0 / n
-        return r * (1 + r) ** n / ((1 + r) ** n - 1)
+        return capital_recovery_factor(r, n)
 
     def capital_recovery_factors(self) -> dict[str, float]:
         """Per-asset capital recovery factor from ``discount_rate`` and ``lifetime_years``."""

@@ -77,7 +77,7 @@
 <div class="grid kpis" style="margin-bottom:18px">
   <div class="kpi"><div class="label">Chosen site{{ summary.sites|length|pluralize }}</div><div class="value">{% for s in summary.sites %}{{ s }}{% if not forloop.last %}<br>{% endif %}{% empty %}—{% endfor %}</div><div class="sub">{{ summary.sites|length }} site{{ summary.sites|length|pluralize }} across {% if run.params.all_countries %}all eligible{% else %}{{ run.params.countries|length }}{% endif %} candidate countries</div></div>
   <div class="kpi"><div class="label">Objective</div><div class="value">€{{ summary.objective_eur|floatformat:"0g" }}</div><div class="sub">annualized CAPEX + risk-adjusted energy cost</div></div>
-  <div class="kpi"><div class="label">Raw CAPEX</div><div class="value">€{{ summary.raw_capex_eur|floatformat:"0g" }}</div><div class="sub">{% if run.params.budget %}{% widthratio summary.raw_capex_eur run.params.budget 100 %}% of budget{% endif %}</div></div>
+  <div class="kpi"><div class="label">Raw CAPEX</div><div class="value">€{{ summary.raw_capex_eur|floatformat:"0g" }}</div><div class="sub">{% if run.params.budget %}{% widthratio summary.raw_capex_eur run.params.budget 100 %}% of total budget{% endif %}{% if economics.fixed_capex_eur %}{% if run.params.budget %} · {% endif %}€{{ economics.device_capex_eur|floatformat:"0g" }} devices + €{{ economics.fixed_capex_eur|floatformat:"0g" }} fixed{% endif %}</div></div>
   <div class="kpi"><div class="label">Iterations</div><div class="value">{{ summary.iterations }}</div><div class="sub">{% if summary.converged %}converged{% else %}stopped at limit{% endif %}</div></div>
   <div class="kpi"><div class="label">Solve time</div><div class="value">{{ summary.elapsed_seconds|floatformat:1 }} s</div><div class="sub">{{ summary.elapsed_seconds|floatformat:"0g" }} seconds total</div></div>
   <div class="kpi"><div class="label">Risk measure</div><div class="value">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }}{% elif run.params.risk_measure == "deterministic" %}Deterministic{% else %}Expected{% endif %}</div><div class="sub">{{ run.params.scenarios|length }} scenarios</div></div>
@@ -88,7 +88,8 @@
   <p class="lede" style="margin-bottom:12px">Capital cost annualized at {{ run.params.discount_rate_pct }}% over each technology's own lifetime, versus the risk-adjusted operating cost. The capital recovery factor is the share of a technology's capital cost paid each year, so that equal yearly payments repay it with interest over its lifetime: r(1+r)<sup>n</sup> / ((1+r)<sup>n</sup> − 1) at discount rate r and lifetime n years. The annualized capital cost is the capital cost times this factor.</p>
   <div class="grid kpis" style="margin-bottom:16px">
     <div class="kpi"><div class="label">Annualized CAPEX</div><div class="value">€{{ economics.annualized_capex_eur|floatformat:"0g" }}</div><div class="sub">per year, over asset lifetimes</div></div>
-    <div class="kpi"><div class="label">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }} operating cost{% elif run.params.risk_measure == "deterministic" %}Operating cost{% else %}Expected operating cost{% endif %}</div><div class="value">€{{ economics.operating_cost_eur|floatformat:"0g" }}</div><div class="sub">objective − annualized CAPEX</div></div>
+    {% if economics.fixed_by_site %}<div class="kpi"><div class="label">Fixed site costs</div><div class="value">€{{ economics.fixed_yearly_eur|floatformat:"0g" }}</div><div class="sub">per year: annualized CAPEX of €{{ economics.fixed_capex_eur|floatformat:"0g" }} + yearly OPEX</div></div>{% endif %}
+    <div class="kpi"><div class="label">{% if run.params.risk_measure == "cvar" %}CVaR {{ run.params.cvar_alpha }} operating cost{% elif run.params.risk_measure == "deterministic" %}Operating cost{% else %}Expected operating cost{% endif %}</div><div class="value">€{{ economics.operating_cost_eur|floatformat:"0g" }}</div><div class="sub">objective − annualized CAPEX{% if economics.fixed_by_site %} − fixed site costs{% endif %}</div></div>
     <div class="kpi"><div class="label">CAPEX per MW</div><div class="value">€{{ economics.capex_per_mw_eur|floatformat:"0g" }}</div><div class="sub">raw CAPEX ÷ total MW built</div></div>
   </div>
   <table>
@@ -111,7 +112,7 @@
 {% if costs %}
 <div class="card" style="margin-bottom:18px">
   <h2>Cost by site</h2>
-  <p class="lede" style="margin-bottom:12px">For each site: each technology it built, with its size, the units of each product size and its capital cost, paid once; then what it buys and sells on each market in a year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}. The last column is the cost per year: the capital cost spread over each technology's lifetime, and the yearly market costs. Income is shown as a negative cost. Heat and cooling the site can't supply is charged the unmet-demand penalty. The objective is the total cost per year.</p>
+  <p class="lede" style="margin-bottom:12px">For each site: each technology it built, with its size, the units of each product size and its capital cost, paid once; its fixed costs, with their lifetime and capital cost; then what it buys and sells on each market in a year{% if run.params.scenarios|length > 1 %}, averaged over the scenarios{% endif %}. The last column is the cost per year: the capital cost spread over each technology's or fixed cost's lifetime (plus a fixed cost's yearly OPEX), and the yearly market costs. Income is shown as a negative cost. Heat and cooling the site can't supply is charged the unmet-demand penalty. The objective is the total cost per year.</p>
   <div style="overflow-x:auto">
   <table>
     <thead><tr><th>Cost type</th><th>Item</th><th class="num">Size (MW) or amount (MWh per year)</th><th class="num">Units built</th><th class="num">Capital cost (€, paid once)</th><th class="num">Cost (€ per year)</th></tr></thead>
@@ -121,9 +122,9 @@
       {% for r in s.rows %}
       <tr>
         <td>{{ r.group }}</td><td>{{ r.label }}</td>
-        <td class="num">{% if r.unit == "MW" %}{{ r.amount|floatformat:"-1" }} MW{% else %}{{ r.amount|floatformat:"0g" }} MWh/yr{% endif %}</td>
+        <td class="num">{% if r.unit == "MW" %}{{ r.amount|floatformat:"-1" }} MW{% elif r.unit == "yr" %}{{ r.amount|floatformat:"-1" }} yr lifetime{% if r.opex %}<br>OPEX {{ r.opex|floatformat:"0g" }} €/yr{% endif %}{% else %}{{ r.amount|floatformat:"0g" }} MWh/yr{% endif %}</td>
         <td class="num">{% for p in r.products %}{{ p.units }} × {{ p.mw }} MW{% if not forloop.last %}<br>{% endif %}{% endfor %}</td>
-        <td class="num">{% if r.unit == "MW" %}{{ r.capex|floatformat:"0g" }}{% endif %}</td>
+        <td class="num">{% if r.unit == "MW" or r.unit == "yr" %}{{ r.capex|floatformat:"0g" }}{% endif %}</td>
         <td class="num">{{ r.eur|floatformat:"0g" }}</td>
       </tr>
       {% endfor %}
@@ -218,9 +219,9 @@
       <tr><th style="width:260px">Candidate countries</th><td>{% if run.params.all_countries %}All eligible{% else %}{{ run.params.countries|join:", " }}{% endif %}</td></tr>
       <tr><th>Number of sites</th><td>{{ run.params.n_sites|default:1 }}</td></tr>
       {% for sp in run.params.sites %}
-      <tr><th>{{ sp.name }}</th><td>green H2 ≥ {% widthratio sp.green_share 1 100 %}% · flexibility {% if sp.flex_fraction.items %}{% for k, v in sp.flex_fraction.items %}{{ k }} ±{% widthratio v 1 100 %}%{% if not forloop.last %}, {% endif %}{% endfor %}{% else %}±{% widthratio sp.flex_fraction 1 100 %}%{% endif %} · peaks {% for k, v in sp.peaks_mw.items %}{{ k }} {{ v|floatformat:"-2" }}{% if not forloop.last %}, {% endif %}{% endfor %} MW{% if sp.active_assets %}<br>assets: {% for a in sp.active_assets %}{{ a }}{% for k, v in sp.max_mw.items %}{% if k == a %} (max {{ v|floatformat:"-2" }} MW){% endif %}{% endfor %}{% if not forloop.last %}, {% endif %}{% endfor %}{% endif %}</td></tr>
+      <tr><th>{{ sp.name }}</th><td>green H2 ≥ {% widthratio sp.green_share 1 100 %}% · flexibility {% if sp.flex_fraction.items %}{% for k, v in sp.flex_fraction.items %}{{ k }} ±{% widthratio v 1 100 %}%{% if not forloop.last %}, {% endif %}{% endfor %}{% else %}±{% widthratio sp.flex_fraction 1 100 %}%{% endif %} · peaks {% for k, v in sp.peaks_mw.items %}{{ k }} {{ v|floatformat:"-2" }}{% if not forloop.last %}, {% endif %}{% endfor %} MW{% if sp.active_assets %}<br>assets: {% for a in sp.active_assets %}{{ a }}{% for k, v in sp.max_mw.items %}{% if k == a %} (max {{ v|floatformat:"-2" }} MW){% endif %}{% endfor %}{% if not forloop.last %}, {% endif %}{% endfor %}{% endif %}{% if sp.fixed_costs %}<br>fixed costs: {% for c in sp.fixed_costs %}{{ c.name }} €{{ c.capex_eur|floatformat:"0g" }} ({{ c.lifetime_years|floatformat:"-1" }} yr{% if c.opex_eur_per_year %}, €{{ c.opex_eur_per_year|floatformat:"0g" }}/yr OPEX{% endif %}){% if not forloop.last %}, {% endif %}{% endfor %}{% endif %}</td></tr>
       {% endfor %}
-      <tr><th>Budget</th><td>{% if run.params.budget is None %}No limit{% else %}€{{ run.params.budget|floatformat:"0g" }}{% endif %}</td></tr>
+      <tr><th>Total budget</th><td>{% if run.params.budget is None %}No limit{% else %}€{{ run.params.budget|floatformat:"0g" }}{% endif %}</td></tr>
       {% if run.params.active_assets %}
       <tr><th>Active asset types (any site)</th><td>{{ run.params.active_assets|join:", " }}</td></tr>
       {% else %}

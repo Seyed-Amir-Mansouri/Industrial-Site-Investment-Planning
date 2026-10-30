@@ -115,6 +115,12 @@
   #run-form .asset-cell.suggest-bad .suggest { display: block; color: var(--bad); }
   #run-form .asset-cell.suggest-warn { border-style: dashed; border-color: var(--warn); }
   #run-form .asset-cell.suggest-warn .suggest { display: block; color: var(--warn); }
+  #run-form .fixed-table input[type="text"] { padding: 9px 12px; }
+  #run-form .fixed-table th:nth-child(2), #run-form .fixed-table th:nth-child(4) { width: 20%; }
+  #run-form .fixed-table th:nth-child(3) { width: 13%; }
+  #run-form .fixed-table:not(:has(tbody tr)) { display: none; }
+  #run-form .budget-split { margin-top: 10px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+  #run-form .budget-split.bad { color: var(--bad); }
   #run-form .cap-rule { margin-top: 14px; }
   #run-form .cap-rule .lede { font-size: 13px; margin-top: 10px; }
   #run-form .scenario-card .range { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; }
@@ -164,7 +170,7 @@
     <div class="section-head">
       <div>
         <h2><span class="step">01</span>Problem definition</h2>
-        <p class="lede">Name the run and set how much capital it may spend.</p>
+        <p class="lede">Name the run and set how much capital it may spend in total, fixed site costs included.</p>
       </div>
       <button type="button" class="btn ghost small" data-reset="section">Reset this section</button>
     </div>
@@ -181,6 +187,7 @@
         <label>{{ form.budget.label }}</label>
         {{ form.budget }}
         <div class="help" id="budget-help">{{ form.budget.help_text }}</div>
+        <div class="budget-split" id="budget-split"></div>
         <div class="help" id="budget-off" hidden>No limit: the optimizer may spend as much as pays off.</div>
         {% for e in form.budget.errors %}<div class="error">{{ e }}</div>{% endfor %}
       </div>
@@ -232,9 +239,34 @@
           </div>
           {% endfor %}
         </div>
+        <div class="site-sub">Fixed costs<span class="site-sub-note">Land, buildings, grid connection and other costs this site has whatever devices it gets. Their CAPEX comes off the total budget.</span></div>
+        <table class="catalog-table fixed-table">
+          <thead><tr><th>Name</th><th>CAPEX (EUR)</th><th>Lifetime (yr)</th><th>Yearly OPEX (EUR/yr)</th><th class="remove-cell"></th></tr></thead>
+          <tbody data-fixed-list>
+            {% for f in site.fixed %}
+            <tr class="fixed-row">
+              <td>{{ f.name }}{% for e in f.name.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>
+              <td>{{ f.capex }}{% for e in f.capex.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>
+              <td>{{ f.life }}{% for e in f.life.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>
+              <td>{{ f.opex }}{% for e in f.opex.errors %}<div class="error">{{ e }}</div>{% endfor %}</td>
+              <td class="remove-cell"><button type="button" class="btn ghost small" data-remove-fixed>Remove</button></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div class="toolbar"><button type="button" class="btn ghost small" data-add-fixed>+ Add fixed cost</button></div>
       </div>
       {% endfor %}
     </div>
+    <template id="fixed-row-template">
+      <tr class="fixed-row">
+        <td><input type="text" name="fixed_name____S______J__" maxlength="60" placeholder="e.g. Production hall"></td>
+        <td><input type="number" name="fixed_capex____S______J__" min="0" step="100000" value="0"></td>
+        <td><input type="number" name="fixed_life____S______J__" min="1" max="100" step="any" value="{{ form.fixed_lifetime_default }}"></td>
+        <td><input type="number" name="fixed_opex____S______J__" min="0" step="10000" value="0"></td>
+        <td class="remove-cell"><button type="button" class="btn ghost small" data-remove-fixed>Remove</button></td>
+      </tr>
+    </template>
     <div class="toolbar">
       <button type="button" class="btn ghost small" data-add-site>+ Add site</button>
     </div>
@@ -510,6 +542,7 @@
       siteCards.forEach(card => { card.hidden = Number(card.dataset.siteIndex) >= n; });
       siteCards.forEach(card => { card.querySelector('[data-remove-site]').hidden = n < 2; });
       document.querySelector('[data-add-site]').disabled = n >= siteCards.length;
+      syncBudgetSplit();
       syncCatalogVisibility();
       siteCards.forEach(siteCoverage);
     }
@@ -530,6 +563,39 @@
       budgetInput.disabled = !on;
       document.getElementById('budget-help').hidden = !on;
       document.getElementById('budget-off').hidden = on;
+      syncBudgetSplit();
+    }
+    const eur = x => '€' + Math.round(x).toLocaleString('en');
+    function syncBudgetSplit() {
+      const fixed = siteCards.filter(card => !card.hidden)
+        .reduce((sum, card) => sum + Array.from(card.querySelectorAll('input[name^="fixed_capex__"]'))
+          .reduce((s, i) => s + (parseFloat(i.value) || 0), 0), 0);
+      const box = document.getElementById('budget-split');
+      const total = parseFloat(budgetInput.value);
+      if (budgetLimited.checked && !isNaN(total)) {
+        const left = total - fixed;
+        box.textContent = 'Fixed costs ' + eur(fixed) + ' · Available for devices ' + eur(left);
+        box.className = 'budget-split' + (left < 0 ? ' bad' : '');
+      } else {
+        box.textContent = fixed > 0 ? 'Fixed costs ' + eur(fixed) : '';
+        box.className = 'budget-split';
+      }
+    }
+    const fixedTemplate = document.getElementById('fixed-row-template');
+    function addFixed(card) {
+      const list = card.querySelector('[data-fixed-list]');
+      const used = Array.from(list.querySelectorAll('input[name^="fixed_name__"]')).map(i => parseInt(i.name.split('__')[2], 10));
+      const j = used.length ? Math.max(...used) + 1 : 0;
+      list.insertAdjacentHTML('beforeend', fixedTemplate.innerHTML.replaceAll('__S__', card.dataset.siteIndex).replaceAll('__J__', String(j)));
+      list.lastElementChild.querySelector('input[type="text"]').focus();
+      syncBudgetSplit();
+    }
+    function moveFixedRows(from, to) {
+      const list = to.querySelector('[data-fixed-list]');
+      from.querySelectorAll('.fixed-row').forEach(row => {
+        row.querySelectorAll('input').forEach(i => { i.name = i.name.replace(/^(fixed_[a-z]+__)\d+__/, '$1' + to.dataset.siteIndex + '__'); });
+        list.appendChild(row);
+      });
     }
     const RULES = JSON.parse(document.getElementById('site-rules').textContent);
     const SVC_LABELS = RULES.service_labels, ASSET_NAMES = RULES.asset_labels;
@@ -694,6 +760,8 @@
     }
     function removeSite(index) {
       const n = siteCount();
+      siteCards[index].querySelectorAll('.fixed-row').forEach(row => row.remove());
+      for (let j = index + 1; j < n; j++) moveFixedRows(siteCards[j], siteCards[j - 1]);
       for (let j = index; j < n - 1; j++) {
         const to = siteFields(siteCards[j]), from = siteFields(siteCards[j + 1]);
         Object.keys(to).forEach(k => {
@@ -767,6 +835,7 @@
       if (reset) {
         const scope = reset.closest(RESET_SCOPES[reset.dataset.reset] || '.card');
         if (scope.contains(nSitesInput) && reset.dataset.reset === 'section') nSitesInput.value = nSitesInput.defaultValue;
+        scope.querySelectorAll('.fixed-row').forEach(row => row.remove());
         resetWithin(scope);
         scope.querySelectorAll('.custom-scenario').forEach(card => card.remove());
         syncProbTotal();
@@ -818,6 +887,17 @@
         removeSite(Number(removeSiteBtn.closest('.site-card').dataset.siteIndex));
         return;
       }
+      const addFixedBtn = e.target.closest('[data-add-fixed]');
+      if (addFixedBtn) {
+        addFixed(addFixedBtn.closest('.site-card'));
+        return;
+      }
+      const removeFixed = e.target.closest('[data-remove-fixed]');
+      if (removeFixed) {
+        removeFixed.closest('.fixed-row').remove();
+        syncBudgetSplit();
+        return;
+      }
       const removeScenario = e.target.closest('[data-remove-scenario]');
       if (removeScenario) {
         removeScenario.closest('.custom-scenario').remove();
@@ -833,10 +913,14 @@
         return;
       }
     });
-    form.addEventListener('reset', function () { setTimeout(syncAll, 0); });
+    form.addEventListener('reset', function () {
+      document.querySelectorAll('.fixed-row').forEach(row => row.remove());
+      setTimeout(syncAll, 0);
+    });
 
     allBox.addEventListener('change', syncCountries);
     budgetLimited.addEventListener('change', syncBudget);
+    budgetInput.addEventListener('input', syncBudgetSplit);
     const siteList = document.getElementById('site-list');
     siteList.addEventListener('change', function (e) {
       syncCatalogVisibility();
@@ -848,6 +932,7 @@
       if (!card) return;
       if (e.target.matches('input[data-maxmw]')) e.target.dataset.edited = '1';
       if (/^site_peak__/.test(e.target.name || '')) fillDefaults(card);
+      if (/^fixed_capex__/.test(e.target.name || '')) { syncBudgetSplit(); return; }
       siteCoverage(card);
     });
     assetCatalogCards.forEach(cat => cat.addEventListener('input', function (e) {

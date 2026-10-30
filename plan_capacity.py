@@ -229,7 +229,10 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     its site's peak hours and then at every hour a trial plan left demand unmet, but only hours
     the unit's maximum capacities cover in every scenario, so the master proposes plans that leave
     nothing unmet where the site caps allow it; if they make the master infeasible (a budget too
-    small to cover demand) they are dropped. Each unit and scenario always runs in the same worker, which keeps its LP and only
+    small to cover demand) they are dropped. ``budget`` is the total across every site: each site's
+    fixed costs are paid wherever it is built, so their CAPEX comes off the budget before the master
+    plans the devices, and their yearly cost (annualized CAPEX plus operating cost) is added to every
+    bound and to the objective; the gap is measured on the device plan alone. Each unit and scenario always runs in the same worker, which keeps its LP and only
     updates the capacities, on/off placement and prices before re-solving from the last basis. If
     HiGHS fails on the master, it is re-solved with presolve off and then with a looser integer
     feasibility tolerance (1e-4), which the steep cuts of a large unmet penalty can need."""
@@ -262,6 +265,18 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
     for u in unit_ids:
         for a in disabled_assets or []:
             site_max_mw[u][a] = 0.0
+
+    fixed_capex = sum(c.capex_eur for sp in sites for c in sp.fixed_costs)
+    fixed_yearly = sum(c.yearly_eur(capex_cfg.discount_rate) for sp in sites for c in sp.fixed_costs)
+    total_budget = budget
+    if budget is not None:
+        if fixed_capex > budget:
+            raise ValueError(f"the sites' fixed costs ({fixed_capex:,.0f} EUR) are above the total budget "
+                             f"({budget:,.0f} EUR)")
+        budget = budget - fixed_capex
+    if fixed_capex or fixed_yearly:
+        print(f"Fixed site costs: {fixed_capex:,.0f} EUR CAPEX, {fixed_yearly:,.0f} EUR/yr (annualized + operating)"
+              + ("" if budget is None else f" | budget left for devices: {budget:,.0f} of {total_budget:,.0f} EUR"))
 
     if budget is not None:
         cheapest_total = len(sites) * sum(min(cand.capex_eur for cand in capex_cfg.catalog[a]) for a in hp.ASSETS
@@ -496,7 +511,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                                      site=units[u][1].name, country=unit_country[u], scenario=s)
                                  for u in unit_ids if site_star[u] > 0.5 for s in scenario_probs]
             gap = (best_ub - lb) / max(abs(best_ub), 1e-6)
-            log.append({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
+            lb, ub = lb + fixed_yearly, ub + fixed_yearly
+            log.append({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub + fixed_yearly, "gap": gap,
                         "master_seconds": round(master_s, 2),
                         "subproblems_seconds": round(sub_s, 1),
                         "subproblems_build_seconds": round(sub_build_s, 1),
@@ -504,12 +520,12 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
                         "n_cuts": n_cuts,
                         "master_mip_gap": master_mip_gap, "master_cut_off": master_cut_off})
             cutoff_note = " [MASTER CUT OFF AT time_limit]" if master_cut_off else ""
-            print(f"iter {it:>3}: LB={lb:>16,.0f}  UB={ub:>16,.0f}  best={best_ub:>16,.0f}  gap={gap:.4f}  "
+            print(f"iter {it:>3}: LB={lb:>16,.0f}  UB={ub:>16,.0f}  best={best_ub + fixed_yearly:>16,.0f}  gap={gap:.4f}  "
                  f"master={master_s:.2f}s  subproblems={sub_s:.1f}s (build={sub_build_s:.1f}s, "
                  f"solve={sub_solve_s:.1f}s)  cuts_added={n_cuts}  "
                  f"master_mip_gap={master_mip_gap:.4f}{cutoff_note}")
             if on_iteration is not None:
-                on_iteration({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub, "gap": gap,
+                on_iteration({"iter": it, "lb": lb, "ub": ub, "best_ub": best_ub + fixed_yearly, "gap": gap,
                              "best_capacities": best_capacities, "best_capex_by_asset": best_capex_by_asset,
                              "best_sites": best_sites, "units": units, "log": list(log),
                              "per_unit_log": per_unit_log})
@@ -523,7 +539,8 @@ def run_benders(countries: list[str], budget: float | None, max_iters: int, gap_
         for ex in executors or []:
             ex.shutdown(wait=True)
 
-    return {"capacities": best_capacities, "capex": best_capex, "objective": best_ub, "log": pd.DataFrame(log),
+    return {"capacities": best_capacities, "capex": best_capex, "objective": best_ub + fixed_yearly,
+            "fixed_capex": fixed_capex, "fixed_yearly": fixed_yearly, "log": pd.DataFrame(log),
             "units": units, "unit_country": unit_country, "host_zone": host_zone, "price_frames": price_frames,
             "per_unit_log": per_unit_log, "capex_by_asset": best_capex_by_asset, "unit_counts": best_units,
             "placed": best_sites, "green": best_green, "unmet": best_unmet,
@@ -551,8 +568,8 @@ def main() -> None:
                     help="without --sites-file: hourly demand flexibility of each site, %% of each "
                          "hour's demand (shifts net to zero over each day), default 10; 0 = rigid")
     ap.add_argument("--budget", type=float, default=None,
-                    help=f"total CAPEX budget across every site, EUR, raw/unannualized "
-                         f"(default {hp.CapexAssumptions().default_budget_eur:,.0f})")
+                    help=f"total budget across every site, EUR, raw/unannualized: the sites' fixed costs "
+                         f"plus the devices (default {hp.CapexAssumptions().default_budget_eur:,.0f})")
     ap.add_argument("--no-budget", action="store_true", help="plan without any CAPEX budget limit")
     ap.add_argument("--max-iters", type=int, default=100)
     ap.add_argument("--gap-tol", type=float, default=0.01, help="relative Benders gap, default 0.01 (1%%)")
@@ -708,10 +725,13 @@ def main() -> None:
     cap_df = pd.DataFrame(rows)
     print(cap_df.to_string(index=False))
     print(f"\nChosen site(s): {', '.join(f'{sp.name} -> {unit_country[chosen[sp.name]]}' for sp in sites)}")
-    print(f"Total raw CAPEX: {res['capex']:,.0f} EUR "
-         + ("(no budget limit)" if budget is None else f"(budget {budget:,.0f} EUR, {res['capex'] / budget:.1%} used)"))
+    total_capex = res["capex"] + res["fixed_capex"]
+    if res["fixed_capex"]:
+        print(f"Device CAPEX: {res['capex']:,.0f} EUR | fixed site CAPEX: {res['fixed_capex']:,.0f} EUR")
+    print(f"Total raw CAPEX: {total_capex:,.0f} EUR "
+         + ("(no budget limit)" if budget is None else f"(budget {budget:,.0f} EUR, {total_capex / budget:.1%} used)"))
     risk_label = ("deterministic" if cvar_alpha is None else f"CVaR_{cvar_alpha:.2f}")
-    print(f"Best objective (annualized CAPEX + {risk_label} 1yr operating cost across "
+    print(f"Best objective (annualized CAPEX + fixed site costs + {risk_label} 1yr operating cost across "
          f"{len(scenario_probs)} scenarios, EUR, lower=better): {res['objective']:,.0f}")
 
     out_prefix = Path(args.output)
@@ -724,6 +744,12 @@ def main() -> None:
                    **{f"peak_{k}_mw": v for k, v in sp.peaks_mw.items()},
                    **{f"annual_{k}_mwh": v for k, v in hp.annual_demand_mwh(sp.peaks_mw).items()}}
                   for sp in sites]).to_csv(f"{out_prefix}_sites.csv", index=False)
+    pd.DataFrame([{"site": sp.name, "country": unit_country[chosen[sp.name]], "name": c.name,
+                   "capex_eur": c.capex_eur, "lifetime_years": c.lifetime_years,
+                   "opex_eur_per_year": c.opex_eur_per_year, "yearly_eur": c.yearly_eur(capex_cfg.discount_rate)}
+                  for sp in sites for c in sp.fixed_costs],
+                 columns=["site", "country", "name", "capex_eur", "lifetime_years", "opex_eur_per_year",
+                          "yearly_eur"]).to_csv(f"{out_prefix}_fixed_costs.csv", index=False)
     units_rows = []
     for sp in sites:
         u = chosen[sp.name]
@@ -753,7 +779,7 @@ def main() -> None:
         f"{out_prefix}_dispatch.csv", index=False, float_format="%.4g")
     print(f"\nwrote {out_prefix}_capacities.csv, {out_prefix}_sites.csv, {out_prefix}_convergence.csv, "
           f"{out_prefix}_units.csv, {out_prefix}_green_h2.csv, {out_prefix}_unmet_demand.csv, "
-          f"{out_prefix}_market_costs.csv, {out_prefix}_dispatch.csv")
+          f"{out_prefix}_market_costs.csv, {out_prefix}_fixed_costs.csv, {out_prefix}_dispatch.csv")
 
     if args.export_schedules:
         chosen_units = {u: units[u] for u in chosen.values()}
