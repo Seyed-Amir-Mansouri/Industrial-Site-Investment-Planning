@@ -383,6 +383,7 @@
           </div>
           <label class="prob-field">Probability {{ form.baseline_row.prob }} %</label>
         </div>
+        {% for e in form.baseline_row.prob.errors %}<div class="error">{{ e }}</div>{% endfor %}
       </div>
       {% for row in form.custom_scenario_rows %}
       <div class="scenario-card custom-scenario">
